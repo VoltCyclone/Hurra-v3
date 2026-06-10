@@ -5,7 +5,7 @@
 #include "actions.h"
 #include "humanize.h"
 #include "kmbox.h"
-#include "imxrt.h"
+#include "ch32h417_port.h"   // NVIC_SystemReset (core_riscv.h) for the reboot cmd
 #include <string.h>
 
 extern uint32_t millis(void);
@@ -762,7 +762,7 @@ void hurra_tick(void)
         s_baud_apply_at = 0;
     }
     if (s_reboot_at && now >= s_reboot_at) {
-        SCB_AIRCR = 0x05FA0004;  // ARM SYSRESETREQ (macro from imxrt.h)
+        NVIC_SystemReset();  // QingKe system reset (was ARM SYSRESETREQ on i.MXRT)
     }
 }
 

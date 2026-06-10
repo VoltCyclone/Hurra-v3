@@ -87,13 +87,16 @@ static inline float sfc32_uniform(void) {       /* [-1, 1) */
 #ifdef HUMANIZE_HOSTTEST
 static uint32_t hw_entropy(void) { return 0x12345678u; }   /* deterministic */
 #else
-#include "imxrt.h"
+/* QingKe (RV32) seed: machine cycle counter XOR the chip device-info word.
+ * Replaces the i.MXRT DWT cycle counter (0xE000_1000/1004) + i.MXRT UID
+ * (0x401F_4410), neither of which exists on the CH32H417. __get_MCYCLE reads
+ * the `mcycle` CSR; 0x1FFFF704 is the WCH device-info/ID word (also read by the
+ * vendored dbgmcu/gpio code). */
+#include "ch32h417_port.h"   /* device header first, then core_riscv (__get_MCYCLE) */
 static uint32_t hw_entropy(void) {
-    volatile uint32_t *dwt_ctrl = (volatile uint32_t *)0xE0001000;
-    volatile uint32_t *dwt_cyc  = (volatile uint32_t *)0xE0001004;
-    *dwt_ctrl |= 1;
-    volatile uint32_t *uid0 = (volatile uint32_t *)0x401F4410;
-    return *dwt_cyc ^ *uid0;
+    uint32_t cyc = __get_MCYCLE();
+    uint32_t uid = *(volatile uint32_t *)0x1FFFF704;
+    return cyc ^ uid;
 }
 #endif
 

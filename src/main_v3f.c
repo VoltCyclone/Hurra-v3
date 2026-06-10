@@ -1,8 +1,16 @@
-// main_v3f.c — master: clocks, init ICC, release V5F, ping-pong over ICC.
+// main_v3f.c — master: clocks, ICC, release V5F, then command/transport loop.
+//
+// V3F is the master core. Boot order: clocks -> millis timebase -> ICC rings
+// (before V5F runs) -> wake V5F -> UART command link + protocol parser. The
+// loop drains UART RX into the parser (which calls act_* -> kmbox_cmd_* -> ICC
+// records to V5F) and drains V5F telemetry (ignored until Phase 7).
 #include "ch32h417_port.h"
 #include "board.h"
 #include "led.h"
 #include "icc.h"
+#include "uart.h"
+#include "kmbox_cmd.h"
+#include "timebase.h"
 #include "debug.h"
 
 int main(void)
@@ -11,25 +19,19 @@ int main(void)
     SystemAndCoreClockUpdate();
     Delay_Init();
     led_init();
+    timebase_init(SystemCoreClock);     // start millis() before parsers run
 
-    icc_init_v3f();                         // set up shared rings BEFORE releasing V5F
+    icc_init_v3f();                     // set up shared rings BEFORE releasing V5F
     NVIC_WakeUp_V5F(Core_V5F_StartAddr);
     HSEM_ITConfig(HSEM_ID0, ENABLE);
 
-    uint32_t counter = 0, pongs = 0;
-    for (;;) {
-        icc_record_t r = { .tag = ICC_TAG_PING };
-        r.b[0] = (uint8_t)(counter      );
-        r.b[1] = (uint8_t)(counter >>  8);
-        r.b[2] = (uint8_t)(counter >> 16);
-        r.b[3] = (uint8_t)(counter >> 24);
-        if (icc_send_to_v5f(&r)) { icc_ring_doorbell_v5f(); counter++; }
+    uart_init(CMD_BAUD_DEFAULT);
+    kmbox_cmd_init();                   // act_init + proto_init + bind tx
+    led_heartbeat_start();
 
-        icc_record_t got;
-        while (icc_recv_from_v5f(&got)) {
-            if (got.tag == ICC_TAG_PONG) pongs++;
-        }
-        if (pongs & 1) led_on(); else led_off();
-        Delay_Ms(2);
+    for (;;) {
+        kmbox_cmd_poll();               // UART -> proto -> act -> ICC
+        icc_record_t t;
+        while (icc_recv_from_v5f(&t)) { /* Phase 7: consume V5F telemetry */ }
     }
 }
