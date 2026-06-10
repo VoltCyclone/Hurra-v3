@@ -40,14 +40,22 @@ examples + linker scripts + register headers). Datasheet V1.8.
 - **Peripherals used:** USART (DMA-capable) for the command link, GPIO + a GP
   timer for the LED, 2×16-ch DMA, 2× 32-bit SysTick (one per core), PFIC
   interrupt controller, HSEM, IPC.
-- **Toolchain:** `riscv-none-elf-gcc` (MounRiver), `-march=rv32imafc
-  -mabi=ilp32f`. Flash/debug via WCH-LinkE (`wlink` or WCH OpenOCD fork).
+- **Toolchain:** `riscv-none-elf-gcc` (MounRiver, GCC 12). Match the EVT SDK:
+  `-march=rv32imac -mabi=ilp32` (soft-float ABI — the EVT examples all build
+  ilp32 even though the FPU is enabled in `mstatus`; humanize float math lives on
+  V3F and works fine soft-float). Flash/debug via WCH-LinkE + WCH OpenOCD
+  (`wch-dual-core.cfg`); image is the merged `Merge.bin` @ `0x08000000`.
 - **Board:** CH32H417QEU6 (QFN128) USB 3.0 dev board.
 
 ### Open risks (front-loaded in phasing)
-1. **Dual-core boot/release mechanism** is not documented in English. Working
-   hypothesis: both cores release at reset and rendezvous via HSEM. If a
-   "core-enable" register exists, it is localized to startup. **Biggest risk.**
+1. **Dual-core boot/release mechanism** — RESOLVED by extracting the EVT SDK
+   (see `docs/ch32h417-evt-reference.md` §1). **V3F is the master/boot core**: it
+   boots from `0x00000000`, runs `SystemInit()` (clocks), then releases V5F (boots
+   from `0x00010000`) via `NVIC_WakeUp_V5F(0x00010000)`; the two cores then
+   rendezvous via HSEM. Two separately-built images merged into one flash binary
+   (`Merge.bin` @ `0x08000000`). This *refines* the core split: V3F naturally owns
+   boot + clocks + UART + LED and releases V5F; V5F owns the USB hot path. Still
+   the highest-complexity area, so Phase 2 proves it before features build on it.
 2. USB register offsets must be verified against the openwch EVT headers before
    driver code is written (pull the repo locally as the register source of
    truth).
