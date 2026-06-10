@@ -20,14 +20,16 @@ uint32_t millis(void) { return g_ms; }
 // Injection sink: accumulate the deltas the motion program emits.
 static long g_sum_x, g_sum_y;
 static int  g_emits;
-void kmbox_inject_mouse(int16_t dx, int16_t dy, uint8_t buttons, int8_t wheel) {
+// Stub names match the kmbox.h shim: actions.c calls kmbox_cmd_* (the v3 ICC
+// router), so the host-test sinks are named kmbox_cmd_* to satisfy the link.
+void kmbox_cmd_inject_mouse(int16_t dx, int16_t dy, uint8_t buttons, int8_t wheel) {
     (void)buttons; (void)wheel;
     g_sum_x += dx; g_sum_y += dy;
     if (dx || dy) g_emits++;
 }
-void kmbox_inject_keyboard(uint8_t m, const uint8_t k[6]) { (void)m; (void)k; }
-void kmbox_schedule_click_release(uint8_t b, uint32_t d) { (void)b; (void)d; }
-void kmbox_schedule_kb_release(uint8_t k, uint32_t d) { (void)k; (void)d; }
+void kmbox_cmd_inject_keyboard(uint8_t m, const uint8_t k[6]) { (void)m; (void)k; }
+void kmbox_cmd_schedule_click_release(uint8_t b, uint32_t d) { (void)b; (void)d; }
+void kmbox_cmd_schedule_kb_release(uint8_t k, uint32_t d) { (void)k; (void)d; }
 
 static void reset_sink(void) { g_sum_x = g_sum_y = 0; g_emits = 0; }
 
