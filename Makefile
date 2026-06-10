@@ -41,7 +41,12 @@ v3f: build
 	$(OBJCOPY) -O ihex build/v3f.elf build/v3f.hex
 	$(SIZE) build/v3f.elf
 
-V5F_SRC = src/main_v5f.c src/icc.c src/led.c core/system_ch32h417.c $(LIBSRC)
+# NOTE: desc_capture.c is intentionally NOT in V5F_SRC yet. It calls
+# usb_host_control_transfer(), which is not defined until Task 5.1 (USBHS host).
+# Adding it now would break the v5f link with undefined usb_host_* references.
+# It will be added alongside the host driver in Task 5.1.
+V5F_SRC = src/main_v5f.c src/icc.c src/usb_device.c \
+          src/led.c core/system_ch32h417.c $(LIBSRC)
 V5F_ASM = core/startup_v5f.S
 V5F_DEF = -DCore_V5F -Dsystick2
 v5f: build

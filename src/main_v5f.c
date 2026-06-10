@@ -11,11 +11,20 @@
 #include "ch32h417_port.h"
 #include "icc.h"
 #include "debug.h"
+#include "usb_device.h"         // Phase-4 bring-up: USBFS device driver
 
 int main(void)
 {
     SystemAndCoreClockUpdate();
     Delay_Init();
+
+    // --- Phase-4 bring-up scaffolding (build/link check only) -------------
+    // Brings up the USBFS device side with static boot-mouse descriptors and,
+    // once the host has configured us, emits a periodic idle mouse report on
+    // EP1. There is no hardware in CI, so this only verifies that the USBFS
+    // driver links and is reachable. Phase 5 rewrites main_v5f as the
+    // host->device relay loop and removes this block.
+    usb_device_init(NULL);                  // NULL: use static descriptors
 
     icc_init_v5f();                         // wait for V3F's shared-block magic
     HSEM_FastTake(HSEM_ID0);
@@ -40,6 +49,15 @@ int main(void)
                 (void)icc_send_to_v3f(&p);
             }
         }
+
+        // Phase-4 bring-up: once enumerated, arm an idle mouse report on EP1.
+        // Removed in Phase 5 when main_v5f becomes the relay loop.
+        usb_device_poll();
+        if (usb_device_is_configured()) {
+            static const uint8_t mouse4[4] = { 0, 0, 0, 0 };  // no movement
+            (void)usb_device_send_report(1, mouse4, sizeof(mouse4));
+        }
+
         if (!got) __asm volatile("wfi");
     }
 }
