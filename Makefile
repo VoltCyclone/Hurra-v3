@@ -30,7 +30,7 @@ LIBSRC = $(wildcard vendor/wch/Peripheral/src/*.c) \
          vendor/wch/Core/core_riscv.c \
          vendor/wch/Debug/debug.c
 
-V3F_SRC = src/main_v3f.c src/led.c core/system_ch32h417.c $(LIBSRC)
+V3F_SRC = src/main_v3f.c src/icc.c src/led.c core/system_ch32h417.c $(LIBSRC)
 V3F_ASM = core/startup_v3f.S
 V3F_DEF = -DCore_V3F
 v3f: build
@@ -39,7 +39,7 @@ v3f: build
 	$(OBJCOPY) -O ihex build/v3f.elf build/v3f.hex
 	$(SIZE) build/v3f.elf
 
-V5F_SRC = src/main_v5f.c src/led.c core/system_ch32h417.c $(LIBSRC)
+V5F_SRC = src/main_v5f.c src/icc.c src/led.c core/system_ch32h417.c $(LIBSRC)
 V5F_ASM = core/startup_v5f.S
 V5F_DEF = -DCore_V5F -Dsystick2
 v5f: build
