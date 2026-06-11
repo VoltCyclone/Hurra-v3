@@ -110,8 +110,9 @@ aim/load tests have NOT been done yet.
 - `src/humanize.c/.h` — always-on humanization filter (jitter, micro-correction,
   sub-pixel carry). **Runs per-frame on V5F** inside the merge.
 - `src/led.c/.h` — LED status ladder / heartbeat (TIM2 on V3F).
-- `src/board.h` — board pin/clock map (LED, USART). **Pins are placeholders;
-  confirm vs schematic.**
+- `src/board.h` — board pin/clock map (LED, USART). USART2 is now PD5(TX)/
+  PD6(RX) AF7 (the WCH EVT mapping) with the pin/AF/DMA-req in one block; LED
+  still PB1 (confirm LED0/LED1 GPIO vs schematic).
 - `core/startup_v3f.S` / `core/startup_v5f.S` — per-core reset vectors + vector
   tables.
 - `core/link_v3f.ld` / `core/link_v5f.ld` — per-core linker scripts (shared
@@ -144,6 +145,17 @@ aim/load tests have NOT been done yet.
   `startup_*.S` (e.g. `IPC_CH0_Handler`, `USBFS_IRQHandler`,
   `DMA1_Channel7_IRQHandler`, `TIM2_IRQHandler`). Rename one without the other
   and the IRQ silently never fires.
+- **IPC doorbell direction is BENCH-UNVERIFIED.** `icc_init_v3f` configures IPC
+  CH0 (TxCID1/RxCID0/AutoEN) and `icc_ring_doorbell_v5f` sets CH0 Bit0 to wake
+  V5F; V5F's `IPC_CH0_Handler` watches/clears Bit0. The TxCID/RxCID cross-core
+  *routing* semantics are not documented in the EVT tree (the IPC example is a
+  bidirectional ping-pong whose comments say "V3F bit0 RX" — the opposite of our
+  use). The doorbell is functionally plausible but UNPROVEN. Bench test: from
+  V3F call `icc_ring_doorbell_v5f()` on a timer and toggle an LED inside V5F's
+  `IPC_CH0_Handler`; if it never toggles, the Bit0 routing is wrong (V5F still
+  works via its own wfi-wakes-on-USB path, so injection latency degrades
+  silently rather than failing loudly). The ICC magic-spin + data rings do NOT
+  depend on the doorbell — only the ≤1 ms idle-injection wake does.
 - **Timers:** `millis()` on **V3F = TIM3**, on **V5F = TIM4**; the µs counter on
   **V5F = TIM9** (32-bit, free-running 1 MHz). The LED heartbeat uses **TIM2**
   on V3F. Keep these distinct per core.

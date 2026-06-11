@@ -75,9 +75,9 @@ inter-core channel (ICC). Injection rides real reports when the mouse is moving
   - **USBFS** (12 Mbps Full-Speed) = **device** port — the clone presented to
     the PC. Full-Speed caps the PC-facing HID at ~1 kHz.
 - **Command-link USART** — a USB-UART bridge into the CH32H417's `USART2`
-  (`PA2` = TX, `PA3` = RX; the common WCH default — confirm against the carrier
-  schematic in [`src/board.h`](src/board.h)). The Hurra build boots the link at
-  **4 Mbaud**.
+  (`PD5` = TX, `PD6` = RX, AF7; the mapping used by every WCH EVT example —
+  retarget in [`src/board.h`](src/board.h) if the carrier routes USART2
+  elsewhere). The Hurra build boots the link at **4 Mbaud**.
 - A 25 MHz HSE crystal feeds the USB PLLs (480 MHz for USBHS, 48 MHz for USBFS).
 
 ## Dual-core architecture
