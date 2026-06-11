@@ -47,7 +47,7 @@ are placeholders to confirm against the actual board schematic — see
                                             │  (V5F: proxy + merge + humanize)
    Host PC USB ←── CH32H417 USBFS device ───┘
                           ↑ ICC (shared SRAM @0x20178000 + IPC doorbell)
-   Host PC USB ──→ USB-UART ──→ CH32H417 USART2 (V3F: parse + command)
+   Host PC USB ──→ WCH-Link VCP ──→ CH32H417 USART1 (V3F: parse + command)
 ```
 
 The real device is captured on the **USBHS** controller (480 Mbps High-Speed
@@ -55,7 +55,7 @@ host) and cloned to the PC on the **USBFS** controller (12 Mbps Full-Speed
 device); the two controllers run simultaneously. The fast **V5F** core polls the
 host endpoints, merges in any injected input, and forwards the combined report
 to the PC. Injected input arrives from the **V3F** core: the PC sends commands
-over a USB-UART bridge into `USART2`, where V3F parses them (Hurra or Ferrum),
+over the WCH-Link VCP into `USART1`, where V3F parses them (Hurra or Ferrum),
 applies humanization control, and pushes injection records to V5F across the
 inter-core channel (ICC). Injection rides real reports when the mouse is moving
 (merge) or is emitted as standalone synthetic reports when the mouse is idle.
@@ -262,7 +262,7 @@ src/usb_host.c/.h             USBHS host driver (capture the real device)
 src/usb_device.c/.h           USBFS device driver (clone presented to the PC)
 src/usb_merge.c/.h            HID-aware report merge (real report + injection)
 src/desc_capture.c/.h         descriptor + HID report-layout capture (cloning)
-src/uart.c/.h                 USART2 + DMA RX/TX ring (command link, V3F)
+src/uart.c/.h                 USART1 PA9/PA10 IRQ-driven RX/TX rings (cmd link, V3F)
 src/kmbox_cmd.c/.h            V3F injection sinks → ICC records to V5F
 src/kmbox.h                   shim: aliases v2's kmbox_* → kmbox_cmd_* / uart_*
 src/hurra.c/.h                Hurra binary parser (TinyFrame) — default protocol
