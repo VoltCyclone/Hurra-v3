@@ -193,6 +193,13 @@ int main(void)
 	// --- Relay loop ------------------------------------------------------
 	uint32_t loop_count = 0;
 
+	// Telemetry counters (ported from v2 main.c): reports successfully forwarded
+	// to the PC vs. dropped (device-side EP busy). Streamed to V3F over the ICC
+	// for the LED status ladder.
+	uint32_t report_count = 0;
+	uint32_t drop_count   = 0;
+	uint32_t telem_tick   = millis();   // last time telemetry was emitted
+
 	while (1) {
 		bool did_work = false;
 
@@ -220,8 +227,13 @@ int main(void)
 					humanize_record_arrival(timebase_v5f_us());
 				usb_merge_report(ep_map[m].iface_protocol,
 					rpt_ptr, (uint8_t)ret);
-				(void)usb_device_send_report(
-					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret);
+				// Count forwarded vs. dropped reports for telemetry (ports v2
+				// main.c: send_report true -> report_count, false -> drop_count).
+				if (usb_device_send_report(
+					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret))
+					report_count++;
+				else
+					drop_count++;
 			}
 		}
 
@@ -244,6 +256,40 @@ int main(void)
 		// merge path never both emit in one frame. Mirrors v2 main.c's
 		// kmbox_send_pending() call (line ~331), placed after the EP loops.
 		usb_merge_send_pending();
+
+		// --- Telemetry to V3F (LED status ladder) ------------------------
+		// Cadence: at most once every 50 ms (millis() gate). The relay loop
+		// can spin at tens of kHz; an unconditional send would flood the 256-
+		// slot ICC ring and burn cycles on the hot path. 50 ms (20 Hz) is far
+		// finer than V3F's 100 ms LED sampling, so the LED never sees stale
+		// data, yet two cheap icc_send_to_v3f() calls per 50 ms are negligible.
+		// V3F polls the ring (no doorbell needed for telemetry).
+		uint32_t now = millis();
+		if ((now - telem_tick) >= 50) {
+			telem_tick = now;
+			icc_record_t tr;
+
+			// TELEM_COUNTS: report_count (LE u32) in b[0..3], drop_count in
+			// b[4..7]. b[0] of icc_record_t is the tag; payload is b[].
+			tr.tag = ICC_TAG_TELEM_COUNTS;
+			tr.b[0] = (uint8_t)(report_count      );
+			tr.b[1] = (uint8_t)(report_count >>  8);
+			tr.b[2] = (uint8_t)(report_count >> 16);
+			tr.b[3] = (uint8_t)(report_count >> 24);
+			tr.b[4] = (uint8_t)(drop_count        );
+			tr.b[5] = (uint8_t)(drop_count   >>  8);
+			tr.b[6] = (uint8_t)(drop_count   >> 16);
+			tr.b[7] = (uint8_t)(drop_count   >> 24);
+			(void)icc_send_to_v3f(&tr);
+
+			// TELEM_STATUS: b[0] = health flags.
+			//   bit0 = USB device configured (PC enumerated us)
+			//   bit1 = real host device still connected
+			tr.tag = ICC_TAG_TELEM_STATUS;
+			tr.b[0] = (usb_device_is_configured() ? 0x01 : 0x00) |
+			          (usb_host_device_connected() ? 0x02 : 0x00);
+			(void)icc_send_to_v3f(&tr);
+		}
 
 		if (!did_work)
 			__asm volatile("wfi");
