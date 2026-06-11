@@ -16,27 +16,43 @@
 #define LED_RCC_HB2         RCC_HB2Periph_GPIOB
 
 // ── Command-link USART (V3F owns it) ────────────────────────────────────────
-// USART2 = PD5(TX)/PD6(RX), AF7 — this is the mapping EVERY WCH CH32H417 EVT
-// example uses (USART/USART_DMA Common/hardware.c:82-93 + main.c:16). The DMA
-// request mux must also be programmed (USART2_TX -> DMAMUX req 87, USART2_RX ->
-// 88; see uart.c) or DMA never triggers. NOTE: the EVT *debug printf* console
-// is a different port (USART1 TX=PA9/AF7) — don't confuse it with this link.
-// If your carrier wires the USB-UART bridge to other pins, change the PIN/AF/
-// PORT macros below; this is the single place that defines the mapping.
-#define CMD_USART           USART2
-#define CMD_USART_IRQn      USART2_IRQn
-#define CMD_USART_RCC_HB1   RCC_HB1Periph_USART2
-#define CMD_USART_DATAR     (&USART2->DATAR)
-#define CMD_BAUD_DEFAULT    4000000u    // Hurra boots 4 Mbaud (matches bridge)
+// DEFAULT: USART3 = PB10(TX)/PB11(RX), AF7 — wired to the on-board WCH-LinkE's
+// virtual COM port through solder bridges SB3/SB4 (schematic: WL_UART3_TX/RX ->
+// PB10/PB11). This lets ONE USB-C cable do flash + debug + command link, no
+// external USB-UART dongle. The WCH-LinkE VCP caps at 921600 baud (and 115200
+// in HID mode), so the Hurra link runs at 921600, not the 4 Mbaud an external
+// bridge allows. Mapping verified against EVT USART_DMA (USART3 PB10/PB11 AF7,
+// DMA1 Ch2 TX/Ch3 RX, mux req 89/90).
+//
+// To go back to an external bridge on USART2 PD5/PD6 @ 4 Mbaud, swap this whole
+// block to: USART2 / USART2_IRQn / RCC_HB1Periph_USART2 / GPIOD PD5/PD6 /
+// DMA1_Channel7 TX (req 87, IRQn 7, IT_TC7) / DMA1_Channel6 RX (req 88), and
+// set the Makefile Hurra CMD_BAUD back to 4000000. Everything below is the
+// single source of truth for the mapping — uart.c references only these macros,
+// including the TX-DMA ISR name, so the ISR can never drift from the vector.
+#define CMD_USART           USART3
+#define CMD_USART_IRQn      USART3_IRQn
+#define CMD_USART_RCC_HB1   RCC_HB1Periph_USART3
+#define CMD_USART_DATAR     (&USART3->DATAR)
+// Boot baud comes from the Makefile (-DCMD_BAUD): 921600 Hurra / 115200 Ferrum.
+#define CMD_BAUD_DEFAULT    ((uint32_t)CMD_BAUD)
 
-// USART2 pin map (AF7) + DMA request-mux source numbers. Change these together
-// if the board routes USART2 elsewhere.
-#define CMD_USART_GPIO_PORT     GPIOD
-#define CMD_USART_GPIO_RCC_HB2  RCC_HB2Periph_GPIOD
-#define CMD_USART_TX_PIN        GPIO_Pin_5
-#define CMD_USART_TX_PINSRC     GPIO_PinSource5
-#define CMD_USART_RX_PIN        GPIO_Pin_6
-#define CMD_USART_RX_PINSRC     GPIO_PinSource6
+// USART3 pin map (AF7) + per-direction DMA channel, request-mux source, and the
+// TX transfer-complete plumbing. Change these together to retarget the link.
+#define CMD_USART_GPIO_PORT     GPIOB
+#define CMD_USART_GPIO_RCC_HB2  RCC_HB2Periph_GPIOB
+#define CMD_USART_TX_PIN        GPIO_Pin_10
+#define CMD_USART_TX_PINSRC     GPIO_PinSource10
+#define CMD_USART_RX_PIN        GPIO_Pin_11
+#define CMD_USART_RX_PINSRC     GPIO_PinSource11
 #define CMD_USART_GPIO_AF       GPIO_AF7
-#define CMD_USART_DMA_REQ_TX    87u     // USART2_TX DMA request (EVT USART_DMA)
-#define CMD_USART_DMA_REQ_RX    88u     // USART2_RX DMA request
+// USART3: TX = DMA1 Ch2 (mux req 89), RX = DMA1 Ch3 (mux req 90). (EVT USART_DMA)
+#define CMD_RX_DMA_CH           DMA1_Channel3
+#define CMD_RX_DMA_MUX          DMA_MuxChannel3
+#define CMD_USART_DMA_REQ_RX    90u
+#define CMD_TX_DMA_CH           DMA1_Channel2
+#define CMD_TX_DMA_MUX          DMA_MuxChannel2
+#define CMD_USART_DMA_REQ_TX    89u
+#define CMD_TX_DMA_IRQn         DMA1_Channel2_IRQn
+#define CMD_TX_DMA_IT_TC        DMA1_IT_TC2
+#define CMD_TX_DMA_IRQHandler   DMA1_Channel2_IRQHandler

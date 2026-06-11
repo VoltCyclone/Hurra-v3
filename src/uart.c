@@ -31,10 +31,12 @@ static uint32_t tx_total;
 static uint32_t s_baud;
 static uint32_t err_or, err_fe, err_ne;
 
-/* DMA channels for USART2 (EVT §5: TX=DMA1_Ch7, RX=DMA1_Ch6). */
-#define RX_DMA_CH   DMA1_Channel6
-#define TX_DMA_CH   DMA1_Channel7
-#define TX_DMA_IRQn DMA1_Channel7_IRQn
+/* DMA channels for the command USART come from board.h (default USART3:
+ * TX=DMA1_Ch2, RX=DMA1_Ch3). Keeping the channel/mux/IRQ/ISR all in board.h
+ * guarantees the TX ISR name below matches the vector-table entry. */
+#define RX_DMA_CH   CMD_RX_DMA_CH
+#define TX_DMA_CH   CMD_TX_DMA_CH
+#define TX_DMA_IRQn CMD_TX_DMA_IRQn
 
 static void rx_dma_setup(void)
 {
@@ -135,8 +137,8 @@ void uart_init(uint32_t baud)
      * RX/TX DMA requests never reach DMA1 Ch6/Ch7 and the link is dead in both
      * directions. (EVT USART_DMA Common/hardware.c:188-189.) Mux channel index
      * == DMA channel number: Ch7=TX(req 87), Ch6=RX(req 88). */
-    DMA_MuxChannelConfig(DMA_MuxChannel7, CMD_USART_DMA_REQ_TX);   /* USART2 TX */
-    DMA_MuxChannelConfig(DMA_MuxChannel6, CMD_USART_DMA_REQ_RX);   /* USART2 RX */
+    DMA_MuxChannelConfig(CMD_TX_DMA_MUX, CMD_USART_DMA_REQ_TX);   /* cmd USART TX */
+    DMA_MuxChannelConfig(CMD_RX_DMA_MUX, CMD_USART_DMA_REQ_RX);   /* cmd USART RX */
 
     USART_DMACmd(CMD_USART, USART_DMAReq_Tx | USART_DMAReq_Rx, ENABLE);
     USART_Cmd(CMD_USART, ENABLE);
@@ -204,14 +206,17 @@ uint32_t uart_noise(void)         { return err_ne; }
 uint32_t uart_rx_byte_count(void) { return rx_total; }
 uint32_t uart_tx_byte_count(void) { return tx_total; }
 
-/* TX DMA transfer-complete handler. Vector name matches core/startup_v3f.S
- * (DMA1_Channel7_IRQHandler). DMA_GetITStatus/ClearITPendingBit take a
- * DMA_TypeDef* (DMA1) as the first arg per ch32h417_dma.h. */
-void DMA1_Channel7_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
-void DMA1_Channel7_IRQHandler(void)
+/* TX DMA transfer-complete handler. The ISR name + TC flag come from board.h
+ * (CMD_TX_DMA_IRQHandler / CMD_TX_DMA_IT_TC) so they always match the TX DMA
+ * channel and the vector-table entry in core/startup_v3f.S — change the channel
+ * in board.h and this handler retargets with it (no silent ISR/vector drift).
+ * Default USART3 -> DMA1_Channel2_IRQHandler / DMA1_IT_TC2.
+ * DMA_GetITStatus/ClearITPendingBit take a DMA_TypeDef* (DMA1) per ch32h417_dma.h. */
+void CMD_TX_DMA_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CMD_TX_DMA_IRQHandler(void)
 {
-    if (DMA_GetITStatus(DMA1, DMA1_IT_TC7)) {
-        DMA_ClearITPendingBit(DMA1, DMA1_IT_TC7);
+    if (DMA_GetITStatus(DMA1, CMD_TX_DMA_IT_TC)) {
+        DMA_ClearITPendingBit(DMA1, CMD_TX_DMA_IT_TC);
         DMA_Cmd(TX_DMA_CH, DISABLE);
         /* Free exactly the bytes we programmed for this burst. The DMA current
          * data counter reads 0 at TC and MUST NOT be used here. */
