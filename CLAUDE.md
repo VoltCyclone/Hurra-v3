@@ -13,9 +13,14 @@ humanize, descriptor capture, tests) carry over; the HAL (USB stack, UART,
 clocks, startup, linker, **inter-core channel**) was rewritten for the
 CH32H417.
 
-**Status:** build-complete; on-device validation pending. Both `make test` and a
-full `make all` build are green. Real-hardware flashing + USB enumeration +
-aim/load tests have NOT been done yet.
+**Status:** build-complete; **boots on real hardware**, USB relay not yet
+end-to-end. `make test` + `make all` green. Validated on a CH32H417QEU via the
+on-board WCH-LinkE (2026-06-11): `make flash` programs Merge.bin to 0x08000000
+and the firmware **runs** — ICC magic `0x48563343` confirmed at 0x20178000, so
+V3F boots, sets clocks, inits the rings, and releases V5F; both cores pass the
+rendezvous. Still NOT working: USB enumeration to the PC, because the **USBHS
+host port supplies no VBUS** to the attached device (a board power matter — see
+GOTCHAS). aim/load tests not started.
 
 ## Board Target
 - **WCH CH32H417QEU6** (QFN128) USB 3.0 dev board — only supported board.
@@ -184,3 +189,27 @@ aim/load tests have NOT been done yet.
 - **Thermal sensor / overclock logic was DROPPED.** v2's i.MX-specific tempmon /
   912 MHz overclock is gone. V5F runs at its rated 400 MHz. Don't re-add a
   temperature tier to the LED ladder or an overclock path.
+- **USBHS host D+/D- = PB8/PB9 = SWCLK/SWDIO.** The USB2 HS data lines share the
+  SWJ debug pins, so V5F MUST call `GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable,
+  ENABLE)` (after enabling `RCC_HB2Periph_AFIO|GPIOB`) before `usb_host_init()`
+  or the PHY can't drive the pads and the host never sees a device. This is in
+  `main_v5f.c` and is debug-SAFE: the WCH-LinkE debugs over **SDI single-wire**
+  (its own pins), NOT PB8/PB9 SWD — verified `wlink` still attaches after the
+  remap. Don't "restore" SWJ thinking it's needed for debugging.
+- **USBHS host port needs external VBUS.** The chip does not source 5V; the EVT
+  host example drives NO VBUS GPIO — VBUS is hardware-supplied on the board. On
+  the nanoCH32H417 there's a `SB7`/`U5` 5V path for the host port; if the device
+  on the host port gets no power, it's this (a solder bridge / OTG-PD / external
+  power matter), NOT firmware. Confirmed open VBUS = no enumeration on bench
+  2026-06-11.
+- **Debug transport is SDI, and `wlink` sessions wedge under repeated halts.**
+  Reading peripheral regs (esp. USBHS 0x4003xxxx) or many halt/resume cycles can
+  leave the WCH-LinkE stuck (USB `0x55` protocol error, or it drops to its IAP
+  bootloader `4348:55e0`). RECOVERY: `wlink-iap -q` (cjacker/wlink-iap, built at
+  /tmp this session — bundles the CH32V305 LinkE firmware too) cleanly exits IAP
+  back to RV mode `1a86:8010`. Do NOT use `wlink mode-switch` casually — an
+  interrupted switch is what drops it into `55e0`. Prefer reading firmware state
+  via the ICC block at 0x20178000 over live register pokes.
+- **Toolchain on this Mac:** `make ... TOOLCHAIN=riscv64-unknown-elf`; `wlink`
+  lives at `~/.cargo/bin/wlink` (CH32H417 supported). The on-board WCH-LinkE is
+  serial `696B8F06EF62`; its VCP is `/dev/cu.usbmodem696B8F06EF62*`.
