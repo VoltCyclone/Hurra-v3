@@ -23,7 +23,12 @@ int main(void)
 
     icc_init_v3f();                     // set up shared rings BEFORE releasing V5F
     NVIC_WakeUp_V5F(Core_V5F_StartAddr);
-    HSEM_ITConfig(HSEM_ID0, ENABLE);
+    // Rendezvous barrier is the ICC magic-spin (V3F sets magic in icc_init_v3f
+    // before this wake; V5F spins on it in icc_init_v5f). V3F does NOT block on
+    // HSEM here, so do NOT enable the HSEM interrupt: there is no HSEM_Handler
+    // that clears the flag (only the weak spin-stub), and V5F's HSEM_ReleaseOneSem
+    // would set V3F's HSEM-pending bit — an enabled IRQ would trap V3F in the
+    // stub forever. HSEM stays poll-only on the V5F take/release side.
 
     uart_init(CMD_BAUD_DEFAULT);
     kmbox_cmd_init();                   // act_init + proto_init + bind tx
