@@ -154,7 +154,10 @@ make all              # build both cores + merge -> build/Merge.bin (Hurra, defa
 make v3f              # build only the V3F (master/command) image
 make v5f              # build only the V5F (relay) image
 make PROTOCOL=ferrum all   # build with the Ferrum ASCII protocol instead
-make flash            # merge + program the board via WCH OpenOCD
+make flash            # merge + program the board over the on-board WCH-LinkE
+make flash-v3f        # flash only the V3F image (bring-up aid)
+make flash-v5f        # flash only the V5F image (bring-up aid)
+make erase            # full-chip erase
 make clean            # remove the build/ tree
 make test             # host-native unit tests (no hardware) — see Test below
 ```
@@ -170,8 +173,22 @@ Toolchain:
 
 - Both cores compile with **`-march=rv32imac_zicsr -mabi=ilp32`** (soft-float
   ABI — the humanize float math lives on V3F and works fine soft-float).
-- **`make flash`** programs `build/Merge.bin` to `0x08000000` via WCH OpenOCD
-  (`wch-riscv.cfg`) over a **WCH-LinkE** probe.
+Flashing (over the **on-board WCH-LinkE** — same USB-C cable as the command
+link):
+
+- **`make flash`** merges and programs `build/Merge.bin`. It auto-detects a CLI
+  flasher — preferring [`wlink`](https://github.com/ch32-rs/wlink) (Rust; lists
+  CH32H417 support) and falling back to the
+  [WCH-OpenOCD fork](https://github.com/openwch/openocd_wch) (`wch-openocd`). If
+  neither is installed it prints install hints and stops. **Mainline `openocd`
+  does not work** — it has no `wlinke` adapter driver.
+- Install the recommended tool: `brew install libusb && cargo install --git
+  https://github.com/ch32-rs/wlink`. Ensure the WCH-LinkE is in **RV mode**
+  (`wlink mode-switch --rv`).
+- Overrides: `FLASH_TOOL=wlink|openocd`, `WLINK=`, `WCH_OPENOCD=`, `WCH_CFG=`.
+  The merged image programs at the `0x08000000` alias under `wlink` and the
+  `0x00000000` flash-bank base under WCH-OpenOCD ([`scripts/wch-riscv.cfg`](scripts/wch-riscv.cfg))
+  — the same physical flash, matching the V3F\@0 / V5F\@`0x10000` layout.
 
 ## Test
 

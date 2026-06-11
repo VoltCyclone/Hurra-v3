@@ -78,8 +78,95 @@ merge: v3f v5f
 	$(OBJCOPY) -I ihex -O binary build/v5f.hex build/v5f.bin
 	python3 scripts/merge_images.py build/v3f.bin build/v5f.bin 0x10000 build/Merge.bin
 
+# ── Flashing via the on-board WCH-LinkE ──────────────────────────────────────
+# The CH32H417's flash is one physical region exposed at two aliases: the WCH
+# StdPeriph FLASH_BASE is 0x08000000, while WCH's OpenOCD flash bank is 0x00000000.
+# Our linker lays V3F at 0x00000000 / V5F at 0x00010000 and Merge.bin is built to
+# that layout, so either alias programs the same bytes. We support two CLI tools:
+#
+#   wlink       — ch32-rs/wlink (Rust). Explicitly lists CH32H417. Uses the
+#                 0x08000000 alias: `wlink flash --address 0x08000000 img.bin`.
+#                 Install: `cargo install --git https://github.com/ch32-rs/wlink`
+#                 (+ `brew install libusb`).
+#   wch-openocd — WCH's OpenOCD fork (cjacker/wch-openocd or openwch/openocd_wch),
+#                 binary usually `wch-openocd`. Uses scripts/wch-riscv.cfg
+#                 (adapter driver wlinke, sdi transport, flash bank @0x00000000).
+#                 NOTE: mainline `openocd` does NOT work — no wlinke driver.
+#
+# `make flash` auto-detects whichever is installed (wlink first). Override the
+# tool with FLASH_TOOL=wlink|openocd, or the binary names with WLINK=/WCH_OPENOCD=.
+WLINK        ?= wlink
+WCH_OPENOCD  ?= wch-openocd
+WCH_CFG      ?= scripts/wch-riscv.cfg
+# wlink programs at the 0x08000000 alias; wch-openocd at the 0x00000000 bank
+# base (same physical flash). Keep values bare — trailing chars before a `#` on
+# a `?=` line become part of the value and leak into the command.
+FLASH_ADDR   ?= 0x08000000
+WCH_OCD_ADDR ?= 0x00000000
+FLASH_TOOL   ?= auto
+
+# Resolve the flasher: explicit FLASH_TOOL, else prefer wlink, else wch-openocd.
+# Prints ONLY the resolved tool name ("wlink"/"openocd") to stdout; the install
+# hint goes to stderr and the script exits non-zero so callers can abort (the
+# stdout capture must not silently turn a "not found" into a wrong tool choice).
+define _PICK_FLASHER
+sh -c 'tool="$(FLASH_TOOL)"; \
+  if [ "$$tool" = "auto" ]; then \
+    if command -v $(WLINK) >/dev/null 2>&1; then tool=wlink; \
+    elif command -v $(WCH_OPENOCD) >/dev/null 2>&1; then tool=openocd; \
+    else tool=""; fi; \
+  fi; \
+  if [ "$$tool" = wlink ] && ! command -v $(WLINK) >/dev/null 2>&1; then tool=""; fi; \
+  if [ "$$tool" = openocd ] && ! command -v $(WCH_OPENOCD) >/dev/null 2>&1; then tool=""; fi; \
+  if [ -z "$$tool" ]; then \
+    { echo "ERROR: no usable WCH flash tool found (FLASH_TOOL=$(FLASH_TOOL))."; \
+      echo "Install one (the WCH-LinkE must be in RV/RISC-V mode):"; \
+      echo "  wlink (recommended, lists CH32H417 support):"; \
+      echo "    brew install libusb && cargo install --git https://github.com/ch32-rs/wlink"; \
+      echo "  or WCH-OpenOCD fork (binary $(WCH_OPENOCD)): https://github.com/openwch/openocd_wch"; \
+    } 1>&2; \
+    exit 127; \
+  fi; \
+  echo "$$tool"'
+endef
+
+# $(1)=image .bin  $(2)=program address (wlink only). Abort if no flasher.
+define _FLASH_IMG
+	@tool=`$(_PICK_FLASHER)` || exit $$?; \
+	if [ "$$tool" = wlink ]; then \
+	  echo "==> wlink flash $(1) @ $(2)"; \
+	  $(WLINK) flash --address $(2) $(1); \
+	else \
+	  echo "==> $(WCH_OPENOCD) program $(1) @ $(WCH_OCD_ADDR) (per $(WCH_CFG))"; \
+	  $(WCH_OPENOCD) -f $(WCH_CFG) -c init -c halt \
+	    -c "program $(1) $(WCH_OCD_ADDR) verify" -c "wlink_reset_resume" -c exit; \
+	fi
+endef
+
+# Flash the full dual-core image (default). Depends on merge so the bits are fresh.
 flash: merge
-	openocd -f wch-riscv.cfg -c "program build/Merge.bin 0x08000000 verify reset exit"
+	$(call _FLASH_IMG,build/Merge.bin,$(FLASH_ADDR))
+
+# Flash a single core image (debug aid). These program the same flash region at
+# the core's own origin; flashing one core alone is for bring-up, not normal use.
+flash-v3f: v3f
+	$(OBJCOPY) -I ihex -O binary build/v3f.hex build/v3f.bin
+	$(call _FLASH_IMG,build/v3f.bin,0x08000000)
+
+flash-v5f: v5f
+	$(OBJCOPY) -I ihex -O binary build/v5f.hex build/v5f.bin
+	$(call _FLASH_IMG,build/v5f.bin,0x08010000)
+
+# Full-chip erase.
+erase:
+	@tool=`$(_PICK_FLASHER)` || exit $$?; \
+	if [ "$$tool" = wlink ]; then \
+	  echo "==> wlink erase"; $(WLINK) erase; \
+	else \
+	  echo "==> $(WCH_OPENOCD) flash erase"; \
+	  $(WCH_OPENOCD) -f $(WCH_CFG) -c init -c halt \
+	    -c "flash erase_sector wch_riscv 0 last" -c "wlink_reset_resume" -c exit; \
+	fi
 
 clean:
 	rm -rf build
@@ -90,4 +177,4 @@ test:
 	cc -std=c11 -O2 -Isrc -o /tmp/motion_test test/motion_test.c src/actions.c -lm
 	/tmp/motion_test
 
-.PHONY: v3f v5f all merge flash clean test build
+.PHONY: v3f v5f all merge flash flash-v3f flash-v5f erase clean test build

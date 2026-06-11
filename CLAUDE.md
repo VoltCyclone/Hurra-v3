@@ -69,8 +69,15 @@ aim/load tests have NOT been done yet.
   default).
 - `make v3f` / `make v5f` — build a single core image.
 - `make PROTOCOL=ferrum all` — Ferrum ASCII protocol instead.
-- `make flash` — merge + program `build/Merge.bin` @ `0x08000000` via WCH
-  OpenOCD (`wch-riscv.cfg`, WCH-LinkE probe).
+- `make flash` — merge + program `build/Merge.bin` over the **on-board
+  WCH-LinkE**. Auto-detects a CLI flasher: `wlink` (ch32-rs/wlink, Rust — lists
+  CH32H417, programs the `0x08000000` alias) first, else the **WCH-OpenOCD fork**
+  `wch-openocd` (`scripts/wch-riscv.cfg`, flash bank `0x00000000`). **Mainline
+  `openocd` won't work** (no `wlinke` driver). Prints install hints + exits 127
+  if neither is found. Overrides: `FLASH_TOOL=wlink|openocd`, `WLINK=`,
+  `WCH_OPENOCD=`, `WCH_CFG=`, `FLASH_ADDR=`/`WCH_OCD_ADDR=`.
+- `make flash-v3f` / `make flash-v5f` — flash a single core image (bring-up aid).
+- `make erase` — full-chip erase via the detected tool.
 - `make clean` — remove `build/`.
 - `make test` — host-native unit tests (humanize + motion), no hardware.
 - Toolchain prefix: `TOOLCHAIN ?= riscv-none-elf`. For Homebrew RISC-V:
