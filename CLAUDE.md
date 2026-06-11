@@ -59,9 +59,9 @@ GOTCHAS). aim/load tests not started.
   CRC16). Built by `make` (no flag). `src/hurra.c` + `src/third_party/TinyFrame/`.
   Host adapter: `hurra-app` (`hurra-bridge --baud 921600`). Boots at **921600
   baud** (`CMD_BAUD` Makefile default — the WCH-LinkE VCP ceiling for the default
-  USART3/WCH-Link link). `km.baud(N)` bumps; auto-resets to the boot default on
-  RX idle. (On an external USART2 bridge you can build `CMD_BAUD=4000000` for the
-  old 4 Mbaud / >=8k cmds/sec profile.)
+  USART1/WCH-Link link). `km.baud(N)` bumps; auto-resets to the boot default on
+  RX idle. (On an external bridge you can repoint board.h and build a higher
+  `CMD_BAUD` for the old 4 Mbaud / >=8k cmds/sec profile.)
 - **Opt-in: Ferrum ASCII** (`make PROTOCOL=ferrum`) — `km.<name>(<args>)\r\n`,
   alias `m(x,y)`. Default 115200, resets every power cycle. `km.version()` ->
   `kmbox: Ferrum\r\n`. `src/ferrum.c`.
@@ -110,7 +110,7 @@ GOTCHAS). aim/load tests not started.
   ICC-fed; runs the synth/idle-emit path.
 - `src/desc_capture.c/.h` — descriptor + HID report-layout capture (cloning
   logic, ported ~verbatim).
-- `src/uart.c/.h` — USART2 + DMA RX/TX ring (V3F command link).
+- `src/uart.c/.h` — USART1 (PA9/PA10) interrupt-driven RX/TX rings (V3F command link).
 - `src/kmbox_cmd.c/.h` — V3F injection sinks; encode ICC records to V5F.
 - `src/kmbox.h` — shim: aliases v2's `kmbox_*` → `kmbox_cmd_*` (inject) / `uart_*`
   (link stats/baud). The HID-merge half of v2's `kmbox` lives on V5F as
@@ -124,15 +124,16 @@ GOTCHAS). aim/load tests not started.
 - `src/humanize.c/.h` — always-on humanization filter (jitter, micro-correction,
   sub-pixel carry). **Runs per-frame on V5F** inside the merge.
 - `src/led.c/.h` — LED status ladder / heartbeat (TIM2 on V3F).
-- `src/board.h` — board pin/clock map (LED, USART). **Command link defaults to
-  USART3 PB10(TX)/PB11(RX) AF7**, wired to the on-board WCH-LinkE virtual COM
-  port via solder bridges SB3/SB4 — one USB-C cable does flash + debug + command
-  link. DMA1 Ch2(TX)/Ch3(RX), mux req 89/90; the whole mapping (incl. the TX-DMA
-  ISR name) lives in one board.h block so a retarget can't drift from the vector
-  table. Boot baud = `CMD_BAUD` from the Makefile (**921600** Hurra — the
-  WCH-LinkE VCP ceiling — / 115200 Ferrum). To use an external USB-UART bridge
-  at 4 Mbaud instead, swap the block back to USART2 PD5/PD6 + `CMD_BAUD=4000000`
-  (instructions in board.h). LED still PB1 (confirm LED0/LED1 GPIO vs schematic).
+- `src/board.h` — board pin/clock map (LED, USART). **Command link = USART1
+  PA9(TX)/PA10(RX) AF7**, wired to the on-board WCH-LinkE virtual COM port via
+  solder bridges SB3 (WL_UART3_TX→PA10) / SB4 (WL_UART3_RX→PA9) — one USB-C cable
+  does flash + debug + command link. **Interrupt-driven (no DMA):** uart.c uses
+  the USART1 RXNE/TXE IRQ; the ISR name (CMD_USART_IRQHandler) lives in board.h
+  so it can't drift from the vector table. Boot baud = `CMD_BAUD` from the
+  Makefile (**921600** Hurra — WCH-LinkE VCP ceiling — / 115200 Ferrum).
+  WATCH: the net is named WL_UART3 but lands on PA9/PA10=USART1; PB10/PB11 (the
+  target's USART3) go to the SD card, NOT the WCH-Link — an earlier USART3/
+  PB10-11 attempt was wrong. LED still PB1 (confirm LED0/LED1 GPIO vs schematic).
 - `core/startup_v3f.S` / `core/startup_v5f.S` — per-core reset vectors + vector
   tables.
 - `core/link_v3f.ld` / `core/link_v5f.ld` — per-core linker scripts (shared

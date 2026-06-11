@@ -74,12 +74,12 @@ inter-core channel (ICC). Injection rides real reports when the mouse is moving
     mouse/keyboard at High-Speed (up to ~8 kHz mice).
   - **USBFS** (12 Mbps Full-Speed) = **device** port — the clone presented to
     the PC. Full-Speed caps the PC-facing HID at ~1 kHz.
-- **Command-link USART** — defaults to `USART3` (`PB10` = TX, `PB11` = RX, AF7),
-  wired to the **on-board WCH-LinkE virtual COM port** (solder bridges SB3/SB4),
-  so one USB-C cable carries flash + debug + command link with no external
-  dongle. The Hurra build boots this link at **921600 baud** (the WCH-LinkE VCP
-  ceiling). For an external USB-UART bridge at **4 Mbaud**, retarget to `USART2`
-  PD5/PD6 and build `CMD_BAUD=4000000` — see [`src/board.h`](src/board.h).
+- **Command-link USART** — `USART1` (`PA9` = TX, `PA10` = RX, AF7),
+  interrupt-driven, wired to the **on-board WCH-LinkE virtual COM port** (solder
+  bridges SB3→PA10 / SB4→PA9), so one USB-C cable carries flash + debug +
+  command link with no external dongle. The Hurra build boots it at **921600
+  baud** (the WCH-LinkE VCP ceiling). To use an external USB-UART bridge,
+  repoint the port in [`src/board.h`](src/board.h) and raise `CMD_BAUD`.
 - A 25 MHz HSE crystal feeds the USB PLLs (480 MHz for USBHS, 48 MHz for USBFS).
 
 ## Dual-core architecture
@@ -122,10 +122,10 @@ touch no hardware.
 **Hurra binary (default).** TinyFrame framing — SOF `0x68`, 1-byte ID/LEN/TYPE,
 CRC16, little-endian payloads. Driven by `hurra-app` / `hurra-bridge`; see that
 repo for the host API. The firmware boots at **921600 baud** (the on-board
-WCH-LinkE virtual-COM ceiling for the default USART3 link), so run the bridge
+WCH-LinkE virtual-COM ceiling for the default USART1 link), so run the bridge
 with `--baud 921600`; `km.baud(N)` raises the rate, and the firmware falls back
-to the boot default after the link goes idle. On an external USART2 bridge built
-with `CMD_BAUD=4000000` you get the full 4 Mbaud / ≥8k commands/sec profile.
+to the boot default after the link goes idle. On an external bridge (repoint
+board.h) built with a higher `CMD_BAUD` you get the full 4 Mbaud / ≥8k cmds/s.
 
 **Ferrum ASCII (`make PROTOCOL=ferrum`).** `\r\n`-terminated text commands at
 115200 baud (reset to 115200 on every power cycle). Reference:
