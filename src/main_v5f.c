@@ -13,6 +13,16 @@
 #include "debug.h"
 #include "usb_device.h"         // Phase-4 bring-up: USBFS device driver
 
+// delay() shim for the V5F image. desc_capture.c (host-side enumeration) calls
+// `extern void delay(uint32_t msec)` for inter-request settling. The vendored
+// debug.c only exposes Delay_Ms/Delay_Us, so we provide the one-line bridge
+// here. desc_capture needs no millis()/micros() on V5F, so no timer is wired —
+// this is the minimum the V5F image requires.
+void delay(uint32_t msec)
+{
+    Delay_Ms(msec);
+}
+
 int main(void)
 {
     SystemAndCoreClockUpdate();
