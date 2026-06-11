@@ -30,9 +30,10 @@ static bool ring_push(icc_ring_t *r, const icc_record_t *rec)
 {
     uint32_t head = r->head;
     uint32_t next = (head + 1) & ICC_RING_MASK;
+    mem_fence();                            // observe the consumer's latest tail
     if (next == (r->tail & ICC_RING_MASK)) return false;   // full
     r->slot[head & ICC_RING_MASK] = *rec;
-    mem_fence();                                           // record before head
+    mem_fence();                            // release: slot write before head publish
     r->head = next;
     return true;
 }
@@ -41,8 +42,9 @@ static bool ring_pop(icc_ring_t *r, icc_record_t *out)
 {
     uint32_t tail = r->tail;
     if ((tail & ICC_RING_MASK) == (r->head & ICC_RING_MASK)) return false; // empty
+    mem_fence();                            // acquire: read slot only after observing head
     *out = r->slot[tail & ICC_RING_MASK];
-    mem_fence();                                           // record before tail
+    mem_fence();                            // slot read completes before freeing the slot
     r->tail = (tail + 1) & ICC_RING_MASK;
     return true;
 }
