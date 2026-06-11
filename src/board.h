@@ -16,12 +16,27 @@
 #define LED_RCC_HB2         RCC_HB2Periph_GPIOB
 
 // ── Command-link USART (V3F owns it) ────────────────────────────────────────
-// USART2 PA2(TX)/PA3(RX) — PA2/PA3 nets are present on the schematic. NOTE the
-// EVT debug console default is USART1 TX=PA9(AF7), a *different* port; if you
-// repurpose the EVT printf path you'd be on USART1, not this command link.
-// Confirm PA2/PA3 routing on the carrier.
+// USART2 = PD5(TX)/PD6(RX), AF7 — this is the mapping EVERY WCH CH32H417 EVT
+// example uses (USART/USART_DMA Common/hardware.c:82-93 + main.c:16). The DMA
+// request mux must also be programmed (USART2_TX -> DMAMUX req 87, USART2_RX ->
+// 88; see uart.c) or DMA never triggers. NOTE: the EVT *debug printf* console
+// is a different port (USART1 TX=PA9/AF7) — don't confuse it with this link.
+// If your carrier wires the USB-UART bridge to other pins, change the PIN/AF/
+// PORT macros below; this is the single place that defines the mapping.
 #define CMD_USART           USART2
 #define CMD_USART_IRQn      USART2_IRQn
 #define CMD_USART_RCC_HB1   RCC_HB1Periph_USART2
 #define CMD_USART_DATAR     (&USART2->DATAR)
 #define CMD_BAUD_DEFAULT    4000000u    // Hurra boots 4 Mbaud (matches bridge)
+
+// USART2 pin map (AF7) + DMA request-mux source numbers. Change these together
+// if the board routes USART2 elsewhere.
+#define CMD_USART_GPIO_PORT     GPIOD
+#define CMD_USART_GPIO_RCC_HB2  RCC_HB2Periph_GPIOD
+#define CMD_USART_TX_PIN        GPIO_Pin_5
+#define CMD_USART_TX_PINSRC     GPIO_PinSource5
+#define CMD_USART_RX_PIN        GPIO_Pin_6
+#define CMD_USART_RX_PINSRC     GPIO_PinSource6
+#define CMD_USART_GPIO_AF       GPIO_AF7
+#define CMD_USART_DMA_REQ_TX    87u     // USART2_TX DMA request (EVT USART_DMA)
+#define CMD_USART_DMA_REQ_RX    88u     // USART2_RX DMA request

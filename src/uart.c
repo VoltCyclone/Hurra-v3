@@ -106,25 +106,38 @@ void uart_init(uint32_t baud)
     s_baud = baud;
     RCC_HB1PeriphClockCmd(CMD_USART_RCC_HB1, ENABLE);          /* USART2 on HB1 bus */
     RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);           /* DMA1 on HB bus */
-    RCC_HB2PeriphClockCmd(RCC_HB2Periph_GPIOA, ENABLE);        /* GPIOA on HB2 bus */
+    RCC_HB2PeriphClockCmd(CMD_USART_GPIO_RCC_HB2, ENABLE);     /* USART2 GPIO port on HB2 */
 
-    /* GPIO alternate-function for USART2 pins. USART2 default mapping is
-     * PA2 = TX, PA3 = RX (no AFIO remap required for the default mapping on
-     * this part — there is no GPIO_Remap_USART2 define, and EVT §5 maps the
-     * channels directly). TODO: confirm PA2/PA3 against the actual carrier
-     * board wiring. */
+    /* GPIO alternate-function for USART2 pins. On this part the pin is routed
+     * to the peripheral by the per-pin AFR mux (STM32-style) — GPIO_Mode_AF_PP
+     * alone is NOT enough; GPIO_PinAFConfig(..., AF7) MUST select the USART2
+     * function or the pad stays on AF0 and no signal reaches the peripheral.
+     * Pins/port/AF come from board.h (default USART2 = PD5 TX / PD6 RX, AF7,
+     * matching every WCH EVT example). */
+    GPIO_PinAFConfig(CMD_USART_GPIO_PORT, CMD_USART_TX_PINSRC, CMD_USART_GPIO_AF);
+    GPIO_PinAFConfig(CMD_USART_GPIO_PORT, CMD_USART_RX_PINSRC, CMD_USART_GPIO_AF);
+
     GPIO_InitTypeDef g = {0};
-    g.GPIO_Pin   = GPIO_Pin_2;                 /* PA2 = USART2 TX */
+    g.GPIO_Pin   = CMD_USART_TX_PIN;           /* USART2 TX */
     g.GPIO_Speed = GPIO_Speed_Very_High;
     g.GPIO_Mode  = GPIO_Mode_AF_PP;            /* alt-function push-pull */
-    GPIO_Init(GPIOA, &g);
+    GPIO_Init(CMD_USART_GPIO_PORT, &g);
 
-    g.GPIO_Pin   = GPIO_Pin_3;                 /* PA3 = USART2 RX */
+    g.GPIO_Pin   = CMD_USART_RX_PIN;           /* USART2 RX */
     g.GPIO_Speed = GPIO_Speed_Very_High;
     g.GPIO_Mode  = GPIO_Mode_IN_FLOATING;      /* input floating */
-    GPIO_Init(GPIOA, &g);
+    GPIO_Init(CMD_USART_GPIO_PORT, &g);
 
     usart_apply(baud);
+
+    /* Route the DMA request lines to our channels via the DMAMUX. Without this
+     * the channels stay muxed to request source 0 (reset default), so USART2
+     * RX/TX DMA requests never reach DMA1 Ch6/Ch7 and the link is dead in both
+     * directions. (EVT USART_DMA Common/hardware.c:188-189.) Mux channel index
+     * == DMA channel number: Ch7=TX(req 87), Ch6=RX(req 88). */
+    DMA_MuxChannelConfig(DMA_MuxChannel7, CMD_USART_DMA_REQ_TX);   /* USART2 TX */
+    DMA_MuxChannelConfig(DMA_MuxChannel6, CMD_USART_DMA_REQ_RX);   /* USART2 RX */
+
     USART_DMACmd(CMD_USART, USART_DMAReq_Tx | USART_DMAReq_Rx, ENABLE);
     USART_Cmd(CMD_USART, ENABLE);
 
