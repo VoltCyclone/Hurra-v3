@@ -11,9 +11,9 @@ MEMORY
 	requirements;Please refer to the datasheet manual for specific allocation*/
 	FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 64K             /* zero_wait flah ,and loaded into RAM_CODE for running */
 	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 64K         /* RAM for running code*/
-	RAM (xrw) : ORIGIN = (0x20110000+256), LENGTH = (448K-256) /* RAM for .data .bss section and other*/
+	RAM (xrw) : ORIGIN = (0x20110000+256), LENGTH = (448K-256-32K) /* RAM for .data .bss section and other; -32K reserves RAM_SHARED so .data/.bss/stack end at 0x20178000 and never overlap the inter-core window (matches WCH HSEM_DataSharing Link_v3f.ld) */
 	RAM_LOAD (xrw) : ORIGIN = 0x20110000, LENGTH = 256         /* RAM for .load section*/
-	RAM_SHARED (xrw) : ORIGIN = 0x20178000, LENGTH = 32K       /* inter-core .shared */
+	RAM_SHARED (xrw) : ORIGIN = 0x20178000, LENGTH = 32K       /* inter-core .shared (same base on V3F and V5F) */
 }
 
 SECTIONS
