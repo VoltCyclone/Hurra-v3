@@ -90,6 +90,16 @@ int main(void)
 	led_on();
 
 	// --- USBHS host: power port, wait for the real device ----------------
+	// The USBHS D+/D- lines are PB8/PB9, which on this part are ALSO the
+	// SWCLK/SWDIO (SWJ) debug pins. The SWJ function must be released or the
+	// USB2 PHY can't drive the pads and the host never detects an attached
+	// device. Every WCH USBHS example does exactly this in Hardware() before
+	// USBHS_Host_Init (EVT USBHS/HOST/Host_KM/Common/hardware.c:42-43).
+	// NOTE: this severs SWD on PB8/PB9 — flash via the WCH-Link SDI link (which
+	// uses its own pins), and recover debug with a power cycle if needed.
+	RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOB, ENABLE);
+	GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
+
 	usb_host_init();
 	led_off();
 	usb_host_power_on();
