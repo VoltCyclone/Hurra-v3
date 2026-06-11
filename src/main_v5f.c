@@ -1,73 +1,239 @@
-// main_v5f.c — slave: rendezvous, then echo ICC PINGs as PONGs.
+// main_v5f.c — full MITM relay loop (V5F core).
 //
-// IPC interrupt-enable:
-//   IPC_ITConfig(IPC_CH0, IPC_CH_Sta_Bit0, ENABLE) enables the ENA bit in the
-//   IPC->ENA register for CH0/Bit0, which is the status bit set by V3F's
-//   icc_ring_doorbell_v5f() -> IPC_SetFlagStatus(IPC_CH0, IPC_CH_Sta_Bit0).
-//   Signature confirmed from vendor/wch/Peripheral/inc/ch32h417_ipc.h:
-//     void IPC_ITConfig(IPC_Channel_TypeDef IPC_CH,
-//                       IPC_ChannelStateBit_TypeDef TPC_Sta_Bit,
-//                       FunctionalState NewState);
-#include "ch32h417_port.h"
-#include "icc.h"
-#include "debug.h"
-#include "usb_device.h"         // Phase-4 bring-up: USBFS device driver
+// This is the centerpiece of the man-in-the-middle. On the V5F core:
+//   * USBHS host (usb_host.c) captures the real device's HID reports.
+//   * usb_merge.c overlays synthetic input — drained from the V3F command core
+//     over the ICC — onto those reports (HID-report-descriptor-aware).
+//   * USBFS device (usb_device.c) forwards the combined report to the PC.
+//
+// Ported from Hurra-v2 src/main.c, REMOVING (per Phase-5 spec):
+//   * The PIT timer + pit0_isr + all PIT_*: v3 has no PIT. The humanized
+//     injection cadence on v3 is driven differently — for Phase 5 we simply
+//     drain+merge+send each loop iteration. Adaptive feed-rate / humanize
+//     timing refinement (humanize_record_arrival / humanize_target_ldval) is a
+//     Phase-7 enhancement.
+//   * tempmon_init/tempmon_read + all OVERTEMP/overclock logic (dropped).
+//   * gpt_profile (i.MX µs counter) — not needed without adaptive feed rate.
+//
+// KEPT structure (ports near-verbatim from v2 main.c):
+//   usb_host_init -> wait connect -> port_reset -> device_speed ->
+//   capture_descriptors -> SET_PROTOCOL per HID iface -> build ep_map[]/
+//   out_map[] -> usb_merge_cache_endpoints -> usb_device_init -> wait
+//   configured -> loop { drain ICC; device_poll; for each host IN EP:
+//   poll_zerocopy -> merge -> device_send_report; for each OUT EP:
+//   device_poll_out -> host_interrupt_out_send }.
 
-// delay() shim for the V5F image. desc_capture.c (host-side enumeration) calls
-// `extern void delay(uint32_t msec)` for inter-request settling. The vendored
-// debug.c only exposes Delay_Ms/Delay_Us, so we provide the one-line bridge
-// here. desc_capture needs no millis()/micros() on V5F, so no timer is wired —
-// this is the minimum the V5F image requires.
-void delay(uint32_t msec)
-{
-    Delay_Ms(msec);
-}
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#include "ch32h417_port.h"
+#include "usb_host.h"
+#include "usb_device.h"
+#include "desc_capture.h"
+#include "usb_merge.h"
+#include "humanize.h"
+#include "icc.h"
+#include "timebase_v5f.h"
+#include "led.h"
+#include "debug.h"
+
+// delay() shim for the V5F image. desc_capture.c (host-side enumeration) and
+// the init sequence below call `extern void delay(uint32_t msec)`. The vendored
+// debug.c only exposes Delay_Ms/Delay_Us, so we bridge here.
+void delay(uint32_t msec) { Delay_Ms(msec); }
+
+typedef struct {
+	uint8_t  host_slot;
+	uint8_t  dev_ep_num;
+	uint16_t maxpkt;
+	uint8_t  iface_protocol;  // 1=keyboard, 2=mouse (for usb_merge)
+} ep_mapping_t;
+
+typedef struct {
+	uint8_t  host_slot;       // index into usb_host's intr_out arrays
+	uint8_t  dev_ep_num;      // device-side EP number to poll
+	uint16_t maxpkt;
+} ep_out_mapping_t;
+
+// Static to keep the ~3.6KB descriptor struct off the stack.
+static captured_descriptors_t desc;
 
 int main(void)
 {
-    SystemAndCoreClockUpdate();
-    Delay_Init();
+	SystemAndCoreClockUpdate();
+	Delay_Init();
 
-    // --- Phase-4 bring-up scaffolding (build/link check only) -------------
-    // Brings up the USBFS device side with static boot-mouse descriptors and,
-    // once the host has configured us, emits a periodic idle mouse report on
-    // EP1. There is no hardware in CI, so this only verifies that the USBFS
-    // driver links and is reachable. Phase 5 rewrites main_v5f as the
-    // host->device relay loop and removes this block.
-    usb_device_init(NULL);                  // NULL: use static descriptors
+	// Millisecond timebase (TIM4) — the merge's release scheduling uses millis().
+	timebase_v5f_init(SystemCoreClock);
 
-    icc_init_v5f();                         // wait for V3F's shared-block magic
-    HSEM_FastTake(HSEM_ID0);
-    HSEM_ReleaseOneSem(HSEM_ID0, 0);
+	// Humanization filter seed (level defaults inside). The interval is a nominal
+	// 1 kHz here; Phase-7 wires the measured poll interval (adaptive feed rate).
+	humanize_init(1000);
 
-    // Enable IPC CH0 interrupt source (Bit0 = V3F->V5F doorbell) + NVIC.
-    // IPC_ITConfig sets the corresponding bit in IPC->ENA so that the IPC
-    // peripheral will assert the IPC_CH0_IRQn line when V3F sets Bit0.
-    // Signature from ch32h417_ipc.h line 76:
-    //   void IPC_ITConfig(IPC_Channel_TypeDef, IPC_ChannelStateBit_TypeDef, FunctionalState)
-    IPC_ITConfig(IPC_CH0, IPC_CH_Sta_Bit0, ENABLE);
-    NVIC_EnableIRQ(IPC_CH0_IRQn);
+	usb_merge_init();
+	led_init();
 
-    for (;;) {
-        icc_record_t r;
-        bool got = false;
-        while (icc_recv_from_v3f(&r)) {
-            got = true;
-            if (r.tag == ICC_TAG_PING) {
-                icc_record_t p = { .tag = ICC_TAG_PONG };
-                p.b[0] = r.b[0]; p.b[1] = r.b[1]; p.b[2] = r.b[2]; p.b[3] = r.b[3];
-                (void)icc_send_to_v3f(&p);
-            }
-        }
+	// --- ICC rendezvous with the V3F command core ------------------------
+	// V3F sets the shared-block magic; we wait for it, then complete the HSEM
+	// handshake and enable the V3F->V5F doorbell so injection records wake us.
+	icc_init_v5f();
+	HSEM_FastTake(HSEM_ID0);
+	HSEM_ReleaseOneSem(HSEM_ID0, 0);
+	IPC_ITConfig(IPC_CH0, IPC_CH_Sta_Bit0, ENABLE);
+	NVIC_EnableIRQ(IPC_CH0_IRQn);
 
-        // Phase-4 bring-up: once enumerated, arm an idle mouse report on EP1.
-        // Removed in Phase 5 when main_v5f becomes the relay loop.
-        usb_device_poll();
-        if (usb_device_is_configured()) {
-            static const uint8_t mouse4[4] = { 0, 0, 0, 0 };  // no movement
-            (void)usb_device_send_report(1, mouse4, sizeof(mouse4));
-        }
+	led_on();
 
-        if (!got) __asm volatile("wfi");
-    }
+	// --- USBHS host: power port, wait for the real device ----------------
+	usb_host_init();
+	led_off();
+	usb_host_power_on();
+	while (!usb_host_device_connected()) {
+		usb_host_power_on();
+		// Drain any injection the V3F core queues during bring-up so the ICC
+		// ring never backs up before the relay starts.
+		usb_merge_drain_icc();
+		__asm volatile("wfi");
+	}
+
+	led_on();
+	delay(10);
+	usb_host_port_reset();
+
+	uint8_t speed = usb_host_device_speed();
+	(void)speed;
+
+	if (!capture_descriptors(&desc)) {
+		led_blink_forever(5, 100, 100);
+	}
+
+	// capture_descriptors() already sends SET_CONFIG and SET_IDLE.
+	// Send SET_PROTOCOL (Report Protocol) for each HID interface.
+	usb_setup_t setup;
+	int ret;
+	for (uint8_t i = 0; i < desc.num_ifaces; i++) {
+		// SET_PROTOCOL: bmRequestType=0x21, bRequest=0x0B
+		setup.bmRequestType = 0x21;
+		setup.bRequest = 0x0B; // SET_PROTOCOL
+		setup.wValue = 1;      // 1 = Report Protocol (not Boot Protocol)
+		setup.wIndex = desc.ifaces[i].iface_num;
+		setup.wLength = 0;
+		ret = usb_host_control_transfer(desc.dev_addr, desc.ep0_maxpkt,
+			&setup, NULL, 2000);
+		(void)ret;
+	}
+
+	// --- Build the host->device endpoint maps (ports verbatim from v2) ----
+	ep_mapping_t ep_map[MAX_INTR_EPS];
+	uint8_t num_ep_mappings = 0;
+	ep_out_mapping_t out_map[MAX_INTR_OUT_EPS];
+	uint8_t num_out_mappings = 0;
+
+	for (uint8_t i = 0; i < desc.num_ifaces; i++) {
+		if (desc.ifaces[i].interrupt_in_ep == 0) continue;
+		if (num_ep_mappings >= MAX_INTR_EPS) break;
+		uint8_t slot = num_ep_mappings;
+		uint8_t ep = desc.ifaces[i].interrupt_in_ep & 0x0F;
+
+		usb_host_interrupt_init(slot, desc.dev_addr, ep,
+			desc.ifaces[i].interrupt_in_maxpkt);
+
+		ep_map[slot].host_slot      = slot;
+		ep_map[slot].dev_ep_num     = ep;
+		ep_map[slot].maxpkt         = desc.ifaces[i].interrupt_in_maxpkt;
+		ep_map[slot].iface_protocol = desc.ifaces[i].iface_protocol;
+		num_ep_mappings++;
+	}
+
+	for (uint8_t i = 0; i < desc.num_ifaces; i++) {
+		if (desc.ifaces[i].interrupt_out_ep == 0) continue;
+		if (num_out_mappings >= MAX_INTR_OUT_EPS) break;
+
+		uint8_t slot = num_out_mappings;
+		uint8_t ep = desc.ifaces[i].interrupt_out_ep & 0x0F;
+
+		usb_host_interrupt_out_init(slot, desc.dev_addr, ep,
+			desc.ifaces[i].interrupt_out_maxpkt);
+
+		out_map[slot].host_slot  = slot;
+		out_map[slot].dev_ep_num = ep;
+		out_map[slot].maxpkt     = desc.ifaces[i].interrupt_out_maxpkt;
+		num_out_mappings++;
+	}
+
+	// Parse the cloned HID report descriptor into the merge layout.
+	usb_merge_cache_endpoints(&desc);
+
+	// --- USBFS device: replay descriptors, wait for the PC to configure --
+	if (!usb_device_init(&desc)) {
+		led_blink_forever(9, 80, 120);
+	}
+	led_off();
+	uint32_t dev_wait_start = millis();
+	uint32_t dev_led_toggle = millis();
+	while (!usb_device_is_configured()) {
+		usb_device_poll();
+		usb_merge_drain_icc(); // keep the ICC ring drained during bring-up
+		if ((millis() - dev_led_toggle) >= 250) {
+			led_toggle();
+			dev_led_toggle = millis();
+		}
+		if ((millis() - dev_wait_start) > 30000) {
+			led_blink_forever(8, 80, 120);
+		}
+	}
+	led_off();
+	led_heartbeat_start();
+
+	// --- Relay loop ------------------------------------------------------
+	uint32_t loop_count = 0;
+
+	while (1) {
+		bool did_work = false;
+
+		// Drain injection from the V3F command core into the merge accumulators
+		// (also runs scheduled click/key-release bookkeeping). Phase-5 cadence:
+		// drain + merge + send every iteration, no PIT pacing.
+		usb_merge_drain_icc();
+
+		// USB device EP completion (unblock EPs for next send).
+		usb_device_poll();
+
+		// Host IN endpoints: capture -> merge -> forward to PC.
+		for (uint8_t m = 0; m < num_ep_mappings; m++) {
+			uint8_t *rpt_ptr = NULL;
+			ret = usb_host_interrupt_poll_zerocopy(ep_map[m].host_slot,
+				&rpt_ptr, ep_map[m].maxpkt);
+			if (ret > 0 && rpt_ptr) {
+				did_work = true;
+				usb_merge_report(ep_map[m].iface_protocol,
+					rpt_ptr, (uint8_t)ret);
+				(void)usb_device_send_report(
+					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret);
+			}
+		}
+
+		// Device OUT endpoints: PC -> real device (vendor HID++ etc.).
+		for (uint8_t m = 0; m < num_out_mappings; m++) {
+			uint8_t *out_data = NULL;
+			int n = usb_device_poll_out(out_map[m].dev_ep_num, &out_data);
+			if (n > 0 && out_data) {
+				// Best-effort: if host-side OUT is still busy, drop this packet.
+				// Real-world OUT traffic is low rate, so back-pressure via drop
+				// is acceptable.
+				(void)usb_host_interrupt_out_send(out_map[m].host_slot,
+					out_data, (uint16_t)n);
+			}
+		}
+
+		if (!did_work)
+			__asm volatile("wfi");
+
+		// Liveness check: re-detect a yanked device every ~1024 idle-ish loops.
+		if ((++loop_count & 0x3FF) == 0) {
+			if (!usb_host_device_connected())
+				led_blink_forever(6, 80, 80);
+		}
+	}
 }

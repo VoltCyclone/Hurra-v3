@@ -41,15 +41,27 @@ v3f: build
 	$(OBJCOPY) -O ihex build/v3f.elf build/v3f.hex
 	$(SIZE) build/v3f.elf
 
-# Task 5.1: usb_host.c (USBHS host driver) now defines usb_host_control_transfer(),
+# Task 5.1: usb_host.c (USBHS host driver) defines usb_host_control_transfer(),
 # so desc_capture.c (which calls it) links cleanly into the V5F image.
+# Task 5.2: full MITM relay. usb_merge.c (HID-aware merge, ICC-fed) +
+# core/timebase_v5f.c (TIM4 millis for release scheduling) + humanize.c
+# (humanize_filter, referenced by the merge). actions.c is linked for the
+# physical-mask state (g_phys_mask / act_phys_*) the merge references; its
+# kmbox_inject_* path (-> kmbox_cmd_*) is never exercised on V5F, so
+# src/kmbox_cmd_v5f_stub.c provides the otherwise-undefined kmbox_cmd_* sinks.
 V5F_SRC = src/main_v5f.c src/icc.c src/usb_host.c src/usb_device.c \
-          src/desc_capture.c src/led.c core/system_ch32h417.c $(LIBSRC)
+          src/usb_merge.c src/desc_capture.c src/actions.c src/humanize.c \
+          src/kmbox_cmd_v5f_stub.c src/led.c core/timebase_v5f.c \
+          core/system_ch32h417.c $(LIBSRC)
 V5F_ASM = core/startup_v5f.S
 V5F_DEF = -DCore_V5F -Dsystick2
 v5f: build
+	# Trailing -lm: the merge pulls humanize.c, whose humanize_filter() calls
+	# sqrtf(). With -lm only in LDBASE (before the objects) the linker has not
+	# yet seen the undefined sqrtf when it scans libm, so resolve it by listing
+	# -lm again after the sources.
 	$(CC) $(CFLAGS) $(V5F_DEF) $(LDBASE) -Tcore/link_v5f.ld \
-	   -o build/v5f.elf $(V5F_ASM) $(V5F_SRC)
+	   -o build/v5f.elf $(V5F_ASM) $(V5F_SRC) -lm
 	$(OBJCOPY) -O ihex build/v5f.elf build/v5f.hex
 	$(SIZE) build/v5f.elf
 
