@@ -51,10 +51,12 @@ aim/load tests have NOT been done yet.
 
 ## Protocol
 - **Default: Hurra binary** — TinyFrame-based (SOF `0x68`, 1-byte ID/LEN/TYPE,
-  CRC16), >=8k cmds/sec at 4 Mbps. Built by `make` (no flag). `src/hurra.c` +
-  `src/third_party/TinyFrame/`. Host adapter: `hurra-app` (`hurra-bridge`).
-  Boots at **4 Mbaud** (`CMD_BAUD` default). `km.baud(N)` bumps; auto-resets to
-  the boot default on RX idle.
+  CRC16). Built by `make` (no flag). `src/hurra.c` + `src/third_party/TinyFrame/`.
+  Host adapter: `hurra-app` (`hurra-bridge --baud 921600`). Boots at **921600
+  baud** (`CMD_BAUD` Makefile default — the WCH-LinkE VCP ceiling for the default
+  USART3/WCH-Link link). `km.baud(N)` bumps; auto-resets to the boot default on
+  RX idle. (On an external USART2 bridge you can build `CMD_BAUD=4000000` for the
+  old 4 Mbaud / >=8k cmds/sec profile.)
 - **Opt-in: Ferrum ASCII** (`make PROTOCOL=ferrum`) — `km.<name>(<args>)\r\n`,
   alias `m(x,y)`. Default 115200, resets every power cycle. `km.version()` ->
   `kmbox: Ferrum\r\n`. `src/ferrum.c`.
@@ -110,9 +112,15 @@ aim/load tests have NOT been done yet.
 - `src/humanize.c/.h` — always-on humanization filter (jitter, micro-correction,
   sub-pixel carry). **Runs per-frame on V5F** inside the merge.
 - `src/led.c/.h` — LED status ladder / heartbeat (TIM2 on V3F).
-- `src/board.h` — board pin/clock map (LED, USART). USART2 is now PD5(TX)/
-  PD6(RX) AF7 (the WCH EVT mapping) with the pin/AF/DMA-req in one block; LED
-  still PB1 (confirm LED0/LED1 GPIO vs schematic).
+- `src/board.h` — board pin/clock map (LED, USART). **Command link defaults to
+  USART3 PB10(TX)/PB11(RX) AF7**, wired to the on-board WCH-LinkE virtual COM
+  port via solder bridges SB3/SB4 — one USB-C cable does flash + debug + command
+  link. DMA1 Ch2(TX)/Ch3(RX), mux req 89/90; the whole mapping (incl. the TX-DMA
+  ISR name) lives in one board.h block so a retarget can't drift from the vector
+  table. Boot baud = `CMD_BAUD` from the Makefile (**921600** Hurra — the
+  WCH-LinkE VCP ceiling — / 115200 Ferrum). To use an external USB-UART bridge
+  at 4 Mbaud instead, swap the block back to USART2 PD5/PD6 + `CMD_BAUD=4000000`
+  (instructions in board.h). LED still PB1 (confirm LED0/LED1 GPIO vs schematic).
 - `core/startup_v3f.S` / `core/startup_v5f.S` — per-core reset vectors + vector
   tables.
 - `core/link_v3f.ld` / `core/link_v5f.ld` — per-core linker scripts (shared

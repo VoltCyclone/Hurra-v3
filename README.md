@@ -74,10 +74,12 @@ inter-core channel (ICC). Injection rides real reports when the mouse is moving
     mouse/keyboard at High-Speed (up to ~8 kHz mice).
   - **USBFS** (12 Mbps Full-Speed) = **device** port — the clone presented to
     the PC. Full-Speed caps the PC-facing HID at ~1 kHz.
-- **Command-link USART** — a USB-UART bridge into the CH32H417's `USART2`
-  (`PD5` = TX, `PD6` = RX, AF7; the mapping used by every WCH EVT example —
-  retarget in [`src/board.h`](src/board.h) if the carrier routes USART2
-  elsewhere). The Hurra build boots the link at **4 Mbaud**.
+- **Command-link USART** — defaults to `USART3` (`PB10` = TX, `PB11` = RX, AF7),
+  wired to the **on-board WCH-LinkE virtual COM port** (solder bridges SB3/SB4),
+  so one USB-C cable carries flash + debug + command link with no external
+  dongle. The Hurra build boots this link at **921600 baud** (the WCH-LinkE VCP
+  ceiling). For an external USB-UART bridge at **4 Mbaud**, retarget to `USART2`
+  PD5/PD6 and build `CMD_BAUD=4000000` — see [`src/board.h`](src/board.h).
 - A 25 MHz HSE crystal feeds the USB PLLs (480 MHz for USBHS, 48 MHz for USBFS).
 
 ## Dual-core architecture
@@ -119,10 +121,11 @@ touch no hardware.
 
 **Hurra binary (default).** TinyFrame framing — SOF `0x68`, 1-byte ID/LEN/TYPE,
 CRC16, little-endian payloads. Driven by `hurra-app` / `hurra-bridge`; see that
-repo for the host API. Targets ≥8k commands/sec at 4 Mbps over the USB-UART
-link. The firmware boots at **4 Mbaud** (matching the bridge's default, so no
-`--baud` flag is needed); `km.baud(N)` raises the rate, and the firmware falls
-back to the 4 Mbaud boot default after the link goes idle.
+repo for the host API. The firmware boots at **921600 baud** (the on-board
+WCH-LinkE virtual-COM ceiling for the default USART3 link), so run the bridge
+with `--baud 921600`; `km.baud(N)` raises the rate, and the firmware falls back
+to the boot default after the link goes idle. On an external USART2 bridge built
+with `CMD_BAUD=4000000` you get the full 4 Mbaud / ≥8k commands/sec profile.
 
 **Ferrum ASCII (`make PROTOCOL=ferrum`).** `\r\n`-terminated text commands at
 115200 baud (reset to 115200 on every power cycle). Reference:
