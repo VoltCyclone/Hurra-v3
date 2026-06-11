@@ -13,3 +13,9 @@ void timebase_v5f_init(uint32_t core_hz);
 // Monotonic milliseconds since timebase_v5f_init(). Wraps at 2^32 ms (~49.7
 // days). Consumed by the merge module (usb_merge.c) via `extern millis`.
 uint32_t millis(void);
+
+// Free-running microsecond counter (TIM9, 32-bit, 1 MHz). Started by
+// timebase_v5f_init(). Monotonic, wraps at 2^32 µs (~71.6 min). No interrupt —
+// a plain CNT read. Fed to humanize_record_arrival() on each real mouse report
+// so the humanization filter can estimate the adaptive feed interval.
+uint32_t timebase_v5f_us(void);

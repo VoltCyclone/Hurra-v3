@@ -30,6 +30,68 @@
 
 static volatile uint32_t g_ms;
 
+// ── Free-running 1 MHz microsecond counter (TIM9) ────────────────────────────
+// Task 7.1 (adaptive feed rate): humanize_record_arrival() needs a microsecond
+// timestamp to measure the real-mouse delivery interval. v2 used the i.MX GPT2
+// 1 MHz counter (gpt_profile_us); v3 has no GPT. We provide the equivalent with
+// a spare general-purpose timer.
+//
+// Why TIM9 (32-bit) and not TIM5 (16-bit):
+//   * TIM9..TIM12 on this part are 32-bit counters (CNT_32 / ATRLR_32 union
+//     members); TIM2..TIM7 (incl. TIM5) are 16-bit. A 16-bit 1 MHz counter
+//     wraps every 65.536 ms, which would make humanize.c's 32-bit interval
+//     subtraction (dt = ts_us - last_ts_us) wrap INCORRECTLY across the 16-bit
+//     boundary in 32-bit arithmetic. A 32-bit 1 MHz counter wraps only every
+//     ~71.6 minutes, so dt is always single-wrap-safe in plain uint32 math.
+//   * This lets the counter be fully free-running with NO interrupt — we just
+//     read CNT_32. (A 16-bit timer would have required an overflow IRQ to
+//     software-extend to 32 bits; the 32-bit timer avoids that entirely.)
+//
+// Clock domain: TIM9 is on the HB2 bus, which (like HB1/TIM4) is fed from HCLK.
+// We prescale HCLK to a 1 MHz tick exactly as the TIM4 millis path does, then
+// set the 32-bit auto-reload to its max so the counter free-runs to full range.
+//
+// Register access: TIM_TimeBaseInit() writes only the 16-bit ATRLR member of
+// the period union, so after the StdPeriph init we set TIM9->ATRLR_32 directly
+// to 0xFFFFFFFF, and read the counter via TIM9->CNT_32. TIM9's reset counter
+// mode is up-counting (CTLR1 = 0), which is what we want; TIM_TimeBaseInit does
+// not touch CTLR1 for TIM9 (it only does for TIM1/2/3/4/5/8), so the default
+// up-count + the SWEVGR immediate PSC reload it issues are sufficient.
+
+static void timebase_v5f_us_init(uint32_t core_hz)
+{
+    uint32_t timer_hz;
+    RCC_ClocksTypeDef clk;
+    RCC_GetClocksFreq(&clk);
+    timer_hz = clk.HCLK_Frequency;
+    if (timer_hz == 0) timer_hz = core_hz;
+    if (timer_hz == 0) timer_hz = 200000000u;          // safe fallback
+
+    uint32_t psc = (timer_hz / 1000000u);              // -> 1 MHz tick (1 µs)
+    if (psc == 0) psc = 1;
+    psc -= 1u;
+
+    RCC_HB2PeriphClockCmd(RCC_HB2Periph_TIM9, ENABLE);
+
+    TIM_TimeBaseInitTypeDef tb;
+    TIM_TimeBaseStructInit(&tb);
+    tb.TIM_Prescaler         = (uint16_t)psc;          // -> 1 MHz tick
+    tb.TIM_CounterMode       = TIM_CounterMode_Up;
+    tb.TIM_Period            = 0xFFFFu;                // overwritten below (32-bit)
+    tb.TIM_ClockDivision     = TIM_CKD_DIV1;
+    tb.TIM_RepetitionCounter = 0;
+    TIM_TimeBaseInit(TIM9, &tb);
+
+    // Widen the auto-reload to the full 32-bit range (TIM_TimeBaseInit only set
+    // the low 16 bits). Free-running, no update interrupt: we only read CNT.
+    TIM9->ATRLR_32 = 0xFFFFFFFFu;
+    TIM9->CNT_32   = 0u;
+
+    TIM_Cmd(TIM9, ENABLE);
+}
+
+uint32_t timebase_v5f_us(void) { return TIM9->CNT_32; }
+
 void timebase_v5f_init(uint32_t core_hz)
 {
     // Determine the HB1 (TIM4) input clock. Prefer the measured HCLK from the
@@ -61,6 +123,10 @@ void timebase_v5f_init(uint32_t core_hz)
     TIM_ITConfig(TIM4, TIM_IT_Update, ENABLE);
     NVIC_EnableIRQ(TIM4_IRQn);
     TIM_Cmd(TIM4, ENABLE);
+
+    // Also start the free-running 1 MHz µs counter (TIM9) for adaptive feed
+    // rate (humanize_record_arrival). No IRQ — read via timebase_v5f_us().
+    timebase_v5f_us_init(core_hz);
 }
 
 uint32_t millis(void) { return g_ms; }

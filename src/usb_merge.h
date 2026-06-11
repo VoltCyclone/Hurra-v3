@@ -27,5 +27,13 @@ void usb_merge_cache_endpoints(const captured_descriptors_t *desc);
 void usb_merge_report(uint8_t iface_protocol, uint8_t *report, uint8_t len);
 
 // Drain the V3F->V5F ICC ring into the injection accumulators + run scheduled
-// release/humanize bookkeeping. Call once per relay-loop iteration.
+// release/humanize bookkeeping. Call once per relay-loop iteration, FIRST (it
+// also resets the per-cycle merged_this_cycle flag consumed by send_pending).
 void usb_merge_drain_icc(void);
+
+// Standalone synth-injection path. When V3F injects motion while the physical
+// mouse is silent, the merge path (which rides real reports) emits nothing;
+// this synthesizes a standalone mouse report (one-per-ms cap) and flushes any
+// unconsumed wheel on a separate report ID. Call once per relay-loop iteration
+// AFTER the per-EP merge/send loop. Ported from v2 kmbox_send_pending().
+void usb_merge_send_pending(void);

@@ -26,11 +26,34 @@
 // merge paths, keyboard merge, physical masking, per-axis 16-bit handling,
 // clamping, and wheel carry) is a verbatim port — it is the anti-cheat-correct
 // path and must not be simplified.
+//
+// Task 7.1 additions:
+//   * Standalone synth-injection path restored (usb_merge_send_pending +
+//     usb_merge_send_wheel_report + usb_merge_send_keyboard_report), ported
+//     from v2 kmbox_send_pending. Emits injected motion when the physical mouse
+//     is silent, capped one-per-ms, gated by merged_this_cycle so the merge and
+//     synth paths never both emit in one frame. cached_mouse_ep (the device-side
+//     EP to send on) is the same value as main_v5f's ep_map[].dev_ep_num — both
+//     come from (interrupt_in_ep & 0x0F) of the mouse iface — so the existing
+//     usb_merge_cache_endpoints() already provides it; no setter is needed.
+//   * merged_this_cycle flag restored with v2's exact semantics: cleared at the
+//     top of usb_merge_drain_icc() (the first per-loop call, = v2 kmbox_poll_fast),
+//     set in usb_merge_report() for every protocol==2 report (+ keyboard when
+//     kb_dirty), consumed in usb_merge_send_pending() after the EP loop.
+//
+//   * humanize split (Gap 3): humanize_filter() stays on V5F, called PER EMITTED
+//     FRAME inside usb_merge_take_injection() (both the merge and synth paths).
+//     It is intentionally NOT moved to V3F's kmbox_cmd_inject_mouse: the per-
+//     frame delta is consumed here, so the filter must run per emitted frame,
+//     not per command. Moving it to V3F would filter per-command and change the
+//     jitter/sub-pixel-carry behavior. (humanize_set_level still arrives over
+//     the ICC SET_HUMAN_LEVEL tag.) This supersedes the plan's "move to V3F".
 
 #include "usb_merge.h"
 #include "humanize.h"
 #include "actions.h"      // g_phys_mask + act_phys_* query helpers + PHYS_MASK_*
 #include "icc.h"
+#include "usb_device.h"   // usb_device_send_report (standalone synth path)
 #include <string.h>
 #include <stdbool.h>
 
@@ -335,7 +358,17 @@ static void usb_merge_phys_mouse(uint8_t *report, uint8_t len);
 __attribute__((cold, noinline))
 static void usb_merge_phys_keyboard(uint8_t *report, uint8_t len);
 
+// Output cadence tracking (ported verbatim from v2 kmbox.c ~760-767).
+//   last_merge_ms — when a real mouse report last rode through (injection rides
+//                   those reports via the merge path).
+//   last_synth_ms — last standalone synth frame (one-per-ms cap).
+//   merged_this_cycle — set when a real report was merged this relay-loop
+//                   iteration; consumed by usb_merge_send_pending() so the synth
+//                   path and the merge path never both emit in one frame.
 static uint32_t last_merge_ms;
+static uint32_t last_synth_ms;
+static bool     merged_this_cycle;
+#define SYNTH_SILENCE_MS 2   // mouse considered idle after this many ms of no report
 
 /* Pull this frame's injected delta from the pending accumulators and run it
  * through the humanization filter. The filter delivers in-frame and owns
@@ -462,6 +495,11 @@ void usb_merge_report(uint8_t iface_protocol, uint8_t * restrict report, uint8_t
 				usb_merge_report_slow(report, len, rid, doff);
 			}
 		}
+		// A real mouse report rode through this cycle (whether or not injection
+		// was applied). The synth path checks this so it never also emits in the
+		// same frame — see usb_merge_send_pending(). Set unconditionally for
+		// protocol==2, mirroring v2 kmbox_merge_report (line ~895).
+		merged_this_cycle = true;
 	} else if (iface_protocol == 1) {
 		// Feature B/C (keyboard): telemetry + masking run even with nothing
 		// injected (the user may be typing on a masked key). Gated so an idle
@@ -471,6 +509,7 @@ void usb_merge_report(uint8_t iface_protocol, uint8_t * restrict report, uint8_t
 			usb_merge_phys_keyboard(report, len);
 		if (__builtin_expect(inject.kb_dirty, 0)) {
 			usb_merge_keyboard(report, len);
+			merged_this_cycle = true;
 		}
 	}
 }
@@ -715,6 +754,15 @@ static void merge_run_releases(void)
 
 void usb_merge_drain_icc(void)
 {
+	// Reset the per-cycle merge flag at the start of each relay-loop iteration.
+	// v2 cleared this in kmbox_poll_fast() (the first per-loop call, before the
+	// EP merge loop and before kmbox_send_pending()). usb_merge_drain_icc() is
+	// the v3 analog: it is called first each iteration (main_v5f.c), the EP loop
+	// then sets the flag via usb_merge_report(), and usb_merge_send_pending()
+	// consumes it after the EP loop. This preserves v2's exact set/clear order:
+	// cleared once per cycle → set in merge → consumed in send_pending.
+	merged_this_cycle = false;
+
 	icc_record_t r;
 	while (icc_recv_from_v3f(&r)) {
 		switch (r.tag) {
@@ -776,4 +824,122 @@ void usb_merge_drain_icc(void)
 
 	// Release-deadline bookkeeping (v2 ran this in kmbox_poll_fast each tick).
 	merge_run_releases();
+}
+
+// ── Standalone synth-injection path (ported verbatim from v2 kmbox.c ~1071) ──
+// When V3F injects motion while the physical mouse is SILENT, the merge path
+// (which rides REAL device reports) emits nothing until the next real report.
+// usb_merge_send_pending() synthesizes a standalone mouse report in that case,
+// capped to one-per-ms, and also flushes an unconsumed wheel on a separate
+// report ID. Called once per relay-loop iteration AFTER the per-EP merge/send
+// loop (main_v5f.c), exactly where v2 main.c called kmbox_send_pending().
+//
+// merged_this_cycle gate: if a real mouse report was merged this cycle, the
+// synth path returns early (after the separate-report-id wheel flush) so the
+// two paths never both emit in one frame — which would flood/overwrite at the
+// 1 kHz endpoint. The mouse-silent test (SYNTH_SILENCE_MS) is the redundant
+// time-based guard for the case where merged_this_cycle is false but a real
+// report arrived very recently.
+//
+// cached_mouse_ep is the DEVICE-side EP number the synth report is sent on. It
+// is the same value used as ep_map[].dev_ep_num in main_v5f.c — both are
+// derived from `interrupt_in_ep & 0x0F` of the mouse interface. main_v5f.c's
+// usb_merge_cache_endpoints(&desc) call already caches it (along with
+// cached_mouse_maxpkt and cached_kb_ep) from the captured descriptors, so no
+// extra setter is needed: the merge already knows which EP to send on.
+
+__attribute__((cold, noinline))
+static void usb_merge_send_wheel_report(void);
+__attribute__((cold, noinline))
+static void usb_merge_send_keyboard_report(void);
+
+void usb_merge_send_pending(void)
+{
+	// Flush unconsumed wheel on a separate report ID even when merged.
+	if (__builtin_expect(merged_this_cycle && inject.mouse_wheel != 0 &&
+	    cached_mouse_ep && mouse_layout.valid &&
+	    mouse_layout.wheel_bit != 0xFFFF &&
+	    mouse_layout.wheel_report_id != mouse_layout.report_id, 0)) {
+		usb_merge_send_wheel_report();
+	}
+
+	if (merged_this_cycle) return;
+	// Only synthesize a standalone mouse report when the physical mouse has
+	// gone silent — otherwise injection rides the next real report (merge),
+	// so the two paths never both emit in the same frame (which would flood /
+	// overwrite at the 1 kHz endpoint). Capped to one synth per ms.
+	uint32_t ms = millis();
+	bool mouse_silent = (uint32_t)(ms - last_merge_ms) >= SYNTH_SILENCE_MS;
+	if (inject.mouse_dirty && mouse_silent && ms != last_synth_ms &&
+	    cached_mouse_ep && mouse_layout.valid) {
+		last_synth_ms = ms;
+		uint8_t synth[16];
+		memset(synth, 0, sizeof(synth));
+		uint8_t doff = mouse_layout.data_off;
+		if (doff) synth[0] = mouse_layout.report_id;
+		synth[doff] = inject.mouse_buttons;
+		int16_t inj_dx, inj_dy;
+		usb_merge_take_injection(&inj_dx, &inj_dy);
+		int32_t dx = inj_dx;
+		int32_t dy = inj_dy;
+		if (dx > mouse_layout.x_max) dx = mouse_layout.x_max;
+		if (dx < -mouse_layout.x_max) dx = -mouse_layout.x_max;
+		if (dy > mouse_layout.y_max) dy = mouse_layout.y_max;
+		if (dy < -mouse_layout.y_max) dy = -mouse_layout.y_max;
+
+		write_report_field(synth, sizeof(synth), mouse_layout.x_bit,
+		                   mouse_layout.x_size, doff, dx);
+		write_report_field(synth, sizeof(synth), mouse_layout.y_bit,
+		                   mouse_layout.y_size, doff, dy);
+
+		if (mouse_layout.wheel_bit != 0xFFFF && inject.mouse_wheel != 0 &&
+		    mouse_layout.wheel_report_id == mouse_layout.report_id) {
+			int32_t w = inject.mouse_wheel;
+			if (w > mouse_layout.w_max) w = mouse_layout.w_max;
+			if (w < -mouse_layout.w_max) w = -mouse_layout.w_max;
+			write_report_field(synth, sizeof(synth), mouse_layout.wheel_bit,
+			                   mouse_layout.wheel_size, doff, w);
+		}
+		uint8_t rlen = cached_mouse_report_len;
+		if (rlen == 0) rlen = (cached_mouse_maxpkt < 16) ? (uint8_t)cached_mouse_maxpkt : 16;
+		usb_device_send_report(cached_mouse_ep, synth, rlen);
+		inject.mouse_wheel = 0;
+		inject.mouse_dirty = (inject.mouse_buttons != 0 ||
+		                      humanize_pending());
+	}
+	if (__builtin_expect(inject.kb_dirty && cached_kb_ep, 0)) {
+		usb_merge_send_keyboard_report();
+	}
+}
+
+__attribute__((cold, noinline))
+static void usb_merge_send_wheel_report(void)
+{
+	uint8_t synth[16];
+	memset(synth, 0, sizeof(synth));
+	uint8_t doff = mouse_layout.data_off;
+	if (doff) synth[0] = mouse_layout.wheel_report_id;
+	int32_t w = inject.mouse_wheel;
+	if (w > mouse_layout.w_max) w = mouse_layout.w_max;
+	if (w < -mouse_layout.w_max) w = -mouse_layout.w_max;
+	write_report_field(synth, sizeof(synth), mouse_layout.wheel_bit,
+	                   mouse_layout.wheel_size, doff, w);
+	uint8_t rlen = cached_mouse_report_len;
+	if (rlen == 0) rlen = (cached_mouse_maxpkt < 16) ? (uint8_t)cached_mouse_maxpkt : 16;
+	usb_device_send_report(cached_mouse_ep, synth, rlen);
+	inject.mouse_wheel = 0;
+	inject.mouse_dirty = (inject.mouse_buttons != 0);
+}
+
+__attribute__((cold, noinline))
+static void usb_merge_send_keyboard_report(void)
+{
+	uint8_t synth[8];
+	synth[0] = inject.kb_modifier;
+	synth[1] = 0;
+	memcpy(&synth[2], inject.kb_keys, 6);
+	usb_device_send_report(cached_kb_ep, synth, 8);
+	static const uint8_t zeros[6] = {0};
+	inject.kb_dirty = (inject.kb_modifier != 0 ||
+	                   memcmp(inject.kb_keys, zeros, 6) != 0);
 }

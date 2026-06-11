@@ -7,13 +7,17 @@
 //   * USBFS device (usb_device.c) forwards the combined report to the PC.
 //
 // Ported from Hurra-v2 src/main.c, REMOVING (per Phase-5 spec):
-//   * The PIT timer + pit0_isr + all PIT_*: v3 has no PIT. The humanized
-//     injection cadence on v3 is driven differently — for Phase 5 we simply
-//     drain+merge+send each loop iteration. Adaptive feed-rate / humanize
-//     timing refinement (humanize_record_arrival / humanize_target_ldval) is a
-//     Phase-7 enhancement.
+//   * The PIT timer + pit0_isr + all PIT_*: v3 has no PIT. v2 reloaded the PIT
+//     from humanize_timing_next() to pace the injection cadence. On v3 that
+//     PIT-based reload pacing is INTENTIONALLY REPLACED by the loop-driven
+//     synth path: usb_merge_send_pending() runs each relay-loop iteration,
+//     gated by SYNTH_SILENCE_MS + a one-per-ms cap (millis()). The adaptive
+//     feed-rate INPUT is still fed — humanize_record_arrival(timebase_v5f_us())
+//     on each real mouse report (Task 7.1) — so the filter's interval estimate
+//     stays accurate; only the PIT reload mechanism is dropped.
 //   * tempmon_init/tempmon_read + all OVERTEMP/overclock logic (dropped).
-//   * gpt_profile (i.MX µs counter) — not needed without adaptive feed rate.
+//   * gpt_profile (i.MX µs counter) — replaced on v3 by the free-running 1 MHz
+//     TIM9 counter (core/timebase_v5f.c: timebase_v5f_us()).
 //
 // KEPT structure (ports near-verbatim from v2 main.c):
 //   usb_host_init -> wait connect -> port_reset -> device_speed ->
@@ -207,6 +211,13 @@ int main(void)
 				&rpt_ptr, ep_map[m].maxpkt);
 			if (ret > 0 && rpt_ptr) {
 				did_work = true;
+				// Timestamp real mouse-report arrival from the free-running
+				// 1 MHz TIM9 µs counter (single CNT read, monotonic). This is
+				// the precise "a report just arrived" point; only the mouse
+				// interface drives the adaptive feed rate. Mirrors v2 main.c
+				// (humanize_record_arrival(gpt_profile_us()), line ~309).
+				if (ep_map[m].iface_protocol == 2)
+					humanize_record_arrival(timebase_v5f_us());
 				usb_merge_report(ep_map[m].iface_protocol,
 					rpt_ptr, (uint8_t)ret);
 				(void)usb_device_send_report(
@@ -226,6 +237,13 @@ int main(void)
 					out_data, (uint16_t)n);
 			}
 		}
+
+		// Standalone synth-injection: emit injected motion when the physical
+		// mouse is silent (the merge path above only fires on real reports).
+		// One-per-ms cap + merged_this_cycle gate ensure the synth path and the
+		// merge path never both emit in one frame. Mirrors v2 main.c's
+		// kmbox_send_pending() call (line ~331), placed after the EP loops.
+		usb_merge_send_pending();
 
 		if (!did_work)
 			__asm volatile("wfi");
