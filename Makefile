@@ -7,9 +7,9 @@ ARCH = -march=rv32imac_zicsr -mabi=ilp32
 
 PROTOCOL ?= hurra
 ifeq ($(PROTOCOL),hurra)
-  # 921600 = WCH-LinkE virtual-COM ceiling (default link is USART3 via the
-  # on-board WCH-Link, board.h). Override on the make line (CMD_BAUD=4000000)
-  # if you wire an external USB-UART bridge to USART2 PD5/PD6 instead.
+  # 921600 = WCH-LinkE virtual-COM ceiling (default link is USART1 PA9/PA10 via
+  # the on-board WCH-Link, board.h). Override on the make line (e.g.
+  # CMD_BAUD=4000000) if you repoint board.h to an external USB-UART bridge.
   CMD_BAUD  ?= 921600
   PROTO_DEF  = -DPROTOCOL_HURRA
   PROTO_SRC  = src/hurra.c src/third_party/TinyFrame/TinyFrame.c
