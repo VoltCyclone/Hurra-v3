@@ -7,6 +7,32 @@ icc_shared_t g_icc;
 
 static inline void mem_fence(void) { __asm volatile("fence" ::: "memory"); }
 
+// Configure IPC channel 0 routing on the V3F (master) core. The IPC unit is
+// core-private (0xE000D000); the CTLR routing (TxCID/RxCID/AutoEN) MUST be
+// programmed or IPC_SetFlagStatus on Bit0 never raises the cross-core IRQ on
+// V5F — the wfi/doorbell wake path silently degrades to poll latency.
+//
+// CID values + DeInit/Lock order are copied verbatim from the WCH EVT IPC
+// example (EXAM/CPU/IPC, Common/hardware.c) for the same V3F<->V5F channel 0.
+// The reference configures CTLR on V3F only; V5F just enables its NVIC + IT
+// (done in main_v5f.c). Doorbell bit direction (V3F sets Bit0, V5F clears it)
+// is our convention, not the example's ping-pong — verify Bit0 delivery on the
+// bench (see CLAUDE.md ISR-name gotcha).
+static void icc_ipc_config_v3f(void)
+{
+    IPC_InitTypeDef ipc = {0};
+    ipc.IPC_CH  = IPC_CH0;
+    ipc.TxCID   = IPC_TxCID1;   // V3F->V5F
+    ipc.RxCID   = IPC_RxCID0;
+    ipc.TxIER   = ENABLE;
+    ipc.RxIER   = ENABLE;
+    ipc.AutoEN  = ENABLE;
+
+    IPC_DeInit();
+    IPC_Init(&ipc);
+    IPC_CH0_Lock();
+}
+
 void icc_init_v3f(void)
 {
     for (uint32_t i = 0; i < ICC_RING_SLOTS; i++) {
@@ -18,6 +44,8 @@ void icc_init_v3f(void)
     mem_fence();
     g_icc.magic = ICC_MAGIC;
     mem_fence();
+
+    icc_ipc_config_v3f();   // program IPC CH0 routing before the doorbell is used
 }
 
 void icc_init_v5f(void)
