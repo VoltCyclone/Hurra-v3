@@ -67,6 +67,7 @@ int main(void)
 {
 	SystemAndCoreClockUpdate();
 	Delay_Init();
+	dbg_stage(DBG_V5F_BOOT);   // bench: see src/icc.h DBG_STAGE_ADDR
 
 	// Millisecond timebase (TIM4) — the merge's release scheduling uses millis().
 	timebase_v5f_init(SystemCoreClock);
@@ -86,6 +87,7 @@ int main(void)
 	HSEM_ReleaseOneSem(HSEM_ID0, 0);
 	IPC_ITConfig(IPC_CH0, IPC_CH_Sta_Bit0, ENABLE);
 	NVIC_EnableIRQ(IPC_CH0_IRQn);
+	dbg_stage(DBG_V5F_ICC_READY);
 
 	led_on();
 
@@ -101,15 +103,29 @@ int main(void)
 	GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
 
 	usb_host_init();
+	dbg_stage(DBG_V5F_HOST_INIT);
 	led_off();
 	usb_host_power_on();
+
+	// Host-wait. With no device powered on the port this never exits, so make it
+	// observable: stamp the HOST_WAITING stage and blink the LED at ~2 Hz while
+	// waiting (distinct from the steady-on/relay states). The wfi wakes each ms
+	// from the TIM4 millis IRQ, so the millis() gate below blinks reliably.
+	dbg_stage(DBG_V5F_HOST_WAITING);
+	uint32_t wait_blink = millis();
 	while (!usb_host_device_connected()) {
 		usb_host_power_on();
 		// Drain any injection the V3F core queues during bring-up so the ICC
 		// ring never backs up before the relay starts.
 		usb_merge_drain_icc();
+		uint32_t now = millis();
+		if ((now - wait_blink) >= 250) {   // 250 ms on/off = ~2 Hz "searching"
+			wait_blink = now;
+			led_toggle();
+		}
 		__asm volatile("wfi");
 	}
+	dbg_stage(DBG_V5F_DEV_CONNECTED);
 
 	led_on();
 	delay(10);
@@ -121,6 +137,7 @@ int main(void)
 	if (!capture_descriptors(&desc)) {
 		led_blink_forever(5, 100, 100);
 	}
+	dbg_stage(DBG_V5F_DESC_OK);
 
 	// capture_descriptors() already sends SET_CONFIG and SET_IDLE.
 	// Send SET_PROTOCOL (Report Protocol) for each HID interface.
@@ -183,6 +200,7 @@ int main(void)
 	if (!usb_device_init(&desc)) {
 		led_blink_forever(9, 80, 120);
 	}
+	dbg_stage(DBG_V5F_DEV_INIT);
 	led_off();
 	uint32_t dev_wait_start = millis();
 	uint32_t dev_led_toggle = millis();
@@ -199,6 +217,7 @@ int main(void)
 	}
 	led_off();
 	led_heartbeat_start();
+	dbg_stage(DBG_V5F_RELAY);   // bench: 0x58 here == full relay reached
 
 	// --- Relay loop ------------------------------------------------------
 	uint32_t loop_count = 0;

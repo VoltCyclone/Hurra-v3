@@ -63,3 +63,22 @@ bool icc_recv_from_v5f(icc_record_t *out);     // call from V3F
 // Doorbell: V3F rings V5F after enqueue so V5F can wfi when idle.
 void icc_ring_doorbell_v5f(void);              // V3F side
 // V5F's IPC_CH0_Handler clears the doorbell; defined in icc.c.
+
+// --- Bench debug: V5F boot-stage marker -------------------------------------
+// A single volatile word at a FIXED shared-SRAM address (well past g_icc, which
+// ends ~0x2017A014, and below the V3F stack) that V5F overwrites as it advances
+// through bring-up. Read it live with `wlink dump 0x2017F000 4` to see exactly
+// where V5F is, without depending on the icc_shared_t layout (it's a raw
+// address, not a struct member).
+#define DBG_STAGE_ADDR   0x2017F000u
+enum {                                         // V5F boot stages (monotonic)
+    DBG_V5F_BOOT          = 0x51,              // entered main, pre-rendezvous
+    DBG_V5F_ICC_READY     = 0x52,              // ICC rendezvous done
+    DBG_V5F_HOST_INIT     = 0x53,              // USBHS host init done, entering host-wait
+    DBG_V5F_HOST_WAITING  = 0x54,              // spinning in while(!device_connected)
+    DBG_V5F_DEV_CONNECTED = 0x55,              // host saw a device, leaving host-wait
+    DBG_V5F_DESC_OK       = 0x56,              // descriptors captured
+    DBG_V5F_DEV_INIT      = 0x57,              // USBFS device init done (cloning to PC)
+    DBG_V5F_RELAY         = 0x58,              // reached the relay loop (telemetry flows)
+};
+static inline void dbg_stage(uint32_t s) { *(volatile uint32_t *)DBG_STAGE_ADDR = s; }
