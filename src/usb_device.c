@@ -167,6 +167,16 @@ bool usb_device_send_report(uint8_t ep_num, const uint8_t *data, uint16_t len)
         return false;
     }
 
+    /* Don't arm an IN endpoint before the host has finished enumeration
+     * (SET_CONFIGURATION). The reference only fills EP buffers from its
+     * enumerated main loop; arming pre-config can mis-seed the DATA0/DATA1
+     * toggle across a bus reset and has no effect anyway (the host won't poll
+     * an unconfigured device). A bus reset clears s_configured, so this also
+     * closes the reset window. */
+    if (!s_configured) {
+        return false;
+    }
+
     /* TX busy if the endpoint is NOT currently NAK'ing (i.e. a previous
      * report is still armed and has not been consumed by the host). */
     if ((USBFSD_UEP_TX_CTRL(ep_num) & USBFS_UEP_T_RES_MASK) != USBFS_UEP_T_RES_NAK) {
