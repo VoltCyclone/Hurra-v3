@@ -71,20 +71,26 @@ int main(void)
 
 	// Millisecond timebase (TIM4) — the merge's release scheduling uses millis().
 	timebase_v5f_init(SystemCoreClock);
+	dbg_stage(DBG_V5F_TIMEBASE);
 
 	// Humanization filter seed (level defaults inside). The interval is a nominal
 	// 1 kHz here; Phase-7 wires the measured poll interval (adaptive feed rate).
 	humanize_init(1000);
+	dbg_stage(DBG_V5F_HUMANIZE);
 
 	usb_merge_init();
+	dbg_stage(DBG_V5F_MERGE_INIT);
 	led_init();
+	dbg_stage(DBG_V5F_LED_INIT);
 
 	// --- ICC rendezvous with the V3F command core ------------------------
 	// V3F sets the shared-block magic; we wait for it, then complete the HSEM
 	// handshake and enable the V3F->V5F doorbell so injection records wake us.
 	icc_init_v5f();
+	dbg_stage(DBG_V5F_ICC_MAGIC);
 	HSEM_FastTake(HSEM_ID0);
 	HSEM_ReleaseOneSem(HSEM_ID0, 0);
+	dbg_stage(DBG_V5F_HSEM_DONE);
 	IPC_ITConfig(IPC_CH0, IPC_CH_Sta_Bit0, ENABLE);
 	NVIC_EnableIRQ(IPC_CH0_IRQn);
 	dbg_stage(DBG_V5F_ICC_READY);

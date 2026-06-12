@@ -73,7 +73,14 @@ void icc_ring_doorbell_v5f(void);              // V3F side
 #define DBG_STAGE_ADDR   0x2017F000u
 enum {                                         // V5F boot stages (monotonic)
     DBG_V5F_BOOT          = 0x51,              // entered main, pre-rendezvous
-    DBG_V5F_ICC_READY     = 0x52,              // ICC rendezvous done
+    // Fine-grained early-init markers (0x60..) to bisect a pre-rendezvous hang.
+    DBG_V5F_TIMEBASE      = 0x60,              // after timebase_v5f_init
+    DBG_V5F_HUMANIZE      = 0x61,              // after humanize_init
+    DBG_V5F_MERGE_INIT    = 0x62,              // after usb_merge_init
+    DBG_V5F_LED_INIT      = 0x63,              // after led_init
+    DBG_V5F_ICC_MAGIC     = 0x64,              // after icc_init_v5f (magic seen)
+    DBG_V5F_HSEM_DONE     = 0x65,              // after HSEM take/release
+    DBG_V5F_ICC_READY     = 0x52,              // ICC rendezvous done (IPC IRQ armed)
     DBG_V5F_HOST_INIT     = 0x53,              // USBHS host init done, entering host-wait
     DBG_V5F_HOST_WAITING  = 0x54,              // spinning in while(!device_connected)
     DBG_V5F_DEV_CONNECTED = 0x55,              // host saw a device, leaving host-wait

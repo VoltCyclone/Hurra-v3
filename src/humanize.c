@@ -93,8 +93,18 @@ static uint32_t hw_entropy(void) { return 0x12345678u; }   /* deterministic */
  * the `mcycle` CSR; 0x1FFFF704 is the WCH device-info/ID word (also read by the
  * vendored dbgmcu/gpio code). */
 #include "ch32h417_port.h"   /* device header first, then core_riscv (__get_MCYCLE) */
+/* Entropy seed. OBSERVED on hardware (2026-06-11): on the V5F image, execution
+ * does not return from the `__get_MCYCLE()` (mcycle CSR read) call here — a
+ * stage-marker bisection stopped at "before mcycle" and never reached "after".
+ * Root cause not fully characterized (likely the mcycle counter being
+ * inhibited/unavailable on this core, but mcause was not read to confirm).
+ * Avoid the CSR: read the free-running TIM9 1 MHz counter instead (started by
+ * timebase_v5f_init() before humanize_init(), a plain MMIO read) XOR'd with the
+ * WCH device-info word at 0x1FFFF704. Entropy quality is non-critical (it just
+ * seeds an sfc32 PRNG warmed up 16 rounds). */
+extern uint32_t timebase_v5f_us(void);   /* TIM9->CNT_32, started pre-humanize */
 static uint32_t hw_entropy(void) {
-    uint32_t cyc = __get_MCYCLE();
+    uint32_t cyc = timebase_v5f_us();
     uint32_t uid = *(volatile uint32_t *)0x1FFFF704;
     return cyc ^ uid;
 }
