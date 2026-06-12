@@ -543,8 +543,19 @@ handle_reset:
 /* Configure nesting level */
 	li t0, 0x01
 	csrw 0xBC1, t0
-/* Enable interrupt nesting and hardware stack */
-    li t0, 0x07
+/* Interrupt system control (intsyscr / CSR 0x804).
+ * 2026-06-12: DISABLE hardware prologue/epilogue stacking (HWSTKEN, bit0).
+ * The EVT default 0x07 = HWSTKEN|INESTEN|depth. HWSTKEN (HPE) auto-saves the
+ * caller-saved GPRs in hardware and is meant to pair with WCH MounRiver-GCC's
+ * `interrupt("WCH-Interrupt-fast")` handlers, which do NO software stacking.
+ * We build with stock GCC (no WCH-Interrupt-fast support), so our ISRs use the
+ * standard `interrupt("machine")` attribute, which emits a FULL software
+ * push/pop of the GPRs. With HPE *also* hardware-stacking, the two corrupt each
+ * other -> erratic interrupts (millis() counter wandered non-monotonically, the
+ * TIM2 LED toggle never landed). Disable HPE so the software-stacked handlers
+ * are the sole mechanism. Keep nesting (INESTEN, bit1) + depth (bit[3:2]).
+ * 0x06 = INESTEN | depth-bit2, HWSTKEN cleared. */
+    li t0, 0x06
     csrw 0x804, t0
 /* Enable floating point and global interrupt, configure privileged mode */
    	li t0, 0x6088           

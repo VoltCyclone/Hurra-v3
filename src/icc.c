@@ -87,7 +87,7 @@ void icc_ring_doorbell_v5f(void)
     IPC_SetFlagStatus(IPC_CH0, IPC_CH_Sta_Bit0);
 }
 
-void IPC_CH0_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void IPC_CH0_Handler(void) WCH_IRQ;
 void IPC_CH0_Handler(void)
 {
     if (IPC_GetITStatus(IPC_CH0, IPC_CH_Sta_Bit0)) {

@@ -132,7 +132,7 @@ void timebase_v5f_init(uint32_t core_hz)
 uint32_t millis(void) { return g_ms; }
 
 // TIM4 update ISR — handler name matches the V5F vector table in startup_v5f.S.
-void TIM4_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void TIM4_IRQHandler(void) WCH_IRQ;
 void TIM4_IRQHandler(void)
 {
     if (TIM_GetITStatus(TIM4, TIM_IT_Update) != RESET) {

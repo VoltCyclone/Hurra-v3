@@ -483,8 +483,14 @@ _load_base:
 /* Configure nesting level */
 	li t0, 0x07
 	csrw 0xBC1, t0
-/* Enable interrupt nesting and hardware stack */
-    li t0, 0x0F
+/* Interrupt system control (intsyscr / CSR 0x804).
+ * 2026-06-12: DISABLE hardware prologue/epilogue stacking (HWSTKEN, bit0) — same
+ * fix as startup_v3f.S. Our ISRs use the standard `interrupt("machine")` attr
+ * (full SOFTWARE register stacking) because stock GCC doesn't grok WCH's
+ * `WCH-Interrupt-fast`. HPE hardware-stacking on top of software-stacking
+ * corrupts the saved context -> erratic interrupts. EVT default here was 0x0F
+ * (HWSTKEN|INESTEN|depth=3). Clear bit0 -> 0x0E (keep nesting + depth). */
+    li t0, 0x0E
     csrw 0x804, t0
 /* Enable floating point and global interrupt, configure privileged mode */
    	li t0, 0x6088           

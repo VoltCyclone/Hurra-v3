@@ -151,7 +151,7 @@ uint32_t uart_tx_byte_count(void) { return tx_total; }
 /* Single USART IRQ: RXNE (byte received) + TXE (ready for next TX byte). The
  * handler name comes from board.h (CMD_USART_IRQHandler) so it always matches
  * the vector-table entry in core/startup_v3f.S — default USART1_IRQHandler. */
-void CMD_USART_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CMD_USART_IRQHandler(void) WCH_IRQ;
 void CMD_USART_IRQHandler(void)
 {
     /* RX: drain RXNE into the ring. Reading DATAR clears RXNE. On overrun we

@@ -77,7 +77,7 @@ static volatile uint8_t  USBFS_HidProtocol;
 /* ------------------------------------------------------------------------ */
 /* ISR declaration — must match the vector table in core/startup_v5f.S.     */
 /* ------------------------------------------------------------------------ */
-void USBFS_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void USBFS_IRQHandler(void) WCH_IRQ;
 
 /* ------------------------------------------------------------------------ */
 /* usbfs_rcc_init — port of USBFS_RCC_Init.                                 */

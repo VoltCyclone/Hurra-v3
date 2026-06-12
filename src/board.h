@@ -7,13 +7,21 @@
 #define BOARD_V3F_HZ        100000000u  // V3F core clock in USB profile
 
 // ── LED (status) ────────────────────────────────────────────────────────────
-// EVT GPIO_Toggle blinks PB1, and the nanoCH32H417 schematic
-// (wuxx/nanoCH32H417 hardware/nanoCH32H417.pdf) shows the PB1 net plus two user
-// LEDs (LED0/LED1, each behind a 0R link). PB1 is the best-supported default;
-// still trace LED0/LED1 -> exact GPIO on the carrier before trusting on-bench.
-#define LED_GPIO_PORT       GPIOB
-#define LED_GPIO_PIN        GPIO_Pin_1
-#define LED_RCC_HB2         RCC_HB2Periph_GPIOB
+// CORRECTS AN EARLIER SCHEMATIC MISREAD (2026-06-12 bench): the board's status
+// LEDs are on PC2 / PC3, NOT PB1. Evidence:
+//   1. wuxx's own working blink demo — doc/EVT/EXAM/GPIO/GPIO_Toggle/Common/
+//      hardware.c — does `GPIO_Init(GPIOC, Pin_2|Pin_3)` then toggles PC2/PC3
+//      in a loop. (The example's main.c header comment says "PB1 push-pull";
+//      that comment is stale — the code that actually blinks drives PC2/PC3.)
+//   2. Schematic (hardware/nanoCH32H417.pdf): PB1 appears only as a bare MCU
+//      pin label (PB1/ADC9/OP1_N0/...) with NOTHING attached — no LED, diode,
+//      or resistor. The GPIO-driven indicator LEDs (D1/D2) route to PC2/PC3.
+// Our old PB1 default toggled a dead pin: firmware booted (the RED power LED D4
+// on 3V3 lit, so "the board starts") but the heartbeat never appeared.
+// PC2 = LED0; PC3 = LED1 is available as a second indicator if wanted.
+#define LED_GPIO_PORT       GPIOC
+#define LED_GPIO_PIN        GPIO_Pin_2
+#define LED_RCC_HB2         RCC_HB2Periph_GPIOC
 
 // ── Command-link USART (V3F owns it) ────────────────────────────────────────
 // DEFAULT: USART1 = PA9(TX)/PA10(RX), AF7 — wired to the on-board WCH-LinkE's

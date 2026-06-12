@@ -67,7 +67,7 @@ void led_heartbeat_set_rate(uint16_t centihz)
     heartbeat_apply_rate(centihz);
 }
 
-void TIM2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void TIM2_IRQHandler(void) WCH_IRQ;
 void TIM2_IRQHandler(void)
 {
     if (TIM_GetITStatus(TIM2, TIM_IT_Update) == SET) {

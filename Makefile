@@ -25,7 +25,8 @@ VPATH_INC = -Iinclude -Isrc -Icore -Isrc/third_party/TinyFrame \
             -Ivendor/wch/Core -Ivendor/wch/Peripheral/inc -Ivendor/wch/Debug
 
 DEFINES = -DCH32H417 -DCMD_BAUD=$(CMD_BAUD) $(PROTO_DEF)
-CFLAGS  = $(ARCH) $(DEFINES) $(VPATH_INC) -Os -Wall -Wno-unused-variable \
+EXTRADEF ?=
+CFLAGS  = $(ARCH) $(DEFINES) $(EXTRADEF) $(VPATH_INC) -Os -Wall -Wno-unused-variable \
           -ffunction-sections -fdata-sections -fsingle-precision-constant
 LDBASE  = $(ARCH) -nostartfiles -Wl,--gc-sections --specs=nano.specs --specs=nosys.specs -lm
 

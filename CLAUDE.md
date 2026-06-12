@@ -214,3 +214,54 @@ GOTCHAS). aim/load tests not started.
 - **Toolchain on this Mac:** `make ... TOOLCHAIN=riscv64-unknown-elf`; `wlink`
   lives at `~/.cargo/bin/wlink` (CH32H417 supported). The on-board WCH-LinkE is
   serial `696B8F06EF62`; its VCP is `/dev/cu.usbmodem696B8F06EF62*`.
+
+## FLASHING (RELIABLE METHOD — no button tapping) — 2026-06-12
+The firmware disables SWJ (PB8/PB9) during USB init, so once it's running the
+debug module NAKs every wlink command with `protocol error: 0x55
+[0x81,0x55,0x01,0x01]`. The probe is healthy (1a86:8010 RV mode); it's the
+TARGET rejecting debug. Do NOT reset-tap. Instead, **power-off erase**: the
+on-board WCH-LinkE powers the target, so it can gate the rail and attach in the
+clean reset window automatically.
+
+PREREQUISITE: ONLY the WCH-LinkE USB-C is plugged in (it supplies target 3V3).
+If a second cable powers the board independently, power-off can't gate it.
+
+    wlink --chip CH32H41X erase --method power-off          # clean unbrick, no button
+    wlink --chip CH32H41X flash -e --address 0x08000000 build/Merge.bin
+
+After the power-off erase the chip is blank (debug stays alive), so normal
+status/regs/dump/flash all work without the race. `make flash` should be updated
+to do the power-off erase first. Chip = CH32H41X [CH32H417QEU], ChipID
+0x4170052d, 960KB. Fallback if power-off ever fails: BOOT0 + wchisp over the ROM
+ISP (USB 4348:55e0), or MounRiver Studio on macOS (first-party H417 support).
+
+## BOOT FIX (2026-06-12): "board starts but never blinks" — THREE stacked bugs
+1. **LED on wrong pin.** board.h drove PB1 (no LED). The user LEDs are PC2/PC3 —
+   confirmed via wuxx's own EVT hardware.c (toggles GPIOC 2/3) + schematic. Fixed
+   board.h -> GPIOC/Pin_2. (The EVT main.c comment saying "PB1" is stale.)
+2. **ISRs compiled to `ret`, not `mret`.** All handlers used
+   `interrupt("WCH-Interrupt-fast")` — a WCH-MounRiver-GCC-only attribute. Stock
+   GCC (xPack riscv-none-elf 15.2 / Homebrew riscv64-unknown-elf) silently
+   ignores it (just -Wattributes) and emits a plain-function `ret`. The TIM3
+   timebase IRQ fired ~1ms post-boot, "returned" into garbage ra -> illegal-instr
+   trap (mcause=2) -> core wedged in the weak HardFault stub with IRQs masked ->
+   TIM2 heartbeat never ran. Fixed: `WCH_IRQ` macro in include/ch32h417_port.h =
+   standard `interrupt("machine")` (emits mret). `-DUSE_WCH_FAST_IRQ` reverts.
+3. **HPE double-stacking.** Startup set intsyscr (CSR 0x804) with HWSTKEN(bit0)=1
+   (V3F 0x07, V5F 0x0F) — hardware register stacking meant to pair with
+   WCH-Interrupt-fast (which does NO software stacking). With our `"machine"`
+   handlers (full software stacking), the two corrupt the saved context ->
+   erratic IRQs (millis wandered, LED toggle silently didn't land). Fixed: clear
+   bit0 -> V3F 0x06, V5F 0x0E in core/startup_*.S.
+
+TOOLCHAIN: build works with BOTH `riscv-none-elf` (xPack, installed via
+`xpm install -g @xpack-dev-tools/riscv-none-elf-gcc`) and Homebrew
+`riscv64-unknown-elf` (pass TOOLCHAIN=riscv64-unknown-elf) now that ISRs use the
+standard attribute. Neither stock GCC supports WCH-Interrupt-fast; only WCH's
+MounRiver GCC does.
+
+VERIFIED on hardware 2026-06-12: merged image (V3F 16300B + V5F 22904B) flashed
+via `wlink --chip CH32H41X erase --method power-off` then `flash`; PC2 heartbeat
+blinks. Dual-core debugging note: test dual-core bugs with the MERGED image — a
+V3F-only flash wakes V5F onto erased flash (0xFF) and the wild V5F corrupts the
+shared bus, a test artifact that looks like "waking V5F breaks V3F".

@@ -46,7 +46,7 @@ void timebase_init(uint32_t core_hz)
 uint32_t millis(void) { return g_ms; }
 
 // TIM3 update ISR — handler name matches the V3F vector table in startup_v3f.S.
-void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void TIM3_IRQHandler(void) WCH_IRQ;
 void TIM3_IRQHandler(void)
 {
     if (TIM_GetITStatus(TIM3, TIM_IT_Update) != RESET) {
