@@ -117,6 +117,24 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
         diag_put_hex8((uint8_t)(mepc >> 16)); diag_put_hex8((uint8_t)(mepc >> 8));
         diag_put_hex8((uint8_t)mepc);
     }
+    // While V5F waits in HOST_WAITING, print its live USBHS port-register snapshot
+    // so "device attached but CONNECT never sets" becomes visible: PORT_STATUS
+    // line-state/speed bits show whether the PHY sees the device on the bus.
+    if (stage == DBG_V5F_HOST_WAITING) {
+        volatile uint32_t *p = (volatile uint32_t *)DBG_USBHS_REGS_ADDR;
+        // Print raw (no magic gate) so the snapshot state itself is ground truth:
+        // magic=0 => V5F never wrote it (loop body not running); n frozen => loop
+        // not iterating; n climbing => loop alive, read PORT_STATUS for PHY state.
+        diag_puts(" | magic=");                  diag_put_u32(p[0] == DBG_USBHS_REGS_MAGIC);
+        diag_puts(" CFG=0x");                     diag_put_hex8((uint8_t)p[1]);
+        diag_puts(" PORT_CFG=0x");                diag_put_hex8((uint8_t)p[2]);
+        diag_puts(" PORT_STATUS=0x");             diag_put_hex8((uint8_t)(p[3] >> 8));
+        diag_put_hex8((uint8_t)p[3]);
+        diag_puts(" CHG=0x");                     diag_put_hex8((uint8_t)p[4]);
+        diag_puts(" CTRL=0x");                    diag_put_hex8((uint8_t)(p[5] >> 8));
+        diag_put_hex8((uint8_t)p[5]);
+        diag_puts(" n=");                         diag_put_u32(p[6]);
+    }
     diag_puts("\r\n");
 }
 #endif /* V5F_STAGE_DIAG */
@@ -165,7 +183,13 @@ int main(void)
     uint16_t led_centihz      = 0;      // current heartbeat rate (0 = unset)
 
     for (;;) {
-        kmbox_cmd_poll();               // UART -> proto -> act -> ICC
+        kmbox_cmd_poll();               // UART -> proto -> act -> ICC (local FIFO)
+
+        // Pump queued V3F->V5F injection records from the local FIFO into the
+        // coherent IPC MSG mailbox (the SRAM ring is not readable by V5F). One
+        // record per free mailbox; loop here to drain a burst quickly rather than
+        // one-per-main-loop, since the mailbox frees as fast as V5F drains it.
+        while (icc_pump_to_v5f()) { /* keep pumping while mailbox frees */ }
 
         // Drain V5F telemetry into local state. TELEM_COUNTS carries
         // report_count (LE u32, b[0..3]) and drop_count (b[4..7]);

@@ -182,15 +182,21 @@ int main(void)
 	// from the TIM4 millis IRQ, so the millis() gate below blinks reliably.
 	dbg_stage(DBG_V5F_HOST_WAITING);
 	uint32_t wait_blink = millis();
+	uint32_t wait_iter  = 0;
 	while (!usb_host_device_connected()) {
 		usb_host_power_on();
 		// Drain any injection the V3F core queues during bring-up so the ICC
-		// ring never backs up before the relay starts.
+		// mailbox never backs up before the relay starts.
 		usb_merge_drain_icc();
 		uint32_t now = millis();
 		if ((now - wait_blink) >= 250) {   // 250 ms on/off = ~2 Hz "searching"
 			wait_blink = now;
 			led_toggle();
+			// Bench oracle: publish the live USBHS port registers so V3F can print
+			// them over UART (shows whether the PHY sees an attached device while
+			// CONNECT is not yet set). Cheap, once per ~250 ms.
+			dbg_usbhs_regs(USBHSH->CFG, USBHSH->PORT_CFG, USBHSH->PORT_STATUS,
+			               USBHSH->PORT_STATUS_CHG, USBHSH->PORT_CTRL, ++wait_iter);
 		}
 		__asm volatile("wfi");
 	}
@@ -275,7 +281,7 @@ int main(void)
 	uint32_t dev_led_toggle = millis();
 	while (!usb_device_is_configured()) {
 		usb_device_poll();
-		usb_merge_drain_icc(); // keep the ICC ring drained during bring-up
+		usb_merge_drain_icc(); // keep the ICC mailbox drained during bring-up
 		if ((millis() - dev_led_toggle) >= 250) {
 			led_toggle();
 			dev_led_toggle = millis();
@@ -355,39 +361,12 @@ int main(void)
 		// kmbox_send_pending() call (line ~331), placed after the EP loops.
 		usb_merge_send_pending();
 
-		// --- Telemetry to V3F (LED status ladder) ------------------------
-		// Cadence: at most once every 50 ms (millis() gate). The relay loop
-		// can spin at tens of kHz; an unconditional send would flood the 256-
-		// slot ICC ring and burn cycles on the hot path. 50 ms (20 Hz) is far
-		// finer than V3F's 100 ms LED sampling, so the LED never sees stale
-		// data, yet two cheap icc_send_to_v3f() calls per 50 ms are negligible.
-		// V3F polls the ring (no doorbell needed for telemetry).
-		uint32_t now = millis();
-		if ((now - telem_tick) >= 50) {
-			telem_tick = now;
-			icc_record_t tr;
-
-			// TELEM_COUNTS: report_count (LE u32) in b[0..3], drop_count in
-			// b[4..7]. b[0] of icc_record_t is the tag; payload is b[].
-			tr.tag = ICC_TAG_TELEM_COUNTS;
-			tr.b[0] = (uint8_t)(report_count      );
-			tr.b[1] = (uint8_t)(report_count >>  8);
-			tr.b[2] = (uint8_t)(report_count >> 16);
-			tr.b[3] = (uint8_t)(report_count >> 24);
-			tr.b[4] = (uint8_t)(drop_count        );
-			tr.b[5] = (uint8_t)(drop_count   >>  8);
-			tr.b[6] = (uint8_t)(drop_count   >> 16);
-			tr.b[7] = (uint8_t)(drop_count   >> 24);
-			(void)icc_send_to_v3f(&tr);
-
-			// TELEM_STATUS: b[0] = health flags.
-			//   bit0 = USB device configured (PC enumerated us)
-			//   bit1 = real host device still connected
-			tr.tag = ICC_TAG_TELEM_STATUS;
-			tr.b[0] = (usb_device_is_configured() ? 0x01 : 0x00) |
-			          (usb_host_device_connected() ? 0x02 : 0x00);
-			(void)icc_send_to_v3f(&tr);
-		}
+		// V5F->V3F telemetry was DROPPED (see icc.c): a lock-free SRAM ring needs
+		// coherent cross-core reads of head+tail, which this part does not provide,
+		// and the IPC MSG mailbox is fully used by the V3F->V5F injection path.
+		// report_count/drop_count are still maintained locally for the optional
+		// stage marker below and future use; they're just no longer streamed.
+		(void)report_count; (void)drop_count; (void)telem_tick;
 
 		if (!did_work)
 			__asm volatile("wfi");

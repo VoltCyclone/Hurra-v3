@@ -53,8 +53,14 @@ void icc_init_v3f(void);   // master: zero rings, set magic, then signal via HSE
 void icc_init_v5f(void);   // slave: wait for magic via HSEM rendezvous
 
 // Producer side (returns false if ring full).
-bool icc_send_to_v5f(const icc_record_t *r);   // call from V3F
+bool icc_send_to_v5f(const icc_record_t *r);   // call from V3F (enqueue to local FIFO)
 bool icc_send_to_v3f(const icc_record_t *r);   // call from V5F
+
+// V3F: drain one queued V3F->V5F record from the local FIFO into the coherent IPC
+// MSG mailbox if it is free. Call every V3F main-loop iteration. Returns true if a
+// record was moved into the mailbox. (The V3F->V5F SRAM ring is not readable by
+// V5F — it lives in V3F's DTCM — so records cross via the IPC hardware mailbox.)
+bool icc_pump_to_v5f(void);                    // call from V3F
 
 // Consumer side (returns false if empty).
 bool icc_recv_from_v3f(icc_record_t *out);     // call from V5F
@@ -99,3 +105,24 @@ enum {                                         // V5F boot stages (monotonic)
     DBG_V5F_TRAP_BASE     = 0x80,              // 0x80 | (mcause & 0x0F)
 };
 static inline void dbg_stage(uint32_t s) { *(volatile uint32_t *)DBG_STAGE_ADDR = s; }
+
+// --- Bench debug: live USBHS host port-register snapshot ---------------------
+// V5F stamps its USBHS host port registers here each host-wait iteration so V3F
+// can print them over UART. This is the evidence for "device attached but the
+// port CONNECT bit never sets" — it shows whether the PHY sees ANY bus activity
+// (PORT_STATUS line state / speed bits / connect-change edge) while V5F waits.
+// Reading USBHSH registers in firmware (V5F) is safe; it's reading them over SWD
+// (wlink) that wedges the debug module — hence the firmware-side stamp.
+// Layout (words): [0]=valid magic 0x55485250 'USBHSP' [1]=CFG [2]=PORT_CFG
+// [3]=PORT_STATUS [4]=PORT_STATUS_CHG [5]=PORT_CTRL [6]=snapshot counter.
+#define DBG_USBHS_REGS_ADDR  0x2017F010u
+#define DBG_USBHS_REGS_MAGIC 0x55485250u
+static inline void dbg_usbhs_regs(uint32_t cfg, uint32_t port_cfg,
+                                  uint32_t port_status, uint32_t port_status_chg,
+                                  uint32_t port_ctrl, uint32_t counter)
+{
+    volatile uint32_t *p = (volatile uint32_t *)DBG_USBHS_REGS_ADDR;
+    p[1] = cfg; p[2] = port_cfg; p[3] = port_status;
+    p[4] = port_status_chg; p[5] = port_ctrl; p[6] = counter;
+    p[0] = DBG_USBHS_REGS_MAGIC;   // publish last so V3F never reads a torn snapshot
+}

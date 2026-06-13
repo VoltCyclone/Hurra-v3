@@ -1,11 +1,31 @@
 #include "ch32h417_port.h"
 #include "icc.h"
+#include <string.h>
 
 // Single instance, pinned into shared SRAM (0x20178000) by both linker scripts.
-__attribute__((section(".shared_data")))
-icc_shared_t g_icc;
+// IMPORTANT (bench-proven 2026-06-13): 0x20178000 lands in V3F's DTCM. A core
+// can WRITE the other core's DTCM and that core reads its OWN DTCM back fine, but
+// a core READING the other core's DTCM gets STALE/garbage data. So:
+//   * V5F->V3F (telemetry): V5F writes g_icc.v5f_to_v3f (remote write, OK), V3F
+//     reads its own DTCM (OK) — this ring works unchanged.
+//   * V3F->V5F (injection): V5F reading g_icc.v3f_to_v5f from V3F's DTCM returns
+//     garbage — V5F's ring_pop saw head!=tail forever and spun. So this direction
+//     is NOT carried in SRAM; it goes through the IPC MSG hardware mailbox
+//     (IPC->MSG[0..3], MMIO at 0xE000D000, proven coherent across both cores).
+//     g_icc.v3f_to_v5f is now a V3F-LOCAL producer FIFO that icc_pump_to_v5f()
+//     drains into the mailbox; V5F never reads it.
+icc_shared_t g_icc __attribute__((section(".shared_data")));
 
 static inline void mem_fence(void) { __asm volatile("fence" ::: "memory"); }
+
+// --- V3F->V5F IPC MSG mailbox (single 8-byte slot, seq/ack handshake) --------
+// MSG[0] = record bytes [0..3], MSG[1] = record bytes [4..7] (all V3F->V5F record
+// tags fit in 8 bytes: keyboard = tag+mod+6keys is the largest). MSG[2] = publish
+// seq (V3F bumps it after writing the slot — the "new data" signal). MSG[3] = ack
+// (V5F sets it to the seq it consumed). Mailbox is free when MSG[3] == last seq
+// V3F published. seq/ack are plain monotonic counters (wrap is harmless).
+static uint32_t s_v3f_pub_seq;   // V3F: last seq published to the mailbox
+static uint32_t s_v5f_seen_seq;  // V5F: last seq consumed from the mailbox
 
 // Configure IPC channel 0 routing on the V3F (master) core. The IPC unit is
 // core-private (0xE000D000); the CTLR routing (TxCID/RxCID/AutoEN) MUST be
@@ -46,12 +66,21 @@ void icc_init_v3f(void)
     mem_fence();
 
     icc_ipc_config_v3f();   // program IPC CH0 routing before the doorbell is used
+
+    // Init the V3F->V5F IPC MSG mailbox: clear seq + ack so the first publish is
+    // seq=1 and V5F (seeing seq!=0) consumes it. Mailbox starts free.
+    s_v3f_pub_seq = 0;
+    IPC->MSG[2] = 0;        // publish seq
+    IPC->MSG[3] = 0;        // ack (== seq -> free)
 }
 
 void icc_init_v5f(void)
 {
     while (g_icc.magic != ICC_MAGIC) { __asm volatile("nop"); }
     mem_fence();
+    // Sync our seen-seq to the mailbox's current publish seq so we don't replay a
+    // stale record. icc_init_v3f cleared MSG[2]=0 before the wake, so this is 0.
+    s_v5f_seen_seq = IPC->MSG[2];
 }
 
 static bool ring_push(icc_ring_t *r, const icc_record_t *rec)
@@ -77,10 +106,76 @@ static bool ring_pop(icc_ring_t *r, icc_record_t *out)
     return true;
 }
 
+// --- V3F side ---------------------------------------------------------------
+// icc_send_to_v5f: enqueue into the V3F-LOCAL producer FIFO (V3F's own DTCM, so
+// this read/modify/write is coherent). icc_pump_to_v5f() later moves records from
+// this FIFO into the coherent IPC mailbox as it drains.
 bool icc_send_to_v5f(const icc_record_t *r)  { return ring_push(&g_icc.v3f_to_v5f, r); }
-bool icc_send_to_v3f(const icc_record_t *r)  { return ring_push(&g_icc.v5f_to_v3f, r); }
-bool icc_recv_from_v3f(icc_record_t *out)    { return ring_pop(&g_icc.v3f_to_v5f, out); }
-bool icc_recv_from_v5f(icc_record_t *out)    { return ring_pop(&g_icc.v5f_to_v3f, out); }
+
+// icc_pump_to_v5f: move at most one queued record from the V3F-local FIFO into the
+// IPC MSG mailbox, if the mailbox is free (V5F has acked the last publish). Call
+// this from the V3F main loop every iteration. Returns true if a record was
+// pushed into the mailbox. The mailbox is a single 8-byte slot; the local FIFO
+// (256 deep) absorbs bursts while V5F drains one record per loop.
+bool icc_pump_to_v5f(void)
+{
+    // Mailbox busy until V5F's ack (MSG[3]) catches up to our last publish seq.
+    if (IPC->MSG[3] != s_v3f_pub_seq) return false;
+
+    icc_record_t rec;
+    if (!ring_pop(&g_icc.v3f_to_v5f, &rec)) return false;   // FIFO empty
+
+    // Pack the first 8 record bytes (tag + b[0..6]) into MSG[0..1]. All V3F->V5F
+    // tags fit in 8 bytes (keyboard tag+mod+6keys = 8; click/kb-release tag+key+
+    // u32 = 6; set_baud tag+u32 = 5; inject_mouse tag+5 = 6).
+    uint8_t buf[8];
+    buf[0] = rec.tag;
+    memcpy(&buf[1], rec.b, 7);
+    uint32_t w0, w1;
+    memcpy(&w0, &buf[0], 4);
+    memcpy(&w1, &buf[4], 4);
+    IPC->MSG[0] = w0;
+    IPC->MSG[1] = w1;
+    mem_fence();                    // publish payload before bumping the seq
+    IPC->MSG[2] = ++s_v3f_pub_seq;  // signal "new record" to V5F
+    return true;
+}
+
+// V5F->V3F telemetry is DROPPED. A lock-free SRAM ring needs BOTH cores to read
+// the shared head+tail, but cross-core DTCM reads are stale on this part (only
+// the producer's remote WRITE lands; the consumer can only read its OWN DTCM).
+// That makes the telemetry ring as broken as the injection ring was, and the 4
+// IPC MSG registers are fully consumed by the V3F->V5F mailbox. Telemetry
+// (report/drop counts + status) is non-essential, so these are no-ops: V5F sends
+// nothing, V3F receives nothing. The V3F LED ladder simply never sees the
+// "locked/reports-flowing" tier (stays on the ACQUIRING heartbeat), which is
+// cosmetic. If telemetry is ever needed, carry it over IPC CH1 + MSG time-slice.
+bool icc_send_to_v3f(const icc_record_t *r)  { (void)r; return true; }
+bool icc_recv_from_v5f(icc_record_t *out)    { (void)out; return false; }
+
+// --- V5F side ---------------------------------------------------------------
+// icc_recv_from_v3f: read one record from the IPC mailbox if V3F published a new
+// seq since we last looked. NEVER touches g_icc.v3f_to_v5f (that lives in V3F's
+// DTCM and reads back stale on V5F — the whole reason for the mailbox). Returns
+// false when no new record is pending.
+bool icc_recv_from_v3f(icc_record_t *out)
+{
+    uint32_t seq = IPC->MSG[2];
+    if (seq == s_v5f_seen_seq) return false;   // nothing new
+    mem_fence();                                // acquire payload after seeing seq
+    uint32_t w0 = IPC->MSG[0];
+    uint32_t w1 = IPC->MSG[1];
+    uint8_t buf[8];
+    memcpy(&buf[0], &w0, 4);
+    memcpy(&buf[4], &w1, 4);
+    memset(out, 0, sizeof(*out));               // zero b[7..14] we don't transmit
+    out->tag = buf[0];
+    memcpy(out->b, &buf[1], 7);
+    s_v5f_seen_seq = seq;
+    mem_fence();
+    IPC->MSG[3] = seq;                          // ack: mailbox free for next record
+    return true;
+}
 
 void icc_ring_doorbell_v5f(void)
 {

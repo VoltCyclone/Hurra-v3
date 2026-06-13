@@ -41,18 +41,44 @@ GOTCHAS). aim/load tests not started.
 - Both controllers run **simultaneously** on **separate** controllers/PHYs.
 
 ## Inter-core channel (ICC) — `src/icc.c` / `src/icc.h`
-- Shared SRAM block at a **fixed address `0x20178000`** (the `.shared` section in
-  both link scripts).
-- **Two lock-free SPSC rings** of fixed 16-byte records: V3F→V5F = injection
-  commands; V5F→V3F = telemetry. `volatile` head/tail + RISC-V fences, no locks
-  on the data path.
-- **HSEM** (hardware semaphore, ID 0) for the **one-time startup rendezvous**
-  only — V3F sets the shared magic before releasing V5F; both cores hand-shake.
-- **IPC doorbell** (IPC channel 0): V3F rings V5F on enqueue so V5F can `wfi`
-  when idle. `IPC_CH0_Handler` (in `icc.c`) clears it.
+- **V3F→V5F injection = IPC MSG hardware mailbox** (the SRAM ring DID NOT WORK —
+  see ICC-COHERENCY FIX below). V3F enqueues into a V3F-LOCAL ring FIFO
+  (`icc_send_to_v5f`), then `icc_pump_to_v5f()` (called each V3F main-loop iter)
+  moves one record at a time into `IPC->MSG[0..3]` with a seq(MSG2)/ack(MSG3)
+  handshake. V5F's `icc_recv_from_v3f` reads the mailbox (coherent MMIO), never
+  the SRAM ring. Records are ≤8 bytes (tag+7) to fit MSG[0..1].
+- **V5F→V3F telemetry = DROPPED** (`icc_send_to_v3f`/`icc_recv_from_v5f` are
+  no-ops). That ring was equally cache-incoherent and telemetry is non-essential;
+  the V3F LED ladder just never shows the "locked/reports-flowing" tier. Re-add
+  over IPC CH1 + MSG time-slice if ever needed.
+- Shared SRAM block still at **`0x20178000`** (`.shared` section) — used for the
+  startup magic rendezvous and as V3F's local injection FIFO. NOT for V5F reads.
+- **HSEM** (ID 0) for the one-time startup rendezvous; V3F sets the shared magic
+  before releasing V5F. The magic spin works because V5F re-reads in a loop.
+- **IPC doorbell** (CH0 Bit0): V3F rings V5F on enqueue so V5F can `wfi` when idle.
 - Record tags: `INJECT_MOUSE`, `INJECT_KEYBOARD`, `CLICK_RELEASE`, `KB_RELEASE`,
-  `SET_BAUD`, `SET_HUMAN_LEVEL`, `PHYS_MASK` (V3F→V5F); `TELEM_COUNTS`,
-  `TELEM_STATUS` (V5F→V3F).
+  `SET_BAUD`, `SET_HUMAN_LEVEL`, `PHYS_MASK` (V3F→V5F). Telemetry tags exist but
+  are no longer transmitted.
+
+## ICC-COHERENCY FIX (2026-06-13): "USB never enumerates" was V5F hung in the ICC
+The real blocker behind "no enumeration": V5F froze forever in
+`usb_merge_drain_icc()`'s `while(icc_recv_from_v3f())` on the FIRST host-wait
+iteration — it never even reached USB enumeration. ROOT CAUSE (proven on hardware
+via the UART stage oracle, printing what EACH core reads at the SAME address):
+the `.shared` block at `0x20178000` lands in **V3F's DTCM**. The bench-proven
+cross-core memory rule on this part: **a core can WRITE the other core's DTCM
+(the write lands), but READING the other core's DTCM returns STALE/garbage; each
+core reliably reads only its OWN DTCM.** So V5F's `ring_pop` read V3F-written
+head/tail as garbage (head!=tail forever → infinite "ring full" spin). The
+`magic` word only worked because `icc_init_v5f` SPINS re-reading it. Neither the
+`+0x20000000` uncached alias nor relocation fixes a lock-free ring (it needs BOTH
+cores to read shared head+tail). FIX: carry V3F→V5F over the **IPC MSG mailbox**
+(`IPC->MSG[]`, MMIO at 0xE000D000, bench-proven shared+coherent: V3F wrote
+0xCAFEF00D before wake, V5F read it back). VERIFIED 2026-06-13: V5F now advances
+0x54→0x55→0x56→0x57 (was frozen at 0x54), millis() ticks, and an injected test
+record arrives end-to-end (V5F rx counter climbed 1/s in lockstep with V3F's
+1/s injector). Still at 0x57 DEV_INIT (cfg=0) = waiting for a PC on the USBFS
+DEVICE port — separate from this fix.
 
 ## Protocol
 - **Default: Hurra binary** — TinyFrame-based (SOF `0x68`, 1-byte ID/LEN/TYPE,
