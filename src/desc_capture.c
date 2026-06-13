@@ -168,63 +168,120 @@ static void capture_ms_os_1_0(captured_descriptors_t *desc)
 #define CAP_DBG(step)  (*(volatile uint32_t *)0x2017F048u = (step))
 #define CAP_RET(r)     (*(volatile uint32_t *)0x2017F04Cu = (uint32_t)(r))
 
+// Wait for the port to settle after a bus reset: poll for a stable CONNECT
+// (several consecutive reads, mirroring WCH's USBH_EnableRootHubPort >6-in-a-row
+// check) before issuing the first control transfer. Returns true once stable.
+// This is the missing piece that made the first GET_DESCRIPTOR flaky: a device
+// that is slightly slow to recover from reset NAKs/ignores the SETUP, which our
+// single-shot code reported as a hard failure (cap_step=1, ret=-1).
+static bool enum_wait_port_stable(void)
+{
+	uint8_t stable = 0;
+	for (uint16_t i = 0; i < 300; i++) {   // ~300 ms worst case
+		if (usb_host_device_connected()) {
+			if (++stable > 6) return true;
+		} else {
+			stable = 0;
+		}
+		delay(1);
+	}
+	return false;
+}
+
 bool capture_descriptors(captured_descriptors_t *desc)
 {
 	memset(desc, 0, sizeof(*desc));
 	int ret;
 	usb_setup_t setup;
-	CAP_DBG(1);  // GET_DESCRIPTOR(device, 8) @ addr 0
-	setup = make_get_descriptor(USB_DESC_DEVICE, 0, 0, 8);
-	ret = usb_host_control_transfer(0, 8, &setup, desc->device_desc, 2000);
-	CAP_RET(ret);
-	if (ret < 0 || ret < 8 || desc->device_desc[0] != 18 ||
-	    desc->device_desc[1] != USB_DESC_DEVICE) {
-		return false;
+	uint16_t total_len = 0;
+
+	// Enumeration retry loop (ports WCH app_km.c USBH_EnumRootDevice ENUM_START):
+	// up to 6 attempts, each re-resets the port, waits for it to stabilize with an
+	// escalating settle delay, then runs the address-assignment handshake. A reset
+	// at the top of every attempt returns the device to address 0, so a retry
+	// after a partial failure is always clean. Our previous code did this ONCE
+	// with no retry, so any slow-to-recover device failed enumeration outright.
+	bool enumerated = false;
+	for (uint8_t attempt = 0; attempt < 6 && !enumerated; attempt++) {
+		CAP_DBG(0x10 | attempt);   // 0x1N = enum attempt N
+
+		// Escalating settle + re-reset + stability poll (reference: 100ms + 8<<n).
+		delay(20u + (8u << attempt));
+		usb_host_port_reset();
+		if (!enum_wait_port_stable()) {
+			CAP_DBG(0x20 | attempt);   // 0x2N = port never stabilized this attempt
+			continue;
+		}
+		(void)usb_host_device_speed();
+
+		// Step 1: GET_DESCRIPTOR(device, 8) @ addr 0 — just bMaxPacketSize0.
+		CAP_DBG(1);
+		setup = make_get_descriptor(USB_DESC_DEVICE, 0, 0, 8);
+		ret = usb_host_control_transfer(0, 8, &setup, desc->device_desc, 2000);
+		CAP_RET(ret);
+		if (ret < 8 || desc->device_desc[0] != 18 ||
+		    desc->device_desc[1] != USB_DESC_DEVICE) {
+			continue;   // retry whole enumeration
+		}
+		desc->ep0_maxpkt = desc->device_desc[7];
+		if (desc->ep0_maxpkt != 8  && desc->ep0_maxpkt != 16 &&
+		    desc->ep0_maxpkt != 32 && desc->ep0_maxpkt != 64) {
+			CAP_DBG(2); CAP_RET(desc->ep0_maxpkt);
+			continue;
+		}
+
+		// Step 2: SET_ADDRESS(1).
+		desc->dev_addr = 1;
+		setup.bmRequestType = 0x00;
+		setup.bRequest = USB_REQ_SET_ADDRESS;
+		setup.wValue = desc->dev_addr;
+		setup.wIndex = 0;
+		setup.wLength = 0;
+		CAP_DBG(3);
+		ret = usb_host_control_transfer(0, desc->ep0_maxpkt, &setup, NULL, 2000);
+		CAP_RET(ret);
+		if (ret < 0) continue;
+		delay(5);   // USB spec: 2ms recovery; give the device margin to switch addr
+
+		// Step 3: GET_DESCRIPTOR(device, 18) @ the new address.
+		CAP_DBG(4);
+		setup = make_get_descriptor(USB_DESC_DEVICE, 0, 0, 18);
+		ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
+			&setup, desc->device_desc, 2000);
+		CAP_RET(ret);
+		if (ret < 18 || desc->device_desc[0] != 18 ||
+		    desc->device_desc[1] != USB_DESC_DEVICE) {
+			continue;
+		}
+		desc->device_desc_len = 18;
+
+		// Step 4: GET_DESCRIPTOR(config, 9) — header to learn wTotalLength.
+		CAP_DBG(5);
+		setup = make_get_descriptor(USB_DESC_CONFIGURATION, 0, 0, 9);
+		ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
+			&setup, desc->config_desc, 2000);
+		CAP_RET(ret);
+		if (ret < 9 || desc->config_desc[1] != USB_DESC_CONFIGURATION) {
+			continue;
+		}
+		total_len = desc->config_desc[2] | (desc->config_desc[3] << 8);
+		if (total_len < 9) continue;
+		if (total_len > MAX_CONFIG_DESC_SIZE)
+			total_len = MAX_CONFIG_DESC_SIZE;
+
+		// Step 5: GET_DESCRIPTOR(config, wTotalLength) — full config blob.
+		CAP_DBG(6);
+		setup = make_get_descriptor(USB_DESC_CONFIGURATION, 0, 0, total_len);
+		ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
+			&setup, desc->config_desc, 2000);
+		CAP_RET(ret);
+		if (ret < 9 || desc->config_desc[1] != USB_DESC_CONFIGURATION) {
+			continue;
+		}
+		enumerated = true;   // all required steps passed
 	}
-	desc->ep0_maxpkt = desc->device_desc[7]; // bMaxPacketSize0
-	if (desc->ep0_maxpkt != 8  && desc->ep0_maxpkt != 16 &&
-	    desc->ep0_maxpkt != 32 && desc->ep0_maxpkt != 64) {
-		CAP_DBG(2); CAP_RET(desc->ep0_maxpkt);  // bad bMaxPacketSize0
-		return false;
-	}
-	desc->dev_addr = 1;
-	setup.bmRequestType = 0x00; // Host-to-Device, Standard, Device
-	setup.bRequest = USB_REQ_SET_ADDRESS;
-	setup.wValue = desc->dev_addr;
-	setup.wIndex = 0;
-	setup.wLength = 0;
-	CAP_DBG(3);  // SET_ADDRESS
-	ret = usb_host_control_transfer(0, desc->ep0_maxpkt, &setup, NULL, 2000);
-	CAP_RET(ret);
-	if (ret < 0) return false;
-	delay(2);  // Let status phase complete at address 0
-	delay(10); // Device needs time to process new address
-	CAP_DBG(4);  // GET_DESCRIPTOR(device, 18) @ addr 1
-	setup = make_get_descriptor(USB_DESC_DEVICE, 0, 0, 18);
-	ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
-		&setup, desc->device_desc, 2000);
-	CAP_RET(ret);
-	if (ret < 0 || ret < 18 || desc->device_desc[0] != 18 ||
-	    desc->device_desc[1] != USB_DESC_DEVICE) {
-		return false;
-	}
-	desc->device_desc_len = 18;
-	CAP_DBG(5);  // GET_DESCRIPTOR(config, 9)
-	setup = make_get_descriptor(USB_DESC_CONFIGURATION, 0, 0, 9);
-	ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
-		&setup, desc->config_desc, 2000);
-	CAP_RET(ret);
-	if (ret < 0 || ret < 9 || desc->config_desc[1] != USB_DESC_CONFIGURATION) {
-		return false;
-	}
-	uint16_t total_len = desc->config_desc[2] | (desc->config_desc[3] << 8);
-	if (total_len < 9) return false;
-	if (total_len > MAX_CONFIG_DESC_SIZE)
-		total_len = MAX_CONFIG_DESC_SIZE;
-	setup = make_get_descriptor(USB_DESC_CONFIGURATION, 0, 0, total_len);
-	ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
-		&setup, desc->config_desc, 2000);
-	if (ret < 0 || ret < 9 || desc->config_desc[1] != USB_DESC_CONFIGURATION) {
+	if (!enumerated) {
+		CAP_DBG(0x2F);   // enumeration exhausted all retries
 		return false;
 	}
 	desc->config_desc_len = (uint16_t)ret;

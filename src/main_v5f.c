@@ -204,16 +204,12 @@ int main(void)
 
 	led_on();
 	delay(10);
-	dbg_stage(0x90);                 // before port_reset
-	usb_host_port_reset();
-	dbg_stage(0x91);                 // after port_reset, before speed
-
-	uint8_t speed = usb_host_device_speed();
-	(void)speed;
 	dbg_stage(0x92);                 // before capture_descriptors
-
+	// capture_descriptors() now owns the bus-reset + post-reset stability poll +
+	// the full address-assignment retry loop (ports WCH USBH_EnumRootDevice), so
+	// the caller no longer pre-resets — a double reset only confused the timing.
 	if (!capture_descriptors(&desc)) {
-		dbg_stage(0x9F);             // capture_descriptors FAILED
+		dbg_stage(0x9F);             // capture_descriptors FAILED (all retries)
 		led_blink_forever(5, 100, 100);
 	}
 	dbg_stage(DBG_V5F_DESC_OK);
@@ -297,6 +293,13 @@ int main(void)
 		*(volatile uint32_t *)0x2017F034u = (USBFSD->BASE_CTRL) | (usbd_dbg_lastst << 8)
 		                                    | (usbd_dbg_alloc_before << 16)
 		                                    | (usbd_dbg_alloc_after << 17);
+		// Live PHY/line state: MIS_ST (bit0=DEV_ATTACH bit1=DM_LEVEL bit3=BUS_RESET
+		// bit7=SOF_PRES) + UDEV_CTRL (bit5=DP_PIN bit4=DM_PIN live levels). If
+		// DEV_ATTACH/line pins are dead, the PHY sees no host; if SOF_PRES toggles,
+		// the bus is alive. Packs MIS_ST | UDEV_CTRL<<8 | INT_EN<<16.
+		*(volatile uint32_t *)0x2017F054u = (uint8_t)USBFSD->MIS_ST
+		                                    | ((uint32_t)(uint8_t)USBFSD->UDEV_CTRL << 8)
+		                                    | ((uint32_t)(uint8_t)USBFSD->INT_EN << 16);
 		if ((millis() - dev_led_toggle) >= 250) {
 			led_toggle();
 			dev_led_toggle = millis();

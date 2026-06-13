@@ -118,6 +118,11 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
         diag_puts(" lastst=0x");  diag_put_hex8((uint8_t)(base_st >> 8));
         diag_puts(" alloc(b/a)="); diag_put_u32((base_st >> 16) & 1);
         diag_puts("/");            diag_put_u32((base_st >> 17) & 1);
+        // Live USBFS PHY/line state: MIS_ST | UDEV_CTRL<<8 | INT_EN<<16.
+        uint32_t phy = *(volatile uint32_t *)0x2017F054u;
+        diag_puts(" MIS_ST=0x");   diag_put_hex8((uint8_t)phy);
+        diag_puts(" UDEV=0x");     diag_put_hex8((uint8_t)(phy >> 8));
+        diag_puts(" INT_EN=0x");   diag_put_hex8((uint8_t)(phy >> 16));
     }
     // capture_descriptors() failure detail (stage 0x9F): which control-transfer
     // step failed (p@0x2017F048) and its return code (p@0x2017F04C).
