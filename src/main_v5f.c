@@ -281,6 +281,8 @@ int main(void)
 	uint32_t dev_led_toggle = millis();
 	extern volatile uint32_t usbd_dbg_irq, usbd_dbg_busrst, usbd_dbg_setup, usbd_dbg_lastst;
 	extern volatile uint32_t usbd_dbg_alloc_before, usbd_dbg_alloc_after;
+	extern volatile uint32_t usbd_dbg_lastsetup, usbd_dbg_lastsetup_len;
+	extern volatile uint32_t usbd_dbg_stalls, usbd_dbg_configval;
 	while (!usb_device_is_configured()) {
 		usb_device_poll();
 		usb_merge_drain_icc(); // keep the ICC mailbox drained during bring-up
@@ -300,16 +302,33 @@ int main(void)
 		*(volatile uint32_t *)0x2017F054u = (uint8_t)USBFSD->MIS_ST
 		                                    | ((uint32_t)(uint8_t)USBFSD->UDEV_CTRL << 8)
 		                                    | ((uint32_t)(uint8_t)USBFSD->INT_EN << 16);
+		// Last SETUP request + STALL count + config-seen: pinpoints which control
+		// request Windows sends that the device chokes on (where enum stalls).
+		*(volatile uint32_t *)0x2017F058u = usbd_dbg_lastsetup;
+		*(volatile uint32_t *)0x2017F05Cu = (usbd_dbg_lastsetup_len & 0xFFFF)
+		                                    | (usbd_dbg_stalls << 16);
+		// pack live is_configured into the high byte of the configval slot so we
+		// can distinguish "SET_CONFIG was once seen" (low byte) from "configured
+		// RIGHT NOW" (high byte) — a bus reset clears the live flag.
+		*(volatile uint32_t *)0x2017F060u = usbd_dbg_configval
+		                                    | (usb_device_is_configured() ? 0x10000u : 0u);
 		if ((millis() - dev_led_toggle) >= 250) {
 			led_toggle();
 			dev_led_toggle = millis();
 		}
-		if ((millis() - dev_wait_start) > 30000) {
-			led_blink_forever(8, 80, 120);
-		}
+		// BENCH: do NOT dead-end on the 30s timeout — keep the loop alive so the
+		// register snapshot stays live for the oracle while we debug enumeration.
+		(void)dev_wait_start;
 	}
-	led_off();
-	led_heartbeat_start();
+	// CROSS-CORE BUG FIX: do NOT call led_heartbeat_start() here. That starts
+	// TIM2 + NVIC_EnableIRQ(TIM2_IRQn), but TIM2 is V3F's heartbeat timer (it owns
+	// it, runs it on the HB1 bus, and TIM2_IRQn is core-allocated to V3F by
+	// default). V5F enabling TIM2 collides with V3F and HANGS V5F right here — it
+	// was the real blocker that kept V5F from reaching RELAY once Windows actually
+	// enumerated the device (stage froze at 0x59, just past the configured loop).
+	// V5F owns only its own status pin (PC3): drive it steady-on to mean "relay
+	// running". The heartbeat ladder belongs to V3F on PC2.
+	led_on();
 	dbg_stage(DBG_V5F_RELAY);   // bench: 0x58 here == full relay reached
 
 	// --- Relay loop ------------------------------------------------------

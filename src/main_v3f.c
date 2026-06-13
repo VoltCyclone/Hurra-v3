@@ -123,6 +123,18 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
         diag_puts(" MIS_ST=0x");   diag_put_hex8((uint8_t)phy);
         diag_puts(" UDEV=0x");     diag_put_hex8((uint8_t)(phy >> 8));
         diag_puts(" INT_EN=0x");   diag_put_hex8((uint8_t)(phy >> 16));
+        // Last SETUP (req|type|wValue), wLength, STALL count, SET_CONFIG seen.
+        uint32_t ls = *(volatile uint32_t *)0x2017F058u;
+        uint32_t lc = *(volatile uint32_t *)0x2017F05Cu;
+        diag_puts(" lastSETUP req=0x"); diag_put_hex8((uint8_t)(ls >> 24));
+        diag_puts(" type=0x");          diag_put_hex8((uint8_t)(ls >> 16));
+        diag_puts(" wVal=0x");          diag_put_hex8((uint8_t)(ls >> 8));
+        diag_put_hex8((uint8_t)ls);
+        diag_puts(" wLen=");            diag_put_u32(lc & 0xFFFF);
+        diag_puts(" stalls=");          diag_put_u32(lc >> 16);
+        uint32_t cfgw = *(volatile uint32_t *)0x2017F060u;
+        diag_puts(" cfgSeen=0x");        diag_put_hex8((uint8_t)cfgw);
+        diag_puts(" cfgLive=");          diag_put_u32((cfgw >> 16) & 1);
     }
     // capture_descriptors() failure detail (stage 0x9F): which control-transfer
     // step failed (p@0x2017F048) and its return code (p@0x2017F04C).

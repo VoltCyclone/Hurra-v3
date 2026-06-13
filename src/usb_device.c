@@ -82,6 +82,13 @@ volatile uint32_t usbd_dbg_setup;
 volatile uint32_t usbd_dbg_lastst;
 volatile uint32_t usbd_dbg_alloc_before;   /* NVIC IRQ-alloc bit before SetAllocate */
 volatile uint32_t usbd_dbg_alloc_after;    /* and after (1 => routed to V5F) */
+/* Last SETUP request seen + a STALL (errflag) counter, so the UART oracle can
+ * show exactly which control request Windows sends that the device chokes on.
+ * usbd_dbg_lastsetup = bRequest<<24 | bmRequestType<<16 | wValue. */
+volatile uint32_t usbd_dbg_lastsetup;
+volatile uint32_t usbd_dbg_lastsetup_len;  /* wLength of the last SETUP */
+volatile uint32_t usbd_dbg_stalls;         /* count of errflag=0xFF (STALL) responses */
+volatile uint32_t usbd_dbg_configval;      /* SET_CONFIGURATION value seen */
 
 /* HID class state (single interface). */
 static volatile uint8_t  USBFS_HidIdle;
@@ -347,6 +354,11 @@ void USBFS_IRQHandler(void)
             USBFS_SetupReqLen   = pUSBFS_SetupReqPak->wLength;
             USBFS_SetupReqValue = pUSBFS_SetupReqPak->wValue;
             USBFS_SetupReqIndex = pUSBFS_SetupReqPak->wIndex;
+            /* bench: record the last SETUP so the oracle shows where enum stalls. */
+            usbd_dbg_lastsetup = ((uint32_t)USBFS_SetupReqCode << 24)
+                               | ((uint32_t)USBFS_SetupReqType << 16)
+                               | (uint32_t)USBFS_SetupReqValue;
+            usbd_dbg_lastsetup_len = USBFS_SetupReqLen;
             len     = 0;
             errflag = 0;
 
@@ -454,6 +466,7 @@ void USBFS_IRQHandler(void)
                 case USB_SET_CONFIGURATION:
                     USBFS_DevConfig = (uint8_t)(USBFS_SetupReqValue & 0xFF);
                     s_configured = 1;
+                    usbd_dbg_configval = 0x100u | USBFS_DevConfig;  /* bench: saw SET_CONFIG */
                     break;
 
                 case USB_CLEAR_FEATURE:
@@ -550,6 +563,7 @@ void USBFS_IRQHandler(void)
             /* Drive the EP0 response: STALL on error, else Tx/Rx the data or
              * zero-length status stage. */
             if (errflag == 0xFF) {
+                usbd_dbg_stalls++;   /* bench: device STALLed this request */
                 USBFSD->UEP0_TX_CTRL = USBFS_UEP_T_TOG | USBFS_UEP_T_RES_STALL;
                 USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_TOG | USBFS_UEP_R_RES_STALL;
             } else {
