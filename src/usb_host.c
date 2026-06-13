@@ -23,9 +23,24 @@
 
 #include "ch32h417_port.h"      // ch32h417.h (USBHSH struct, RCC), usb bit defs
 #include "debug.h"              // Delay_Us / Delay_Ms
+#include "board.h"              // LED_GPIO_* — SysTick-free bench diag blink
+#include "icc.h"                // dbg_stage() / DBG_STAGE_ADDR — UART-readable marker
 #include <string.h>
 
 #include "usb_host.h"
+
+// Fine-grained sub-stage markers for the usb_host_init() path (0x70..). V3F
+// reads DBG_STAGE_ADDR out of shared SRAM and prints it over the command UART,
+// so the value where V5F freezes names the exact stalling statement — readable
+// without SWD (which the running V5F has NAKed by disabling SWJ) and without
+// counting the LED blink-checkpoints by eye. See src/icc.h and main_v3f.c.
+#define DBG_V5F_HOST_RCC_ENTER   0x70   // entered usbhs_rcc_init
+#define DBG_V5F_HOST_PLL_WAIT    0x71   // about to spin on USBHS PLL lock
+#define DBG_V5F_HOST_PLL_RDY     0x72   // PLL ready (or already up), before UTMI
+#define DBG_V5F_HOST_UTMI_ON     0x73   // UTMI clock enabled
+#define DBG_V5F_HOST_CLK_ON      0x74   // USBHS peripheral clock enabled (rcc done)
+#define DBG_V5F_HOST_MMIO        0x75   // rcc_init returned, before USBHSH MMIO writes
+#define DBG_V5F_HOST_CFG_DONE    0x76   // all USBHSH config writes survived
 
 /* ------------------------------------------------------------------------ */
 /* Constants ported from usb_host_config.h / ch32h417_usbhs_host.h.          */
@@ -80,9 +95,16 @@ static intr_slot_t out_slots[MAX_INTR_OUT_EPS];
 /* we just enable the UTMI + USBHS peripheral clocks. This makes init order  */
 /* between usb_device_init() and usb_host_init() irrelevant and never        */
 /* disturbs a PLL that the device side may already be running on.            */
+/*                                                                           */
+/* BENCH DIAG NOTE: the SysTick-free LED checkpoint/panic-blink helpers that */
+/* used to live here were removed. They overlaid ~half a dozen blink trains  */
+/* onto PC3, which made the LED unreadable (slow/irregular). They are        */
+/* replaced by dbg_stage() markers (0x70..0x76) that V3F reads out of shared */
+/* SRAM and prints over the command UART — a single, unambiguous oracle.     */
 /* ------------------------------------------------------------------------ */
 static void usbhs_rcc_init(void)
 {
+    dbg_stage(DBG_V5F_HOST_RCC_ENTER);   /* 0x70: entered usbhs_rcc_init */
     if ((RCC->PLLCFGR & RCC_SYSPLL_SEL) != RCC_SYSPLL_USBHS) {
         /* PLL not yet sourced from USBHS — bring up the 480M PLL from HSE
          * (matching usb_device.c's HSE/HSI fallback for robustness). */
@@ -92,11 +114,27 @@ static void usbhs_rcc_init(void)
         RCC_USBHSPLLReferConfig(RCC_USBHSPLLRefer_25M);
         RCC_USBHSPLLClockSourceDivConfig(RCC_USBHSPLL_IN_Div1);
         RCC_USBHS_PLLCmd(ENABLE);
-        while (!(RCC->CTLR & RCC_USBHS_PLLRDY));
+        /* BENCH DIAG: this was an UNBOUNDED spin where the V5F LED sat solid-on.
+         * The stage marker (read by V3F over UART) now localizes a stall here:
+         * if V5F freezes showing 0x71, the USBHS 480M PLL never asserts PLLRDY.
+         * The spin is bounded so a never-locking PLL advances to 0x72 rather than
+         * hanging forever (lets V3F's UART report distinguish "PLL never locked"
+         * from "hung in the spin"). SysTick-free: pure RCC reads + an iteration
+         * counter, so it depends on nothing the rest of V5F bring-up might break. */
+        dbg_stage(DBG_V5F_HOST_PLL_WAIT);   /* 0x71: spinning on USBHS PLL lock */
+        {
+            uint32_t pll_wait = 0;
+            while (!(RCC->CTLR & RCC_USBHS_PLLRDY)) {
+                if (++pll_wait >= 2000000u) break;   /* raw spin cap, ~10s ballpark */
+            }
+        }
     }
     /* PLL already up (possibly by usb_device.c) — just (re)enable our clocks. */
+    dbg_stage(DBG_V5F_HOST_PLL_RDY);     /* 0x72: PLL phase done, before UTMI/USBHS clk */
     RCC_UTMIcmd(ENABLE);
+    dbg_stage(DBG_V5F_HOST_UTMI_ON);     /* 0x73: UTMI clk enabled */
     RCC_HBPeriphClockCmd(RCC_HBPeriph_USBHS, ENABLE);
+    dbg_stage(DBG_V5F_HOST_CLK_ON);      /* 0x74: USBHS peripheral clk enabled */
 }
 
 /* ------------------------------------------------------------------------ */
@@ -229,6 +267,7 @@ static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32
 bool usb_host_init(void)
 {
     usbhs_rcc_init();
+    dbg_stage(DBG_V5F_HOST_MMIO);        /* 0x75: rcc_init returned, before USBHSH MMIO */
 
     /* Reset link, hold PHY out of suspend. */
     USBHSH->CFG        = USBHS_RST_LINK | USBHS_UH_PHY_SUSPENDM;
@@ -238,6 +277,7 @@ bool usb_host_init(void)
     USBHSH->PORT_CFG   = USBHS_UH_PD_EN | USBHS_UH_HOST_EN;
     USBHSH->FRAME     |= USBHS_UH_SOF_CNT_EN;
     USBHSH->CFG        = USBHS_UH_SOF_EN | USBHS_UH_DMA_EN | USBHS_UH_PHY_SUSPENDM;
+    dbg_stage(DBG_V5F_HOST_CFG_DONE);    /* 0x76: all USBHSH config writes survived */
 
     memset(in_slots, 0, sizeof(in_slots));
     memset(out_slots, 0, sizeof(out_slots));

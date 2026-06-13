@@ -80,6 +80,11 @@ enum {                                         // V5F boot stages (monotonic)
     DBG_V5F_LED_INIT      = 0x63,              // after led_init
     DBG_V5F_ICC_MAGIC     = 0x64,              // after icc_init_v5f (magic seen)
     DBG_V5F_HSEM_DONE     = 0x65,              // after HSEM take/release
+    // Pre-USBHS window (between ICC_READY and usb_host_init) — bisects a hang that
+    // freezes V5F before it ever reaches usb_host_init()'s first marker (0x70).
+    DBG_V5F_PRE_AFIO      = 0x66,              // about to enable AFIO|GPIOB clock
+    DBG_V5F_PRE_SWJ       = 0x67,              // AFIO|GPIOB on; about to disable SWJ
+    DBG_V5F_PRE_HOSTINIT  = 0x68,              // SWJ disabled; about to call usb_host_init
     DBG_V5F_ICC_READY     = 0x52,              // ICC rendezvous done (IPC IRQ armed)
     DBG_V5F_HOST_INIT     = 0x53,              // USBHS host init done, entering host-wait
     DBG_V5F_HOST_WAITING  = 0x54,              // spinning in while(!device_connected)
@@ -87,5 +92,10 @@ enum {                                         // V5F boot stages (monotonic)
     DBG_V5F_DESC_OK       = 0x56,              // descriptors captured
     DBG_V5F_DEV_INIT      = 0x57,              // USBFS device init done (cloning to PC)
     DBG_V5F_RELAY         = 0x58,              // reached the relay loop (telemetry flows)
+    // Trap marker: V5F's HardFault_Handler ORs 0x80 over the low mcause nibble so
+    // a CPU trap surfaces as a single UART line (V3F prints it) instead of only a
+    // PC3 blink. e.g. 0x82 = illegal-instruction, 0x85 = load-fault, 0x87 = store-
+    // fault, 0x81 = instr-access-fault, 0x80 = instr-addr-misaligned, 0x8B=ecall-M.
+    DBG_V5F_TRAP_BASE     = 0x80,              // 0x80 | (mcause & 0x0F)
 };
 static inline void dbg_stage(uint32_t s) { *(volatile uint32_t *)DBG_STAGE_ADDR = s; }

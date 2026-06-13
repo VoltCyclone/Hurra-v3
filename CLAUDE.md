@@ -265,3 +265,37 @@ via `wlink --chip CH32H41X erase --method power-off` then `flash`; PC2 heartbeat
 blinks. Dual-core debugging note: test dual-core bugs with the MERGED image — a
 V3F-only flash wakes V5F onto erased flash (0xFF) and the wild V5F corrupts the
 shared bus, a test artifact that looks like "waking V5F breaks V3F".
+
+## V5F-HANG FIX (2026-06-13): "PC3 blinks slow/irregular, hard to count" —
+## the diagnostic WAS the bug, plus the UART stage oracle that found it
+SYMPTOM: PC2 (V3F) blinked clean; PC3 (V5F) blinked slow + irregular. ROOT CAUSE:
+V5F was frozen at stage 0x52 (ICC_READY), never reaching usb_host_init (0x70).
+The freeze was caused by the **PC3 bench-diagnostic itself** — the three
+`v5f_diag_raw_blink()` checkpoint trains in main_v5f.c (the "10 long / 1 / 2"
+ladder around the AFIO-remap + SWJ-disable). Those helpers call
+`RCC_HB2PeriphClockCmd`+`GPIO_Init` on GPIOC and spin multi-million-NOP loops at
+400 MHz right at the most clock/timing-sensitive moment of USBHS bring-up.
+DELETING the three blink trains (replaced with passive `dbg_stage()` writes) let
+V5F advance cleanly to 0x54 HOST_WAITING and hold there steady (87s, no trap,
+icc_magic=OK). Lesson: instrumentation that reconfigures clocks/GPIO from the
+fast core perturbs the very window it's trying to observe — prefer passive
+shared-memory markers over active blink/UART from V5F during bring-up.
+
+THE ORACLE (keep this — it's how the hang was localized): the running V5F
+disables SWJ during USB init, so wlink NAKs all SWD with `0x55` and the
+0x2017F000 stage marker is unreadable over the probe. But V3F is healthy, owns
+USART1 (the WCH-LinkE VCP, /dev/cu.usbmodem696B8F06EF62*), and 0x2017F000 is in
+the shared RAM window mapped in BOTH images. So **V3F reads V5F's stage byte from
+shared SRAM and prints it over UART** — a probe-free, eyeball-free oracle that
+mirrors WCH's own reference (printf over USART). Impl: `diag_v5f_stage_poll()` in
+main_v3f.c (default-on; `-DV5F_STAGE_DIAG_OFF` to disable — DO disable when a real
+Hurra host app drives the binary protocol, since ASCII lines would corrupt it).
+Read it: `python3` open the VCP at 921600 and print. Stage map in src/icc.h
+(0x51..0x58 main path, 0x60..0x68 early/pre-USBHS, 0x70..0x76 usb_host_init,
+0x8x = V5F trap with mcause/mepc stamped at 0x2017F004/8). The V5F HardFault
+handler also stamps an 0x8x marker so a trap surfaces as a UART line, not a blink.
+PC3 now has only 3 states: dark (pre-host) / ~2 Hz (host-waiting) / trap-blink.
+
+NEXT BLOCKER (unchanged, hardware): V5F sits at 0x54 HOST_WAITING because the
+USBHS host port sources no VBUS (SB7/U5 5V path — see GOTCHAS). Power a device on
+the host port externally and watch for 0x55→0x56→0x57→0x58 RELAY on the VCP.

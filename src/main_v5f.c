@@ -32,6 +32,7 @@
 #include <stdbool.h>
 
 #include "ch32h417_port.h"
+#include "board.h"          // LED_GPIO_* for the SysTick-free trap-blink diag
 #include "usb_host.h"
 #include "usb_device.h"
 #include "desc_capture.h"
@@ -46,6 +47,59 @@
 // the init sequence below call `extern void delay(uint32_t msec)`. The vendored
 // debug.c only exposes Delay_Ms/Delay_Us, so we bridge here.
 void delay(uint32_t msec) { Delay_Ms(msec); }
+
+// --- BENCH DIAG (2026-06-12): V5F trap catcher -----------------------------
+// Symptom: V5F LED (PC3) sits SOLID-on during USBHS bring-up. The startup's
+// weak HardFault_Handler is a bare `1: j 1b` spin that leaves the LED untouched,
+// so a CPU trap (mcause=illegal-instr=2, load-fault, etc.) is INDISTINGUISHABLE
+// from a plain C hang — both look solid. On QingKe RISC-V every synchronous
+// exception funnels through the HardFault vector (slot 3), so a strong override
+// here catches any V5F trap and makes it observable.
+//
+// It blinks the low nibble of mcause out on the LED, SysTick-FREE (raw GPIO +
+// NOP loops — SysTick may be dead on V5F, which is why Delay_* can't be trusted):
+//   long lead pulse, then N short pulses where N = (mcause & 0xF), then pause.
+//   mcause 2 = illegal instruction, 5 = load access fault, 7 = store fault,
+//   1 = instr access fault, 0 = instr-addr-misaligned, 11 = ecall-M.
+// If the LED starts BLINKING this pattern after flashing, V5F is trapping (not
+// hanging in C) and the nibble says why. If it stays SOLID, it is a true hang.
+static void v5f_diag_raw_blink(uint8_t pulses, uint32_t on_nop, uint32_t off_nop)
+{
+	RCC_HB2PeriphClockCmd(LED_RCC_HB2, ENABLE);
+	GPIO_InitTypeDef g = {0};
+	g.GPIO_Pin = LED_GPIO_PIN; g.GPIO_Speed = GPIO_Speed_Very_High;
+	g.GPIO_Mode = GPIO_Mode_Out_PP;
+	GPIO_Init(LED_GPIO_PORT, &g);
+	for (uint8_t i = 0; i < pulses; i++) {
+		GPIO_SetBits(LED_GPIO_PORT, LED_GPIO_PIN);
+		for (volatile uint32_t d = 0; d < on_nop;  d++) __asm volatile("nop");
+		GPIO_ResetBits(LED_GPIO_PORT, LED_GPIO_PIN);
+		for (volatile uint32_t d = 0; d < off_nop; d++) __asm volatile("nop");
+	}
+}
+
+void HardFault_Handler(void) __attribute__((interrupt("machine")));
+void HardFault_Handler(void)
+{
+	uint32_t mcause, mepc;
+	__asm volatile("csrr %0, mcause" : "=r"(mcause));
+	__asm volatile("csrr %0, mepc"   : "=r"(mepc));
+	// Stamp the trap into the shared boot-stage marker (0x80 | low mcause nibble)
+	// and the faulting PC into the following word, so V3F surfaces a V5F trap as a
+	// single UART line (e.g. "V5F=0x82 TRAP mcause=2 mepc=0x200A1234") instead of a
+	// PC3 blink that has to be counted by eye. Also keep a slow PC3 blink as a
+	// probe-of-last-resort if the UART path is somehow dead.
+	dbg_stage(DBG_V5F_TRAP_BASE | (mcause & 0x0F));
+	*(volatile uint32_t *)(DBG_STAGE_ADDR + 4) = mcause;
+	*(volatile uint32_t *)(DBG_STAGE_ADDR + 8) = mepc;
+	uint8_t nib = (uint8_t)(mcause & 0x0F);
+	if (nib == 0) nib = 16;  // distinguish "cause 0" from "no pulses"
+	for (;;) {
+		v5f_diag_raw_blink(1, 48000000u, 12000000u);   // long lead pulse
+		v5f_diag_raw_blink(nib, 6000000u, 6000000u);   // N = mcause nibble
+		for (volatile uint32_t d = 0; d < 60000000u; d++) __asm volatile("nop");
+	}
+}
 
 typedef struct {
 	uint8_t  host_slot;
@@ -95,7 +149,13 @@ int main(void)
 	NVIC_EnableIRQ(IPC_CH0_IRQn);
 	dbg_stage(DBG_V5F_ICC_READY);
 
-	led_on();
+	// BENCH DIAG: the pre-USBHS window is now bisected by dbg_stage() markers that
+	// V3F reads from shared SRAM and prints over UART — NOT by PC3 blink trains
+	// (which overlaid ~3 pulse programs onto one pin and made it unreadable). PC3
+	// is held dark here; it only starts its clean ~2 Hz toggle once we reach the
+	// host-wait loop below, so "PC3 dark" vs "PC3 2 Hz" vs "trap blink" are the
+	// only three PC3 states now.
+	led_off();
 
 	// --- USBHS host: power port, wait for the real device ----------------
 	// The USBHS D+/D- lines are PB8/PB9, which on this part are ALSO the
@@ -105,8 +165,11 @@ int main(void)
 	// USBHS_Host_Init (EVT USBHS/HOST/Host_KM/Common/hardware.c:42-43).
 	// NOTE: this severs SWD on PB8/PB9 — flash via the WCH-Link SDI link (which
 	// uses its own pins), and recover debug with a power cycle if needed.
+	dbg_stage(DBG_V5F_PRE_AFIO);    // 0x66: about to enable AFIO|GPIOB
 	RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOB, ENABLE);
+	dbg_stage(DBG_V5F_PRE_SWJ);     // 0x67: AFIO|GPIOB on; about to disable SWJ
 	GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
+	dbg_stage(DBG_V5F_PRE_HOSTINIT);// 0x68: SWJ disabled; about to call usb_host_init
 
 	usb_host_init();
 	dbg_stage(DBG_V5F_HOST_INIT);

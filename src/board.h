@@ -18,10 +18,23 @@
 //      or resistor. The GPIO-driven indicator LEDs (D1/D2) route to PC2/PC3.
 // Our old PB1 default toggled a dead pin: firmware booted (the RED power LED D4
 // on 3V3 lit, so "the board starts") but the heartbeat never appeared.
-// PC2 = LED0; PC3 = LED1 is available as a second indicator if wanted.
+// PC2 = LED0 (V3F heartbeat); PC3 = LED1 (V5F relay-stage indicator).
+// Split per-core so each core owns a DISTINCT LED. Both cores compile led.c
+// separately (-DCore_V3F / -DCore_V5F) and both drive "the" status pin via these
+// macros. On a SHARED pin, V3F's TIM2 heartbeat paints over V5F's boot-stage
+// blink ladder, so V5F (which owns BOTH USB ports, and is the suspect when the PC
+// sees no enumeration) is unobservable. Giving V5F its own PC3 turns its existing
+// blink ladder into a probe-less state oracle — readable by eye even though the
+// running firmware NAKs all SWD debug (SWJ disabled in main_v5f.c). PC3 is
+// otherwise unused (no Pin_3 reference anywhere in src/). Both LEDs are on GPIOC,
+// so the existing LED_RCC_HB2 clock enable in led_init() already covers PC3.
 #define LED_GPIO_PORT       GPIOC
-#define LED_GPIO_PIN        GPIO_Pin_2
 #define LED_RCC_HB2         RCC_HB2Periph_GPIOC
+#if defined(Core_V5F)
+#define LED_GPIO_PIN        GPIO_Pin_3   // V5F → LED1 (PC3): relay-core boot stage
+#else
+#define LED_GPIO_PIN        GPIO_Pin_2   // V3F → LED0 (PC2): command-core heartbeat
+#endif
 
 // ── Command-link USART (V3F owns it) ────────────────────────────────────────
 // DEFAULT: USART1 = PA9(TX)/PA10(RX), AF7 — wired to the on-board WCH-LinkE's

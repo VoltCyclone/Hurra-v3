@@ -13,6 +13,114 @@
 #include "timebase.h"
 #include "debug.h"
 
+// ── V5F stage diagnostic (bench bring-up) ───────────────────────────────────
+// The running V5F disables SWJ (PB8/PB9) during USB init, so SWD/SDI debug NAKs
+// every probe command (`0x55`) while it runs — we cannot read V5F's stage marker
+// at 0x2017F000 over wlink. But V3F is healthy, owns USART1 (the WCH-LinkE VCP),
+// and 0x2017F000 lives in the shared RAM window mapped in BOTH images. So V3F
+// reads V5F's stage byte directly out of shared SRAM and prints it as ASCII over
+// the command UART — a probe-free, eyeball-free oracle that mirrors how WCH's own
+// reference does bring-up (printf over USART). It replaces counting the PC3
+// blink superposition by eye.
+//
+// Default-ON for this bench build. Build without it (production / when a real
+// Hurra host app drives the link, since ASCII lines would corrupt the binary
+// protocol) via `make EXTRADEF=-DV5F_STAGE_DIAG_OFF`.
+#if !defined(V5F_STAGE_DIAG_OFF)
+#define V5F_STAGE_DIAG 1
+#endif
+
+#if defined(V5F_STAGE_DIAG)
+static void diag_puts(const char *s)
+{
+    uint16_t n = 0;
+    while (s[n]) n++;
+    (void)uart_tx_write((const uint8_t *)s, n);
+}
+
+static void diag_put_hex8(uint8_t v)
+{
+    static const char hx[] = "0123456789ABCDEF";
+    uint8_t buf[2] = { (uint8_t)hx[(v >> 4) & 0xF], (uint8_t)hx[v & 0xF] };
+    (void)uart_tx_write(buf, 2);
+}
+
+static void diag_put_u32(uint32_t v)
+{
+    char tmp[10];
+    int i = 0;
+    if (v == 0) { diag_puts("0"); return; }
+    while (v && i < 10) { tmp[i++] = (char)('0' + (v % 10)); v /= 10; }
+    char out[11];
+    int j = 0;
+    while (i) out[j++] = tmp[--i];
+    out[j] = '\0';
+    diag_puts(out);
+}
+
+// Map a V5F stage byte (icc.h DBG_V5F_*) to a human label. Unknown -> "?".
+static const char *diag_stage_name(uint8_t s)
+{
+    switch (s) {
+    case DBG_V5F_BOOT:          return "BOOT(pre-rendezvous)";
+    case DBG_V5F_TIMEBASE:      return "TIMEBASE";
+    case DBG_V5F_HUMANIZE:      return "HUMANIZE";
+    case DBG_V5F_MERGE_INIT:    return "MERGE_INIT";
+    case DBG_V5F_LED_INIT:      return "LED_INIT";
+    case DBG_V5F_ICC_MAGIC:     return "ICC_MAGIC(saw magic)";
+    case DBG_V5F_HSEM_DONE:     return "HSEM_DONE";
+    case DBG_V5F_ICC_READY:     return "ICC_READY(IPC armed)";
+    case DBG_V5F_HOST_INIT:     return "HOST_INIT(USBHS up)";
+    case DBG_V5F_HOST_WAITING:  return "HOST_WAITING(no device)";
+    case DBG_V5F_DEV_CONNECTED: return "DEV_CONNECTED";
+    case DBG_V5F_DESC_OK:       return "DESC_OK";
+    case DBG_V5F_DEV_INIT:      return "DEV_INIT(cloning to PC)";
+    case DBG_V5F_RELAY:         return "RELAY(hot path)";
+    // usb_host_init() fine-grained sub-stages (usb_host.c 0x70..0x76).
+    case 0x70:                  return "HOST_RCC_ENTER";
+    case 0x71:                  return "HOST_PLL_WAIT(spinning on USBHS PLL)";
+    case 0x72:                  return "HOST_PLL_RDY";
+    case 0x73:                  return "HOST_UTMI_ON";
+    case 0x74:                  return "HOST_CLK_ON";
+    case 0x75:                  return "HOST_MMIO(before USBHSH regs)";
+    case 0x76:                  return "HOST_CFG_DONE";
+    default:
+        if ((s & 0xF0) == DBG_V5F_TRAP_BASE) return "*** V5F TRAP ***";
+        return "?";
+    }
+}
+
+// Read V5F's live stage marker + the ICC magic, print on change or every ~1s.
+// Called from the V3F main loop. `*last`/`*hb` are caller-owned persistent state.
+static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
+{
+    uint8_t  stage = *(volatile uint8_t  *)DBG_STAGE_ADDR;
+    uint32_t magic = *(volatile uint32_t *)0x20178000u;   // icc_shared_t.magic
+    uint32_t now   = millis();
+    bool changed   = (stage != *last_stage);
+    if (!changed && (now - *hb_tick) < 1000) return;
+
+    *last_stage = stage;
+    *hb_tick    = now;
+    diag_puts("[t=");      diag_put_u32(now);  diag_puts("ms] V5F=0x");
+    diag_put_hex8(stage);  diag_puts(" ");     diag_puts(diag_stage_name(stage));
+    diag_puts(changed ? " <NEW>" : " (still)");
+    diag_puts(" icc_magic=");
+    diag_puts(magic == ICC_MAGIC ? "OK" : "BAD");
+    // On a V5F trap (stage 0x8x) the handler also stamped mcause/mepc in the two
+    // words after the marker — surface them so the fault is fully self-describing.
+    if ((stage & 0xF0) == DBG_V5F_TRAP_BASE) {
+        uint32_t mcause = *(volatile uint32_t *)(DBG_STAGE_ADDR + 4);
+        uint32_t mepc   = *(volatile uint32_t *)(DBG_STAGE_ADDR + 8);
+        diag_puts(" mcause=");  diag_put_u32(mcause);
+        diag_puts(" mepc=0x");  diag_put_hex8((uint8_t)(mepc >> 24));
+        diag_put_hex8((uint8_t)(mepc >> 16)); diag_put_hex8((uint8_t)(mepc >> 8));
+        diag_put_hex8((uint8_t)mepc);
+    }
+    diag_puts("\r\n");
+}
+#endif /* V5F_STAGE_DIAG */
+
 int main(void)
 {
     SystemInit();
@@ -33,6 +141,16 @@ int main(void)
     uart_init(CMD_BAUD_DEFAULT);
     kmbox_cmd_init();                   // act_init + proto_init + bind tx
     led_heartbeat_start();
+
+#if defined(V5F_STAGE_DIAG)
+    // One-shot banner so a freshly-opened terminal knows the build + baud and can
+    // confirm V3F itself is alive on the link before any V5F line appears.
+    diag_puts("\r\n=== Hurra-v3 V5F-stage diag (V3F alive) baud=");
+    diag_put_u32(CMD_BAUD_DEFAULT);
+    diag_puts(" ===\r\n");
+    uint8_t  diag_last_stage = 0xFF;    // force first read to print as <NEW>
+    uint32_t diag_hb_tick    = millis();
+#endif
 
     // --- Telemetry state (decoded from V5F over the ICC) -----------------
     uint32_t telem_report_count = 0;    // reports V5F forwarded to the PC
@@ -106,5 +224,11 @@ int main(void)
                 led_heartbeat_set_rate(centihz);
             }
         }
+
+#if defined(V5F_STAGE_DIAG)
+        // Print V5F's live boot stage (read from shared SRAM) on change or ~1 Hz.
+        // This is the probe-free oracle that replaces eyeballing PC3's blink pile.
+        diag_v5f_stage_poll(&diag_last_stage, &diag_hb_tick);
+#endif
     }
 }
