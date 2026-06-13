@@ -204,12 +204,16 @@ int main(void)
 
 	led_on();
 	delay(10);
+	dbg_stage(0x90);                 // before port_reset
 	usb_host_port_reset();
+	dbg_stage(0x91);                 // after port_reset, before speed
 
 	uint8_t speed = usb_host_device_speed();
 	(void)speed;
+	dbg_stage(0x92);                 // before capture_descriptors
 
 	if (!capture_descriptors(&desc)) {
+		dbg_stage(0x9F);             // capture_descriptors FAILED
 		led_blink_forever(5, 100, 100);
 	}
 	dbg_stage(DBG_V5F_DESC_OK);
@@ -279,9 +283,20 @@ int main(void)
 	led_off();
 	uint32_t dev_wait_start = millis();
 	uint32_t dev_led_toggle = millis();
+	extern volatile uint32_t usbd_dbg_irq, usbd_dbg_busrst, usbd_dbg_setup, usbd_dbg_lastst;
+	extern volatile uint32_t usbd_dbg_alloc_before, usbd_dbg_alloc_after;
 	while (!usb_device_is_configured()) {
 		usb_device_poll();
 		usb_merge_drain_icc(); // keep the ICC mailbox drained during bring-up
+		// BENCH DIAG: publish USBFS device-side activity so V3F can print it.
+		// irq=0 => the device PHY sees NO bus activity (not wired / no pullup);
+		// busrst climbing => host is driving the bus; setup climbing => enumerating.
+		*(volatile uint32_t *)0x2017F028u = usbd_dbg_irq;
+		*(volatile uint32_t *)0x2017F02Cu = usbd_dbg_busrst;
+		*(volatile uint32_t *)0x2017F030u = usbd_dbg_setup;
+		*(volatile uint32_t *)0x2017F034u = (USBFSD->BASE_CTRL) | (usbd_dbg_lastst << 8)
+		                                    | (usbd_dbg_alloc_before << 16)
+		                                    | (usbd_dbg_alloc_after << 17);
 		if ((millis() - dev_led_toggle) >= 250) {
 			led_toggle();
 			dev_led_toggle = millis();

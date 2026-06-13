@@ -70,6 +70,19 @@ static volatile uint8_t  USBFS_DevSleepStatus;
 
 static volatile uint8_t  s_configured;        /* set after SET_CONFIGURATION */
 
+/* BENCH DIAG: USBFS device-side activity counters, so the V3F UART oracle can
+ * show whether the device PHY sees the PC at all when s_configured stays 0:
+ *   irq    = total USBFS_IRQHandler entries (0 => no bus activity / not wired)
+ *   busrst = bus-reset interrupts (host driving reset => device is on the bus)
+ *   setup  = SETUP packets seen (host enumerating)
+ *   lastst = last INT_ST token snapshot. */
+volatile uint32_t usbd_dbg_irq;
+volatile uint32_t usbd_dbg_busrst;
+volatile uint32_t usbd_dbg_setup;
+volatile uint32_t usbd_dbg_lastst;
+volatile uint32_t usbd_dbg_alloc_before;   /* NVIC IRQ-alloc bit before SetAllocate */
+volatile uint32_t usbd_dbg_alloc_after;    /* and after (1 => routed to V5F) */
+
 /* HID class state (single interface). */
 static volatile uint8_t  USBFS_HidIdle;
 static volatile uint8_t  USBFS_HidProtocol;
@@ -151,6 +164,16 @@ bool usb_device_init(const captured_descriptors_t *desc)
     USBFS_DevSleepStatus = 0;
     s_configured         = 0;
 
+    // DUAL-CORE IRQ ROUTING: IRQn>31 are core-allocated via NVIC->IALLOCR, and the
+    // RESET DEFAULT is Core_ID_V3F (0). The USBFS enumeration ISR runs on V5F, so
+    // without this the interrupt is delivered to V3F (which has no USBFS handler)
+    // and V5F's USBFS_IRQHandler never fires — s_configured stays 0 forever. Route
+    // USBFS_IRQn (67) to V5F before enabling it. Publish the pre/post allocation
+    // bit for the UART oracle. (USBHS host works without this because it's polled.)
+    usbd_dbg_alloc_before = NVIC_GetAllocateIRQ(USBFS_IRQn);
+    NVIC_SetAllocateIRQ(USBFS_IRQn, Core_ID_V5F);
+    usbd_dbg_alloc_after = NVIC_GetAllocateIRQ(USBFS_IRQn);
+
     NVIC_EnableIRQ(USBFS_IRQn);
     return true;
 }
@@ -223,6 +246,11 @@ void USBFS_IRQHandler(void)
 
     intflag = USBFSD->INT_FG;
     intst   = USBFSD->INT_ST;
+
+    usbd_dbg_irq++;            /* bench: count every IRQ entry */
+    usbd_dbg_lastst = intst;
+    if (intflag & USBFS_UIF_BUS_RST) usbd_dbg_busrst++;
+    if ((intst & USBFS_UIS_TOKEN_MASK) == USBFS_UIS_TOKEN_SETUP) usbd_dbg_setup++;
 
     if (intflag & USBFS_UIF_TRANSFER) {
         switch (intst & USBFS_UIS_TOKEN_MASK) {

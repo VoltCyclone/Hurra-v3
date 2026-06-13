@@ -379,6 +379,15 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
     USBHSH->TX_LEN = sizeof(usb_setup_t);
     s = usbhs_transact(USB_PID_SETUP | 0x00, USBHS_UH_T_TOG_DATA0, nak_budget);
     if (s != ERR_SUCCESS) {
+        // BENCH DIAG: stamp the SETUP-stage failure detail at 0x2017F050:
+        // [7:0]=transact return code s, [15:8]=INT_FLAG, [23:16]=INT_ST,
+        // [31:24]=PORT_STATUS low. Lets the oracle show WHY the first SETUP failed
+        // (no response / NAK / STALL / connect-drop) instead of just ret=-1.
+        *(volatile uint32_t *)0x2017F050u =
+            ((uint32_t)(s & 0xFF)) |
+            ((uint32_t)(USBHSH->INT_FLAG & 0xFF) << 8) |
+            ((uint32_t)(USBHSH->INT_ST & 0xFF) << 16) |
+            ((uint32_t)(USBHSH->PORT_STATUS & 0xFF) << 24);
         return -1;
     }
 

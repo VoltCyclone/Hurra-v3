@@ -162,13 +162,21 @@ static void capture_ms_os_1_0(captured_descriptors_t *desc)
 	desc->ms_os_vendor_code = buf[16]; // bMS_VendorCode at offset 0x10
 }
 
+// BENCH DIAG: capture_descriptors writes a {step, last ret} record into shared
+// SRAM (0x2017F048 = step, 0x2017F04C = ret) so the V3F UART oracle can show
+// exactly which control transfer failed when capture returns false (stage 0x9F).
+#define CAP_DBG(step)  (*(volatile uint32_t *)0x2017F048u = (step))
+#define CAP_RET(r)     (*(volatile uint32_t *)0x2017F04Cu = (uint32_t)(r))
+
 bool capture_descriptors(captured_descriptors_t *desc)
 {
 	memset(desc, 0, sizeof(*desc));
 	int ret;
 	usb_setup_t setup;
+	CAP_DBG(1);  // GET_DESCRIPTOR(device, 8) @ addr 0
 	setup = make_get_descriptor(USB_DESC_DEVICE, 0, 0, 8);
 	ret = usb_host_control_transfer(0, 8, &setup, desc->device_desc, 2000);
+	CAP_RET(ret);
 	if (ret < 0 || ret < 8 || desc->device_desc[0] != 18 ||
 	    desc->device_desc[1] != USB_DESC_DEVICE) {
 		return false;
@@ -176,6 +184,7 @@ bool capture_descriptors(captured_descriptors_t *desc)
 	desc->ep0_maxpkt = desc->device_desc[7]; // bMaxPacketSize0
 	if (desc->ep0_maxpkt != 8  && desc->ep0_maxpkt != 16 &&
 	    desc->ep0_maxpkt != 32 && desc->ep0_maxpkt != 64) {
+		CAP_DBG(2); CAP_RET(desc->ep0_maxpkt);  // bad bMaxPacketSize0
 		return false;
 	}
 	desc->dev_addr = 1;
@@ -184,21 +193,27 @@ bool capture_descriptors(captured_descriptors_t *desc)
 	setup.wValue = desc->dev_addr;
 	setup.wIndex = 0;
 	setup.wLength = 0;
+	CAP_DBG(3);  // SET_ADDRESS
 	ret = usb_host_control_transfer(0, desc->ep0_maxpkt, &setup, NULL, 2000);
+	CAP_RET(ret);
 	if (ret < 0) return false;
 	delay(2);  // Let status phase complete at address 0
 	delay(10); // Device needs time to process new address
+	CAP_DBG(4);  // GET_DESCRIPTOR(device, 18) @ addr 1
 	setup = make_get_descriptor(USB_DESC_DEVICE, 0, 0, 18);
 	ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 		&setup, desc->device_desc, 2000);
+	CAP_RET(ret);
 	if (ret < 0 || ret < 18 || desc->device_desc[0] != 18 ||
 	    desc->device_desc[1] != USB_DESC_DEVICE) {
 		return false;
 	}
 	desc->device_desc_len = 18;
+	CAP_DBG(5);  // GET_DESCRIPTOR(config, 9)
 	setup = make_get_descriptor(USB_DESC_CONFIGURATION, 0, 0, 9);
 	ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 		&setup, desc->config_desc, 2000);
+	CAP_RET(ret);
 	if (ret < 0 || ret < 9 || desc->config_desc[1] != USB_DESC_CONFIGURATION) {
 		return false;
 	}

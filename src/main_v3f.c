@@ -107,6 +107,32 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
     diag_puts(changed ? " <NEW>" : " (still)");
     diag_puts(" icc_magic=");
     diag_puts(magic == ICC_MAGIC ? "OK" : "BAD");
+    // At DEV_INIT (0x57, waiting for the PC to enumerate the cloned USBFS device),
+    // show USBFS device-side activity. irq=0 => the device PHY sees no bus traffic.
+    if (stage == DBG_V5F_DEV_INIT) {
+        uint32_t base_st = *(volatile uint32_t *)0x2017F034u;
+        diag_puts(" usbd_irq=");  diag_put_u32(*(volatile uint32_t *)0x2017F028u);
+        diag_puts(" busrst=");    diag_put_u32(*(volatile uint32_t *)0x2017F02Cu);
+        diag_puts(" setup=");     diag_put_u32(*(volatile uint32_t *)0x2017F030u);
+        diag_puts(" BASE_CTRL=0x"); diag_put_hex8((uint8_t)base_st);
+        diag_puts(" lastst=0x");  diag_put_hex8((uint8_t)(base_st >> 8));
+        diag_puts(" alloc(b/a)="); diag_put_u32((base_st >> 16) & 1);
+        diag_puts("/");            diag_put_u32((base_st >> 17) & 1);
+    }
+    // capture_descriptors() failure detail (stage 0x9F): which control-transfer
+    // step failed (p@0x2017F048) and its return code (p@0x2017F04C).
+    if (stage == 0x9F || stage == 0x92) {
+        diag_puts(" cap_step="); diag_put_u32(*(volatile uint32_t *)0x2017F048u);
+        diag_puts(" cap_ret=");  diag_put_u32(*(volatile uint32_t *)0x2017F04Cu);
+        // SETUP-stage failure detail: s | INT_FLAG<<8 | INT_ST<<16 | PORT_STATUS<<24.
+        // s: 0x20=TRANSFER(NAK/no-resp exhausted) 0xFE=UNKNOWN(transfer-done never
+        // set=no response) 0x15=CONNECT 0x16=DISCON.
+        uint32_t d = *(volatile uint32_t *)0x2017F050u;
+        diag_puts(" setup_s=0x");      diag_put_hex8((uint8_t)d);
+        diag_puts(" INT_FLAG=0x");     diag_put_hex8((uint8_t)(d >> 8));
+        diag_puts(" INT_ST=0x");       diag_put_hex8((uint8_t)(d >> 16));
+        diag_puts(" PORT_STATUS=0x");  diag_put_hex8((uint8_t)(d >> 24));
+    }
     // On a V5F trap (stage 0x8x) the handler also stamped mcause/mepc in the two
     // words after the marker — surface them so the fault is fully self-describing.
     if ((stage & 0xF0) == DBG_V5F_TRAP_BASE) {
