@@ -249,17 +249,46 @@ TARGET rejecting debug. Do NOT reset-tap. Instead, **power-off erase**: the
 on-board WCH-LinkE powers the target, so it can gate the rail and attach in the
 clean reset window automatically.
 
-PREREQUISITE: ONLY the WCH-LinkE USB-C is plugged in (it supplies target 3V3).
-If a second cable powers the board independently, power-off can't gate it.
-
     wlink --chip CH32H41X erase --method power-off          # clean unbrick, no button
     wlink --chip CH32H41X flash -e --address 0x08000000 build/Merge.bin
 
 After the power-off erase the chip is blank (debug stays alive), so normal
 status/regs/dump/flash all work without the race. `make flash` should be updated
 to do the power-off erase first. Chip = CH32H41X [CH32H417QEU], ChipID
-0x4170052d, 960KB. Fallback if power-off ever fails: BOOT0 + wchisp over the ROM
-ISP (USB 4348:55e0), or MounRiver Studio on macOS (first-party H417 support).
+0x4170052d, 960KB.
+
+## DEVICE-PORT VBUS BACK-POWER — the real "can't flash on Windows" cause (2026-06-14)
+ROOT CAUSE (bench-proven this session): a **device-port VBUS 5V jumper** tied the
+USBFS device port's VBUS (PC side) to the board 3V3 rail. Windows asserts VBUS
+hard the instant the device cable connects, so it **back-powered the rail**. The
+power-off erase above gates the rail via the WCH-LinkE — but it can't gate a rail
+an external host is independently feeding, so it never caught the chip in the
+clean reset window and the running firmware NAK'd every command with `0x55`.
+macOS is conservative about VBUS (slower/current-limited), so it usually lost the
+tug-of-war and flashing worked there — at the cost of the device port reading as
+dead. Same single cause behind BOTH original symptoms.
+
+FIX (verified): **remove the device-port VBUS 5V jumper** to isolate the PC's
+VBUS from the rail. After unjumpering, a full `erase --method power-off` →
+`flash` → reset cycle completed cleanly **with the device cable plugged into
+Windows** (chip ID'd, "Flash done", firmware booted = post-flash `0x55`). The
+USBFS device PHY uses an INTERNAL D+ pull-up and does NOT sense VBUS
+(`usb_device.c:323` `USBFS_UC_DEV_PU_EN`), so the device port still enumerates to
+the PC powered from the board rail — losing PC VBUS on the rail costs nothing.
+
+If the jumper must stay in (e.g. you want the PC to power the board): the old
+"ONLY the WCH-LinkE plugged in when flashing" cable discipline still works —
+unplug the device cable from any powered host before `make flash`, reattach after.
+
+DEAD-END FALLBACKS (do NOT waste time on these — both disproven this session):
+- `wlink erase --method pin-rst`: nRST is NOT wired from the LinkE to the H417 on
+  this board (erase silently no-ops; readback still `0x55` = firmware kept
+  running). The warning "requires a RST pin connection" is literal here.
+- `wchisp` ISP: wchisp 0.3.0 AND upstream `main` have NO device file for type
+  0x41 (H417) — device DB tops out at `0x26-CH32V317`. It can't identify the chip
+  even with BOOT0 strapped. (chprog.py / MounRiver Studio H417 support unverified.)
+- The board's "reset/mode/iap" buttons are the on-board LinkE PROBE's controls
+  (IAP = update probe fw → 4348:55e0; Mode = RV↔DAP), NOT the target H417's BOOT0.
 
 ## BOOT FIX (2026-06-12): "board starts but never blinks" — THREE stacked bugs
 1. **LED on wrong pin.** board.h drove PB1 (no LED). The user LEDs are PC2/PC3 —
