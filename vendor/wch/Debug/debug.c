@@ -54,6 +54,10 @@ void Delay_Us(uint32_t n)
     SysTick0->CTLR &= ~(1 << 0);
 
 #elif defined(Core_V5F)
+    /* NOTE: ISR is a SINGLE shared status register (lives on SysTick0); bit0 =
+     * SysTick0 done, bit1 = SysTick1 done (see core_riscv.h SysTick_Type). V5F
+     * uses SysTick1 for its CNT/CMP but the completion bit is SysTick0->ISR bit1.
+     * This IS correct — do not "fix" it to SysTick1->ISR (no such register). */
     SysTick0->ISR &= ~(1 << 1);
     i = (uint32_t)n * p_us;
 

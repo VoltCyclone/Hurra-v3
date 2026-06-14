@@ -107,6 +107,24 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
     diag_puts(changed ? " <NEW>" : " (still)");
     diag_puts(" icc_magic=");
     diag_puts(magic == ICC_MAGIC ? "OK" : "BAD");
+    // Trap witness (any vector): if V5F took a trap/NMI/ecall it stamped a witness
+    // at 0x2017F0E0 before spinning. Printed UNCONDITIONALLY (a trap can freeze at
+    // any stage). 0x40A11EDx → trap class x; mcause/mepc follow. Absent => true hang.
+    {
+        uint32_t w = *(volatile uint32_t *)0x2017F0E0u;
+        if ((w & 0xFFFFFFF0u) == 0x40A11ED0u) {
+            diag_puts(" TRAP=");      diag_put_hex8((uint8_t)(w & 0x0F));
+            diag_puts(" mcause=");    diag_put_u32(*(volatile uint32_t *)0x2017F0E4u);
+            diag_puts(" mepc=0x");
+            uint32_t pc = *(volatile uint32_t *)0x2017F0E8u;
+            diag_put_hex8((uint8_t)(pc >> 24)); diag_put_hex8((uint8_t)(pc >> 16));
+            diag_put_hex8((uint8_t)(pc >> 8));  diag_put_hex8((uint8_t)pc);
+        } else if ((w & 0xFFFF0000u) >= 0x40A20000u && (w & 0xFFFF0000u) <= 0x40A40000u) {
+            // transact phase tracer: 0x40A2=loop-top 0x40A3=pre-INT-wait 0x40A4=post-wait
+            diag_puts(" tx=0x"); diag_put_hex8((uint8_t)(w >> 24)); diag_put_hex8((uint8_t)(w >> 16));
+            diag_puts(":"); diag_put_u32(w & 0xFFFF);
+        }
+    }
     // At DEV_INIT (0x57, waiting for the PC to enumerate the cloned USBFS device),
     // show USBFS device-side activity. irq=0 => the device PHY sees no bus traffic.
     if (stage == DBG_V5F_DEV_INIT) {
@@ -135,6 +153,64 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
         uint32_t cfgw = *(volatile uint32_t *)0x2017F060u;
         diag_puts(" cfgSeen=0x");        diag_put_hex8((uint8_t)cfgw);
         diag_puts(" cfgLive=");          diag_put_u32((cfgw >> 16) & 1);
+    }
+    // At RELAY (0x58): show what we cloned + whether reports flow. The captured
+    // interface table (0x2017F080..) tells us if the device is composite and
+    // whether the mouse interface's HID report descriptor was actually captured
+    // (rdlen>0); the flow counters (0x2017F0A8..) tell us if real IN reports
+    // arrive and forward to the PC. This pinpoints "named right but shows as a
+    // keyboard / no reports".
+    if (stage == DBG_V5F_RELAY) {
+        uint32_t hdr = *(volatile uint32_t *)0x2017F080u;
+        uint8_t nif = (uint8_t)hdr;
+        diag_puts(" nif=");      diag_put_u32(nif);
+        diag_puts(" devCls=0x"); diag_put_hex8((uint8_t)(hdr >> 8));
+        diag_puts(" inEPs=");    diag_put_u32((hdr >> 16) & 0xFF);
+        diag_puts(" outEPs=");   diag_put_u32((hdr >> 24) & 0xFF);
+        if (nif > 4) nif = 4;
+        for (uint8_t i = 0; i < nif; i++) {
+            uint32_t a = *(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u);
+            uint32_t b = *(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u + 4);
+            diag_puts(" if"); diag_put_u32(i);
+            diag_puts("[cls=0x");   diag_put_hex8((uint8_t)a);
+            diag_puts(" sub=0x");   diag_put_hex8((uint8_t)(a >> 8));
+            diag_puts(" prot=0x");  diag_put_hex8((uint8_t)(a >> 16));
+            diag_puts(" inEP=0x");  diag_put_hex8((uint8_t)(a >> 24));
+            diag_puts(" rdlen=");   diag_put_u32(b & 0xFFFF);
+            diag_puts(" hid=");     diag_put_u32((b >> 16) & 1);
+            diag_puts("]");
+        }
+        diag_puts(" host_in=");  diag_put_u32(*(volatile uint32_t *)0x2017F0A8u);
+        uint32_t fwd = *(volatile uint32_t *)0x2017F0ACu;
+        diag_puts(" fwd=");      diag_put_u32(fwd & 0xFFFFFF);
+        diag_puts(" lastLen=");  diag_put_u32(fwd >> 24);
+        diag_puts(" drop=");     diag_put_u32(*(volatile uint32_t *)0x2017F0B0u);
+        // Host-side IN-poll outcome: why host_in stays 0.
+        diag_puts(" inPolls="); diag_put_u32(*(volatile uint32_t *)0x2017F0B8u);
+        diag_puts(" inOks=");   diag_put_u32(*(volatile uint32_t *)0x2017F0BCu);
+        uint32_t ip = *(volatile uint32_t *)0x2017F0C0u;
+        diag_puts(" inS=0x");   diag_put_hex8((uint8_t)ip);
+        diag_puts(" inN=");     diag_put_u32((ip >> 8) & 0xFF);
+        diag_puts(" inAddr=");  diag_put_u32((ip >> 16) & 0xFF);
+        diag_puts(" inEP=");    diag_put_u32((ip >> 24) & 0xFF);
+        diag_puts(" v5ms=");    diag_put_u32(*(volatile uint32_t *)0x2017F0C4u);
+        uint32_t ps = *(volatile uint32_t *)0x2017F0C8u;
+        diag_puts(" portSt=0x"); diag_put_hex8((uint8_t)(ps >> 8));
+        diag_put_hex8((uint8_t)ps);
+        diag_puts(" spd=");      diag_put_u32((ps >> 16) & 0xFF);  // 0=FS 1=LS 2=HS
+        diag_puts(" cfg=0x");    diag_put_hex8((uint8_t)(ps >> 24));
+        diag_puts(" loop=");     diag_put_u32(*(volatile uint32_t *)0x2017F0CCu);
+        uint32_t ss = *(volatile uint32_t *)0x2017F0D4u;
+        uint32_t sn = *(volatile uint32_t *)0x2017F0D8u;
+        diag_puts(" s0=0x"); diag_put_hex8((uint8_t)ss);
+        diag_puts("/n"); diag_put_u32((uint8_t)sn);
+        diag_puts(" s1=0x"); diag_put_hex8((uint8_t)(ss >> 8));
+        diag_puts("/n"); diag_put_u32((uint8_t)(sn >> 8));
+        diag_puts(" s2=0x"); diag_put_hex8((uint8_t)(ss >> 16));
+        diag_puts("/n"); diag_put_u32((uint8_t)(sn >> 16));
+        diag_puts(" itrc=0x"); diag_put_hex8((uint8_t)*(volatile uint32_t *)0x2017F0DCu);
+        diag_puts(" usbdIrq="); diag_put_u32(*(volatile uint32_t *)0x2017F0F0u);
+        diag_puts(" inISR=");   diag_put_u32(*(volatile uint32_t *)0x2017F0F4u);
     }
     // capture_descriptors() failure detail (stage 0x9F): which control-transfer
     // step failed (p@0x2017F048) and its return code (p@0x2017F04C).

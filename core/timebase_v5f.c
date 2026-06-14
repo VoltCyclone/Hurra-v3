@@ -92,6 +92,28 @@ static void timebase_v5f_us_init(uint32_t core_hz)
 
 uint32_t timebase_v5f_us(void) { return TIM9->CNT_32; }
 
+// V5F-local blocking delays built on the free-running 1 MHz TIM9 counter.
+//
+// WHY THESE EXIST: the vendor Delay_Us/Delay_Ms (debug.c) spin on the SHARED
+// SysTick0->ISR status register (bit0=V3F's SysTick0, bit1=V5F's SysTick1 — one
+// physical register, see core_riscv.h). When BOTH cores call Delay_* at once
+// (e.g. the instant the PC enumerates the cloned device and V3F gets busy), V3F's
+// `SysTick0->ISR &= ~(1<<0)` read-modify-write races V5F's bit-1 wait, and V5F's
+// Delay_Us spins FOREVER — wedging the relay loop in usbhs_transact (the real
+// "hang on PC plug-in / no reports" bug). TIM9 is V5F-private and only ever READ
+// here (no shared status register, no RMW), so it cannot be raced by V3F.
+// These wrap correctly across the 32-bit TIM9 counter (unsigned subtraction).
+void timebase_v5f_delay_us(uint32_t us)
+{
+    uint32_t start = TIM9->CNT_32;
+    while ((uint32_t)(TIM9->CNT_32 - start) < us) { /* spin */ }
+}
+
+void timebase_v5f_delay_ms(uint32_t ms)
+{
+    while (ms--) timebase_v5f_delay_us(1000u);
+}
+
 void timebase_v5f_init(uint32_t core_hz)
 {
     // Determine the HB1 (TIM4) input clock. Prefer the measured HCLK from the
@@ -121,6 +143,14 @@ void timebase_v5f_init(uint32_t core_hz)
 
     TIM_ClearITPendingBit(TIM4, TIM_IT_Update);        // drop the init-generated UEV
     TIM_ITConfig(TIM4, TIM_IT_Update, ENABLE);
+    // DUAL-CORE IRQ ROUTING: TIM4_IRQn (>31) is core-allocated via NVIC->IALLOCR,
+    // default Core_ID_V3F. This millis IRQ runs on V5F and is the ONLY periodic
+    // wake source for the relay loop's wfi (the USBHS host is polled, the USBFS
+    // device only IRQs on transfers). Without routing it to V5F, the IRQ is
+    // delivered to V3F and V5F's wfi never wakes once the USB bus goes idle —
+    // the relay loop freezes and stops polling for new reports. Same bug class as
+    // the USBFS IRQ-alloc and TIM2 cross-core fixes.
+    NVIC_SetAllocateIRQ(TIM4_IRQn, Core_ID_V5F);
     NVIC_EnableIRQ(TIM4_IRQn);
     TIM_Cmd(TIM4, ENABLE);
 

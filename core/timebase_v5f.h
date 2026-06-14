@@ -19,3 +19,11 @@ uint32_t millis(void);
 // a plain CNT read. Fed to humanize_record_arrival() on each real mouse report
 // so the humanization filter can estimate the adaptive feed interval.
 uint32_t timebase_v5f_us(void);
+
+// V5F-local blocking delays on the free-running TIM9 counter. Use these on V5F
+// instead of the vendor Delay_Us/Delay_Ms (debug.c), which spin on the SHARED
+// SysTick0->ISR register and can be raced to a permanent hang when V3F is also
+// delaying (the "wedge on PC enumerate" bug). TIM9 is V5F-private and read-only
+// here, so it is race-free. Safe across the 32-bit counter wrap.
+void timebase_v5f_delay_us(uint32_t us);
+void timebase_v5f_delay_ms(uint32_t ms);

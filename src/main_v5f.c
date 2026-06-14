@@ -44,9 +44,11 @@
 #include "debug.h"
 
 // delay() shim for the V5F image. desc_capture.c (host-side enumeration) and
-// the init sequence below call `extern void delay(uint32_t msec)`. The vendored
-// debug.c only exposes Delay_Ms/Delay_Us, so we bridge here.
-void delay(uint32_t msec) { Delay_Ms(msec); }
+// the init sequence below call `extern void delay(uint32_t msec)`. Route through
+// the TIM9-based V5F-local delay, NOT the vendor Delay_Ms — the vendor delay
+// spins on the shared SysTick0->ISR register and can be raced to a permanent
+// hang by V3F (the "wedge on PC enumerate" bug). TIM9 is V5F-private/race-free.
+void delay(uint32_t msec) { timebase_v5f_delay_ms(msec); }
 
 // --- BENCH DIAG (2026-06-12): V5F trap catcher -----------------------------
 // Symptom: V5F LED (PC3) sits SOLID-on during USBHS bring-up. The startup's
@@ -78,12 +80,62 @@ static void v5f_diag_raw_blink(uint8_t pulses, uint32_t on_nop, uint32_t off_nop
 	}
 }
 
-void HardFault_Handler(void) __attribute__((interrupt("machine")));
-void HardFault_Handler(void)
+// BENCH DIAG: catch the OTHER trap vectors too. Any of these not overridden falls
+// through to the startup stub `1: j 1b` (infinite spin) — which looks IDENTICAL to
+// a pure hang (stage frozen, no witness). On QingKe a clock/PLL fault can raise
+// NMI, and a misrouted exception can land in Ecall/Break. Each stamps a distinct
+// witness at 0x2017F0E0 so V3F can tell trap-class apart from a real hang.
+//   0x40A11ED0 = HardFault, 0x40A11ED1 = NMI, 0x40A11ED2 = Ecall-M,
+//   0x40A11ED3 = Ecall-U, 0x40A11ED4 = Break.
+void NMI_Handler(void) __attribute__((interrupt("machine")));
+void NMI_Handler(void)
 {
+	*(volatile uint32_t *)0x2017F0E0u = 0x40A11ED1u;
 	uint32_t mcause, mepc;
 	__asm volatile("csrr %0, mcause" : "=r"(mcause));
 	__asm volatile("csrr %0, mepc"   : "=r"(mepc));
+	*(volatile uint32_t *)0x2017F0E4u = mcause;
+	*(volatile uint32_t *)0x2017F0E8u = mepc;
+	for (;;) { __asm volatile("nop"); }
+}
+
+void Ecall_M_Mode_Handler(void) __attribute__((interrupt("machine")));
+void Ecall_M_Mode_Handler(void)
+{
+	*(volatile uint32_t *)0x2017F0E0u = 0x40A11ED2u;
+	uint32_t mcause = 0, mepc = 0;
+	__asm volatile("csrr %0, mcause" : "=r"(mcause));
+	__asm volatile("csrr %0, mepc"   : "=r"(mepc));
+	*(volatile uint32_t *)0x2017F0E4u = mcause;
+	*(volatile uint32_t *)0x2017F0E8u = mepc;
+	for (;;) { __asm volatile("nop"); }
+}
+
+void Break_Point_Handler(void) __attribute__((interrupt("machine")));
+void Break_Point_Handler(void)
+{
+	*(volatile uint32_t *)0x2017F0E0u = 0x40A11ED4u;
+	uint32_t mcause = 0, mepc = 0;
+	__asm volatile("csrr %0, mcause" : "=r"(mcause));
+	__asm volatile("csrr %0, mepc"   : "=r"(mepc));
+	*(volatile uint32_t *)0x2017F0E4u = mcause;
+	*(volatile uint32_t *)0x2017F0E8u = mepc;
+	for (;;) { __asm volatile("nop"); }
+}
+
+void HardFault_Handler(void) __attribute__((interrupt("machine")));
+void HardFault_Handler(void)
+{
+	// BENCH DIAG: write-once trap witness at a DEDICATED address nothing else
+	// touches, as the very FIRST thing — so even if the rest of this handler (or
+	// dbg_stage) is clobbered/faults, V3F can tell "trap happened" from "pure
+	// hang". 0x2017F0E0 = 0xT2A9 magic; 0x2017F0E4 = mcause; 0x2017F0E8 = mepc.
+	*(volatile uint32_t *)0x2017F0E0u = 0x40A11ED0u;  /* "TRAPPED" witness */
+	uint32_t mcause, mepc;
+	__asm volatile("csrr %0, mcause" : "=r"(mcause));
+	__asm volatile("csrr %0, mepc"   : "=r"(mepc));
+	*(volatile uint32_t *)0x2017F0E4u = mcause;
+	*(volatile uint32_t *)0x2017F0E8u = mepc;
 	// Stamp the trap into the shared boot-stage marker (0x80 | low mcause nibble)
 	// and the faulting PC into the following word, so V3F surfaces a V5F trap as a
 	// single UART line (e.g. "V5F=0x82 TRAP mcause=2 mepc=0x200A1234") instead of a
@@ -122,6 +174,7 @@ int main(void)
 	SystemAndCoreClockUpdate();
 	Delay_Init();
 	dbg_stage(DBG_V5F_BOOT);   // bench: see src/icc.h DBG_STAGE_ADDR
+	*(volatile uint32_t *)0x2017F0E0u = 0;  // clear trap witness (SRAM is random post-flash)
 
 	// Millisecond timebase (TIM4) — the merge's release scheduling uses millis().
 	timebase_v5f_init(SystemCoreClock);
@@ -176,41 +229,51 @@ int main(void)
 	led_off();
 	usb_host_power_on();
 
-	// Host-wait. With no device powered on the port this never exits, so make it
-	// observable: stamp the HOST_WAITING stage and blink the LED at ~2 Hz while
-	// waiting (distinct from the steady-on/relay states). The wfi wakes each ms
-	// from the TIM4 millis IRQ, so the millis() gate below blinks reliably.
-	dbg_stage(DBG_V5F_HOST_WAITING);
-	uint32_t wait_blink = millis();
-	uint32_t wait_iter  = 0;
-	while (!usb_host_device_connected()) {
-		usb_host_power_on();
-		// Drain any injection the V3F core queues during bring-up so the ICC
-		// mailbox never backs up before the relay starts.
-		usb_merge_drain_icc();
-		uint32_t now = millis();
-		if ((now - wait_blink) >= 250) {   // 250 ms on/off = ~2 Hz "searching"
-			wait_blink = now;
-			led_toggle();
-			// Bench oracle: publish the live USBHS port registers so V3F can print
-			// them over UART (shows whether the PHY sees an attached device while
-			// CONNECT is not yet set). Cheap, once per ~250 ms.
-			dbg_usbhs_regs(USBHSH->CFG, USBHSH->PORT_CFG, USBHSH->PORT_STATUS,
-			               USBHSH->PORT_STATUS_CHG, USBHSH->PORT_CTRL, ++wait_iter);
+	// Dynamic attach/capture: wait for a device, try to capture its descriptors,
+	// and if capture fails (or the device was yanked / mid-glitch), go back to
+	// waiting for a clean attach instead of dead-looping. This lets the board be
+	// flashed with nothing plugged in (the only reliable flash state — see the
+	// 0x55 SWJ wedge), then have the real mouse hot-plugged afterward and still
+	// enumerate. A failed capture re-powers the port and re-arms the wait.
+	uint32_t wait_blink   = millis();
+	uint32_t wait_iter    = 0;
+	uint32_t cap_attempts = 0;
+	for (;;) {
+		// Host-wait. With no device on the port this blinks PC3 at ~2 Hz
+		// ("searching"). The wfi wakes each ms from the TIM4 millis IRQ.
+		dbg_stage(DBG_V5F_HOST_WAITING);
+		while (!usb_host_device_connected()) {
+			usb_host_power_on();
+			// Drain V3F injection so the ICC mailbox never backs up pre-relay.
+			usb_merge_drain_icc();
+			uint32_t now = millis();
+			if ((now - wait_blink) >= 250) {   // ~2 Hz "searching"
+				wait_blink = now;
+				led_toggle();
+				dbg_usbhs_regs(USBHSH->CFG, USBHSH->PORT_CFG, USBHSH->PORT_STATUS,
+				               USBHSH->PORT_STATUS_CHG, USBHSH->PORT_CTRL, ++wait_iter);
+			}
+			__asm volatile("wfi");
 		}
-		__asm volatile("wfi");
-	}
-	dbg_stage(DBG_V5F_DEV_CONNECTED);
+		dbg_stage(DBG_V5F_DEV_CONNECTED);
 
-	led_on();
-	delay(10);
-	dbg_stage(0x92);                 // before capture_descriptors
-	// capture_descriptors() now owns the bus-reset + post-reset stability poll +
-	// the full address-assignment retry loop (ports WCH USBH_EnumRootDevice), so
-	// the caller no longer pre-resets — a double reset only confused the timing.
-	if (!capture_descriptors(&desc)) {
-		dbg_stage(0x9F);             // capture_descriptors FAILED (all retries)
-		led_blink_forever(5, 100, 100);
+		led_on();
+		delay(10);
+		dbg_stage(0x92);                 // before capture_descriptors
+		// capture_descriptors() owns the bus-reset + post-reset stability poll +
+		// the full address-assignment retry loop, so the caller does not pre-reset.
+		// Publish the attempt count so the oracle shows re-tries (0x2017F0B4).
+		*(volatile uint32_t *)0x2017F0B4u = ++cap_attempts;
+		if (capture_descriptors(&desc))
+			break;                       // captured — proceed to clone + relay
+
+		// Capture failed: stamp 0x9F (the oracle shows cap_step/cap_ret detail),
+		// then loop back to host-wait. If the device is still physically present
+		// but mid-glitch, re-powering + waiting for a stable connect gives it a
+		// clean re-attach; if it was yanked, we wait for the next plug-in.
+		dbg_stage(0x9F);
+		led_off();
+		delay(200);                      // let a glitching device settle / re-detect
 	}
 	dbg_stage(DBG_V5F_DESC_OK);
 
@@ -270,6 +333,34 @@ int main(void)
 
 	// Parse the cloned HID report descriptor into the merge layout.
 	usb_merge_cache_endpoints(&desc);
+
+	// BENCH DIAG (descriptor-clone bring-up): publish the captured interface table
+	// so the V3F oracle can show, at the relay stage, exactly what we cloned —
+	// per-interface class/subclass/protocol, the IN endpoint, and whether the HID
+	// report descriptor was actually captured (len>0). This distinguishes "mouse
+	// report descriptor STALLed/empty so Windows kept only the keyboard" from a
+	// protocol-keying mismatch. Header word: num_ifaces | bDeviceClass<<8 |
+	// num_ep_mappings<<16 | num_out_mappings<<24.
+	*(volatile uint32_t *)0x2017F080u =
+		(uint32_t)desc.num_ifaces
+		| ((uint32_t)desc.device_desc[4] << 8)   // bDeviceClass
+		| ((uint32_t)num_ep_mappings << 16)
+		| ((uint32_t)num_out_mappings << 24);
+	for (uint8_t i = 0; i < 4; i++) {
+		uint32_t a = 0, b = 0;
+		if (i < desc.num_ifaces) {
+			const captured_iface_t *f = &desc.ifaces[i];
+			a = (uint32_t)f->iface_class
+			  | ((uint32_t)f->iface_subclass << 8)
+			  | ((uint32_t)f->iface_protocol << 16)
+			  | ((uint32_t)f->interrupt_in_ep << 24);
+			b = (uint32_t)f->hid_report_desc_len
+			  | ((uint32_t)(f->has_hid_desc ? 1u : 0u) << 16)
+			  | ((uint32_t)f->interrupt_in_maxpkt << 17);
+		}
+		*(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u)     = a;
+		*(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u + 4) = b;
+	}
 
 	// --- USBFS device: replay descriptors, wait for the PC to configure --
 	if (!usb_device_init(&desc)) {
@@ -341,24 +432,52 @@ int main(void)
 	uint32_t drop_count   = 0;
 	uint32_t telem_tick   = millis();   // last time telemetry was emitted
 
+	// BENCH DIAG: live relay report-flow counters, published to shared SRAM each
+	// loop so the V3F oracle can show whether real IN reports arrive from the
+	// device (host_in_reports) and whether they forward to the PC (report_count)
+	// vs. drop (device EP busy / not configured). Distinguishes "no reports from
+	// the real mouse" from "reports arrive but never reach Windows".
+	uint32_t host_in_reports = 0;
+	uint8_t  last_in_len     = 0;
+
+	// BENCH DIAG: iteration-1 sub-stage tracer. V5F reaches 0x58 then appears to
+	// hang on the first relay iteration (loop heartbeat stuck at 1, publish block
+	// never runs). Write a distinct byte before each call so the LAST value at
+	// 0x2017F0DC pinpoints which call hangs/faults: 0x10 top, 0x20 after drain,
+	// 0x30 after device_poll, 0x40+m before EP poll m, 0x50+m after merge_report m,
+	// 0x60 after EP loop, 0x70 after send_pending, 0x80 publish done.
+	#define ITRC(v) (*(volatile uint32_t *)0x2017F0DCu = (v))
+
 	while (1) {
 		bool did_work = false;
+
+		// BENCH DIAG: raw loop heartbeat at the very TOP of the loop, before any
+		// work. If this advances but the publish block below stays frozen, the
+		// loop body hangs mid-iteration; if this is frozen too, the loop never
+		// iterates. (0x2017F0CC — distinct from the publish-block addresses.)
+		*(volatile uint32_t *)0x2017F0CCu = ++loop_count;
+		ITRC(0x10);
 
 		// Drain injection from the V3F command core into the merge accumulators
 		// (also runs scheduled click/key-release bookkeeping). Phase-5 cadence:
 		// drain + merge + send every iteration, no PIT pacing.
 		usb_merge_drain_icc();
+		ITRC(0x20);
 
 		// USB device EP completion (unblock EPs for next send).
 		usb_device_poll();
+		ITRC(0x30);
 
 		// Host IN endpoints: capture -> merge -> forward to PC.
 		for (uint8_t m = 0; m < num_ep_mappings; m++) {
+			ITRC(0x40 | m);
 			uint8_t *rpt_ptr = NULL;
 			ret = usb_host_interrupt_poll_zerocopy(ep_map[m].host_slot,
 				&rpt_ptr, ep_map[m].maxpkt);
 			if (ret > 0 && rpt_ptr) {
 				did_work = true;
+				host_in_reports++;          // bench: a real IN report arrived
+				last_in_len = (uint8_t)ret; // bench: its length
 				// Timestamp real mouse-report arrival from the free-running
 				// 1 MHz TIM9 µs counter (single CNT read, monotonic). This is
 				// the precise "a report just arrived" point; only the mouse
@@ -368,6 +487,7 @@ int main(void)
 					humanize_record_arrival(timebase_v5f_us());
 				usb_merge_report(ep_map[m].iface_protocol,
 					rpt_ptr, (uint8_t)ret);
+				ITRC(0x50 | m);
 				// Count forwarded vs. dropped reports for telemetry (ports v2
 				// main.c: send_report true -> report_count, false -> drop_count).
 				if (usb_device_send_report(
@@ -377,6 +497,7 @@ int main(void)
 					drop_count++;
 			}
 		}
+		ITRC(0x60);
 
 		// Device OUT endpoints: PC -> real device (vendor HID++ etc.).
 		for (uint8_t m = 0; m < num_out_mappings; m++) {
@@ -397,6 +518,7 @@ int main(void)
 		// merge path never both emit in one frame. Mirrors v2 main.c's
 		// kmbox_send_pending() call (line ~331), placed after the EP loops.
 		usb_merge_send_pending();
+		ITRC(0x70);
 
 		// V5F->V3F telemetry was DROPPED (see icc.c): a lock-free SRAM ring needs
 		// coherent cross-core reads of head+tail, which this part does not provide,
@@ -405,13 +527,80 @@ int main(void)
 		// stage marker below and future use; they're just no longer streamed.
 		(void)report_count; (void)drop_count; (void)telem_tick;
 
+		// BENCH DIAG: publish live relay flow so the V3F oracle can show it at the
+		// relay stage. host_in = IN reports seen from the real device; fwd =
+		// forwarded to PC; drop = device EP busy/unconfigured; last_in_len in the
+		// high byte of the fwd word.
+		*(volatile uint32_t *)0x2017F0A8u = host_in_reports;
+		*(volatile uint32_t *)0x2017F0ACu = report_count | ((uint32_t)last_in_len << 24);
+		*(volatile uint32_t *)0x2017F0B0u = drop_count;
+		// Host-side IN-poll outcome (why host_in stays 0): total polls, OK count,
+		// last transact status + RX len + addr/ep. Packed:
+		//   0x2017F0B8 = polls; 0x2017F0BC = oks;
+		//   0x2017F0C0 = last_s | last_n<<8 | addr<<16 | ep<<24.
+		{
+			extern volatile uint32_t usbh_dbg_in_polls, usbh_dbg_in_oks;
+			extern volatile uint8_t  usbh_dbg_in_last_s, usbh_dbg_in_last_n;
+			extern volatile uint8_t  usbh_dbg_in_addr, usbh_dbg_in_ep;
+			*(volatile uint32_t *)0x2017F0B8u = usbh_dbg_in_polls;
+			*(volatile uint32_t *)0x2017F0BCu = usbh_dbg_in_oks;
+			*(volatile uint32_t *)0x2017F0C0u = (uint32_t)usbh_dbg_in_last_s
+				| ((uint32_t)usbh_dbg_in_last_n << 8)
+				| ((uint32_t)usbh_dbg_in_addr << 16)
+				| ((uint32_t)usbh_dbg_in_ep << 24);
+		}
+		// Per-slot IN-poll status (slot0/1/2 packed): byte = transact status, so
+		// the oracle shows the MOUSE EP separately from the vendor EP. 0x2017F0D4
+		// = s0|s1<<8|s2<<16; 0x2017F0D8 = n0|n1<<8|n2<<16 (last RX len per slot).
+		{
+			extern volatile uint8_t usbh_dbg_slot_s[], usbh_dbg_slot_n[];
+			*(volatile uint32_t *)0x2017F0D4u = (uint32_t)usbh_dbg_slot_s[0]
+				| ((uint32_t)usbh_dbg_slot_s[1] << 8)
+				| ((uint32_t)usbh_dbg_slot_s[2] << 16);
+			*(volatile uint32_t *)0x2017F0D8u = (uint32_t)usbh_dbg_slot_n[0]
+				| ((uint32_t)usbh_dbg_slot_n[1] << 8)
+				| ((uint32_t)usbh_dbg_slot_n[2] << 16);
+		}
+		// USBFS device ISR activity: irq count + "currently inside ISR" flag. If
+		// the count explodes and/or in_isr stays 1 when V5F freezes, the wedge is
+		// an interrupt storm / hang inside USBFS_IRQHandler (triggered by the PC
+		// enumerating), not the host poll itself. 0x2017F0E0 region is the trap
+		// witness; use 0x2017F0DC+? — pack at 0x2017F0CC is loop; use a fresh slot.
+		{
+			extern volatile uint32_t usbd_dbg_irq;
+			extern volatile uint8_t  usbd_dbg_in_isr;
+			*(volatile uint32_t *)0x2017F0F0u = usbd_dbg_irq;
+			*(volatile uint32_t *)0x2017F0F4u = usbd_dbg_in_isr;
+		}
+		// V5F's own millis: if frozen, TIM4 isn't waking V5F (the relay-loop wfi
+		// never returns and the loop stalls); if ticking, the wake path is alive.
+		*(volatile uint32_t *)0x2017F0C4u = millis();
+		// Live USBHS port status + detected device speed: resolves whether the real
+		// device is LS/FS/HS (PORT_STATUS speed bits) — the root question behind
+		// "interrupt-IN NAKs forever". Packs PORT_STATUS | speed<<16 (0=FS 1=LS 2=HS
+		// per usb_host_device_speed) | CFG-low<<24.
+		*(volatile uint32_t *)0x2017F0C8u = (uint32_t)(USBHSH->PORT_STATUS & 0xFFFF)
+			| ((uint32_t)usb_host_device_speed() << 16)
+			| ((uint32_t)((uint8_t)USBHSH->CFG) << 24);
+
 		if (!did_work)
 			__asm volatile("wfi");
 
 		// Liveness check: re-detect a yanked device every ~1024 idle-ish loops.
-		if ((++loop_count & 0x3FF) == 0) {
-			if (!usb_host_device_connected())
-				led_blink_forever(6, 80, 80);
+		// A TRANSIENT not-connected read here must NOT hang the relay (the old
+		// led_blink_forever froze V5F at 0x58 and poisoned every diagnostic). Only
+		// treat a SUSTAINED disconnect (several consecutive checks) as a real
+		// removal, and on removal just publish a marker — the loop keeps running so
+		// the device can be re-attached without a reflash.
+		if ((loop_count & 0x3FF) == 0) {
+			static uint8_t disc_run;
+			if (!usb_host_device_connected()) {
+				if (++disc_run >= 4) {
+					*(volatile uint32_t *)0x2017F0D0u = 0xDEAD0000u | disc_run;
+				}
+			} else {
+				disc_run = 0;
+			}
 		}
 	}
 }

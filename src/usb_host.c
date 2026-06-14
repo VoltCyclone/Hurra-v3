@@ -22,12 +22,18 @@
 // control / enumeration sequences. Hardware verification is a later bench step.
 
 #include "ch32h417_port.h"      // ch32h417.h (USBHSH struct, RCC), usb bit defs
-#include "debug.h"              // Delay_Us / Delay_Ms
+#include "debug.h"              // (delays now via timebase_v5f, not vendor Delay_*)
 #include "board.h"              // LED_GPIO_* — SysTick-free bench diag blink
 #include "icc.h"                // dbg_stage() / DBG_STAGE_ADDR — UART-readable marker
+#include "timebase_v5f.h"      // timebase_v5f_delay_us — race-free TIM9 delay
 #include <string.h>
 
 #include "usb_host.h"
+
+// V5F host driver uses the TIM9-based delay (race-free), NOT the vendor Delay_Us
+// which spins on the shared SysTick0->ISR and wedges when V3F delays concurrently
+// (the "hang on PC enumerate" bug). Alias keeps the ported call sites unchanged.
+#define Delay_Us(us)  timebase_v5f_delay_us(us)
 
 // Fine-grained sub-stage markers for the usb_host_init() path (0x70..). V3F
 // reads DBG_STAGE_ADDR out of shared SRAM and prints it over the command UART,
@@ -84,6 +90,12 @@ typedef struct {
 static intr_slot_t in_slots[MAX_INTR_EPS];
 static intr_slot_t out_slots[MAX_INTR_OUT_EPS];
 
+/* Cached link speed of the attached device (USB_SPEED_*). Drives low-speed
+ * signaling: a low-speed device on this HS-capable root port needs the PHY in
+ * full-speed mode (CFG.FORCE_FS) AND every token prefixed with the low-speed
+ * PRE preamble (CONTROL.PRE_PID_EN). Updated on port reset / speed query. */
+static uint8_t s_dev_speed = USB_SPEED_FULL;
+
 /* ------------------------------------------------------------------------ */
 /* usbhs_rcc_init — port of USBHS_RCC_Init (ENABLE path).                    */
 /*                                                                           */
@@ -105,8 +117,13 @@ static intr_slot_t out_slots[MAX_INTR_OUT_EPS];
 static void usbhs_rcc_init(void)
 {
     dbg_stage(DBG_V5F_HOST_RCC_ENTER);   /* 0x70: entered usbhs_rcc_init */
-    if ((RCC->PLLCFGR & RCC_SYSPLL_SEL) != RCC_SYSPLL_USBHS) {
-        /* PLL not yet sourced from USBHS — bring up the 480M PLL from HSE
+    // GUARD FIX: test the USBHS PLL-ready bit, not SYSPLL_SEL. SYSPLL_SEL selects
+    // what feeds SYSCLK (always !=USBHS in the 400M-HSE profile), so the old guard
+    // always ran the teardown. On the host's FIRST call the PLL isn't up yet so
+    // this is equivalent, but testing PLLRDY is correct and makes a re-call skip
+    // tearing down a live PLL.
+    if (!(RCC->CTLR & RCC_USBHS_PLLRDY)) {
+        /* PLL not yet up — bring up the 480M PLL from HSE
          * (matching usb_device.c's HSE/HSI fallback for robustness). */
         RCC_USBHS_PLLCmd(DISABLE);
         RCC_USBHSPLLCLKConfig((RCC->CTLR & RCC_HSERDY) ? RCC_USBHSPLLSource_HSE
@@ -174,18 +191,26 @@ static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32
         endp_tog = 0;
     }
 
+    /* Low-speed device: every token must be prefixed with the PRE preamble so the
+     * full-speed bus segment relays it at low speed. (FORCE_FS in CFG puts the HS
+     * PHY into full-speed signaling; PRE_PID then marks each packet low-speed.) */
+    uint32_t pre = (s_dev_speed == USB_SPEED_LOW) ? USBHS_UH_PRE_PID_EN : 0;
+
     trans_retry = 0;
     do {
+        *(volatile uint32_t *)0x2017F0E0u = 0x40A20000u | trans_retry;  /* transact: loop top */
         /* Launch the transaction. */
-        USBHSH->CONTROL = USBHS_UH_HOST_ACTION | endp_pid | endp_tog | endp_number;
+        USBHSH->CONTROL = USBHS_UH_HOST_ACTION | pre | endp_pid | endp_tog | endp_number;
 
         /* Clear the transfer-done flag (W1C), then wait for it to re-assert. */
         USBHSH->INT_FLAG = USBHS_UHIF_TRANSFER;
+        *(volatile uint32_t *)0x2017F0E0u = 0x40A30000u | trans_retry;  /* transact: pre INT_FLAG wait */
         for (i = DEF_WAIT_USB_TRANSFER_CNT;
              (i != 0) && ((USBHSH->INT_FLAG & USBHS_UHIF_TRANSFER) == 0);
              i--) {
             Delay_Us(1);
         }
+        *(volatile uint32_t *)0x2017F0E0u = 0x40A40000u | (i & 0xFFFF);  /* transact: post-wait, i remaining */
 
         /* Retire the token from CONTROL. */
         USBHSH->CONTROL = (USBHSH->CONTROL & ~USBHS_UH_T_TOKEN_MASK);
@@ -326,14 +351,22 @@ void usb_host_port_reset(void)
 uint8_t usb_host_device_speed(void)
 {
     uint16_t speed = USBHSH->PORT_STATUS & USBHS_UHIS_PORT_SPEED_MASK;
+    uint8_t  spd;
 
     if (speed == USBHS_UHIS_PORT_LS) {
-        return USB_SPEED_LOW;
+        spd = USB_SPEED_LOW;
     } else if (speed == USBHS_UHIS_PORT_HS) {
-        return USB_SPEED_HIGH;
+        spd = USB_SPEED_HIGH;
+    } else {
+        /* USBHS_UHIS_PORT_FS == 0 (and any default) -> full speed. */
+        spd = USB_SPEED_FULL;
     }
-    /* USBHS_UHIS_PORT_FS == 0 (and any default) -> full speed. */
-    return USB_SPEED_FULL;
+
+    /* Cache for the transact PRE-PID decision (low-speed only). NOTE: do NOT
+     * touch CFG.FORCE_FS here — toggling the PHY signaling mode on every speed
+     * query regressed full/high-speed enumeration. */
+    s_dev_speed = spd;
+    return spd;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -498,6 +531,22 @@ void usb_host_interrupt_init(uint8_t index, uint8_t addr, uint8_t ep,
  * into the RX DMA buffer (valid only until the next poll on any index, since
  * all interrupt-IN endpoints share USBHS_RX_Buf). timeout 0 => no NAK retry,
  * so a device with nothing to report returns immediately. */
+/* BENCH DIAG: last interrupt-IN poll outcome, so the V3F oracle can show WHY the
+ * relay sees host_in=0. polls = total IN polls; last_s = last transact status
+ * (0=SUCCESS, 0x2A=NAK|TRANSFER, 0x2E=STALL|TRANSFER, 0xFE=UNKNOWN/no-resp);
+ * oks = successful polls; last_n = last RX byte count; last_addr/ep snapshot. */
+volatile uint32_t usbh_dbg_in_polls;
+volatile uint32_t usbh_dbg_in_oks;
+volatile uint8_t  usbh_dbg_in_last_s;
+volatile uint8_t  usbh_dbg_in_last_n;
+volatile uint8_t  usbh_dbg_in_addr;
+volatile uint8_t  usbh_dbg_in_ep;
+/* Per-slot last transact status + last nonzero RX len, so the oracle can show
+ * EACH endpoint (the composite mouse's IN EP separately from the vendor EP that
+ * legitimately always NAKs). Indexed by slot. */
+volatile uint8_t  usbh_dbg_slot_s[MAX_INTR_EPS];
+volatile uint8_t  usbh_dbg_slot_n[MAX_INTR_EPS];
+
 int usb_host_interrupt_poll_zerocopy(uint8_t index, uint8_t **data_ptr, uint16_t len)
 {
     (void)len;
@@ -508,11 +557,19 @@ int usb_host_interrupt_poll_zerocopy(uint8_t index, uint8_t **data_ptr, uint16_t
     USBHSH->DEV_ADDR = in_slots[index].addr;
     uint8_t s = usbhs_transact(USB_PID_IN | (in_slots[index].ep << 4),
                                in_slots[index].tog, 0);
+    usbh_dbg_in_polls++;
+    usbh_dbg_in_last_s = s;
+    usbh_dbg_in_addr   = in_slots[index].addr;
+    usbh_dbg_in_ep     = in_slots[index].ep;
+    usbh_dbg_slot_s[index] = s;
     if (s != ERR_SUCCESS) {
         return 0;   /* NAK / no data / error */
     }
 
     uint16_t n = (uint16_t)(USBHSH->RX_LEN & USBHS_UH_RX_LEN);
+    usbh_dbg_in_oks++;
+    usbh_dbg_in_last_n = (uint8_t)n;
+    usbh_dbg_slot_n[index] = (uint8_t)n;
     if (data_ptr) {
         *data_ptr = USBHS_RX_Buf;
     }
