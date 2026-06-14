@@ -180,6 +180,27 @@ int main(void)
 	timebase_v5f_init(SystemCoreClock);
 	dbg_stage(DBG_V5F_TIMEBASE);
 
+	// BENCH DIAG: publish V5F's clock facts so the oracle can verify delay scaling.
+	// The flaky first-SETUP failure (setup_s=0xFE) is consistent with mis-scaled
+	// V5F delays (TIM9/TIM4 prescaler from a wrong HCLK). Publish HCLK + the live
+	// TIM9 µs counter so we can measure its true rate against the Mac wall clock.
+	{
+		RCC_ClocksTypeDef ck;
+		RCC_GetClocksFreq(&ck);
+		*(volatile uint32_t *)0x2017F010u = ck.HCLK_Frequency;   // free slot
+		*(volatile uint32_t *)0x2017F014u = SystemCoreClock;
+		*(volatile uint32_t *)0x2017F018u = ck.SYSCLK_Frequency;
+	}
+	// BENCH DIAG: prove TIM9 is actually counting. Sample CNT twice with a short
+	// vendor-SysTick delay between (independent of TIM9). If d==0, TIM9 is dead.
+	{
+		uint32_t c0 = TIM9->CNT_32;
+		Delay_Us(50);                 // vendor SysTick delay (NOT TIM9-based)
+		uint32_t c1 = TIM9->CNT_32;
+		*(volatile uint32_t *)0x2017F01Cu = c0;
+		*(volatile uint32_t *)0x2017F020u = c1 - c0;   // expect ~50 if TIM9 @1MHz
+	}
+
 	// Humanization filter seed (level defaults inside). The interval is a nominal
 	// 1 kHz here; Phase-7 wires the measured poll interval (adaptive feed rate).
 	humanize_init(1000);
@@ -360,6 +381,22 @@ int main(void)
 		}
 		*(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u)     = a;
 		*(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u + 4) = b;
+	}
+	// BENCH DIAG: per-interface GET_REPORT_DESCRIPTOR outcome, one signed byte each
+	// (if0..if3 in bytes 0..3). 127 = parser saw report-len 0 so fetch was skipped;
+	// negative = fetch transfer failed with that code; >=0 = bytes fetched. Resolves
+	// whether if2/if3 rdlen=0 is a parse miss or a fetch failure. Lives in the
+	// write-once interface-table region (0x2017F0A4 free slot), which the oracle
+	// reads reliably (unlike the per-loop counters subject to cross-core staleness).
+	{
+		uint32_t fr = 0;
+		for (uint8_t i = 0; i < 4; i++) {
+			uint8_t v = 0x7F;   // default: not present
+			if (i < desc.num_ifaces)
+				v = (uint8_t)desc.ifaces[i].report_fetch_ret;
+			fr |= (uint32_t)v << (i * 8);
+		}
+		*(volatile uint32_t *)0x2017F0A4u = fr;
 	}
 
 	// --- USBFS device: replay descriptors, wait for the PC to configure --

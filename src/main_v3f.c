@@ -178,6 +178,12 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
             diag_puts(" inEP=0x");  diag_put_hex8((uint8_t)(a >> 24));
             diag_puts(" rdlen=");   diag_put_u32(b & 0xFFFF);
             diag_puts(" hid=");     diag_put_u32((b >> 16) & 1);
+            // Per-iface GET_REPORT_DESCRIPTOR outcome (signed byte i of 0x2017F0A4):
+            // 0x7F=skipped(parse len 0); negative=fetch failed (code); >=0=bytes.
+            diag_puts(" fret=");
+            { int8_t fr = (int8_t)(uint8_t)(*(volatile uint32_t *)0x2017F0A4u >> (i * 8));
+              if (fr < 0) { diag_puts("-"); diag_put_u32((uint32_t)(-(int32_t)fr)); }
+              else        { diag_put_u32((uint32_t)fr); } }
             diag_puts("]");
         }
         diag_puts(" host_in=");  diag_put_u32(*(volatile uint32_t *)0x2017F0A8u);
@@ -225,6 +231,17 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
         diag_puts(" INT_FLAG=0x");     diag_put_hex8((uint8_t)(d >> 8));
         diag_puts(" INT_ST=0x");       diag_put_hex8((uint8_t)(d >> 16));
         diag_puts(" PORT_STATUS=0x");  diag_put_hex8((uint8_t)(d >> 24));
+        // V5F clock facts (written once at boot): if HCLK is wrong, every V5F
+        // delay is mis-scaled -> flaky USB timing. Expect HCLK=200MHz, sys=400MHz.
+        diag_puts(" HCLK=");  diag_put_u32(*(volatile uint32_t *)0x2017F010u);
+        diag_puts(" core=");  diag_put_u32(*(volatile uint32_t *)0x2017F014u);
+        diag_puts(" sys=");   diag_put_u32(*(volatile uint32_t *)0x2017F018u);
+        // TIM9 liveness: tim9d should be ~50 (µs counted during a 50µs vendor
+        // delay). tim9d=0 => TIM9 NOT counting => timebase_v5f_delay_us spins
+        // forever => V5F wedges in the USBHS transfer-wait. This is the prime
+        // suspect for the cap_step=1 / tx=0x40A3 freeze.
+        diag_puts(" tim9_c0="); diag_put_u32(*(volatile uint32_t *)0x2017F01Cu);
+        diag_puts(" tim9d=");   diag_put_u32(*(volatile uint32_t *)0x2017F020u);
     }
     // On a V5F trap (stage 0x8x) the handler also stamped mcause/mepc in the two
     // words after the marker — surface them so the fault is fully self-describing.

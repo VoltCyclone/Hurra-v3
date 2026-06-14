@@ -289,6 +289,8 @@ bool capture_descriptors(captured_descriptors_t *desc)
 	parse_config_descriptor(desc);
 	for (uint8_t i = 0; i < desc->num_ifaces; i++) {
 		captured_iface_t *iface = &desc->ifaces[i];
+		iface->report_fetch_ret = 127;   // 127 = not attempted (bench diag)
+		iface->hid_report_parsed_len = iface->hid_report_desc_len;  // pre-fetch parse
 		if (!iface->has_hid_desc) continue;
 		if (iface->hid_report_desc_len == 0) continue;
 
@@ -300,6 +302,10 @@ bool capture_descriptors(captured_descriptors_t *desc)
 			iface->iface_num, rdlen);
 		ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 			&setup, iface->hid_report_desc, 2000);
+		// BENCH DIAG: record the signed return code (clamped to int8) so the oracle
+		// can show WHY if2/if3 come back rdlen=0 — a STALL/timeout/short-read each
+		// has a distinct negative code from usb_host_control_transfer.
+		iface->report_fetch_ret = (ret < -128) ? -128 : (ret > 126 ? 126 : (int8_t)ret);
 		if (ret < 0) {
 			iface->hid_report_desc_len = 0;
 		} else {

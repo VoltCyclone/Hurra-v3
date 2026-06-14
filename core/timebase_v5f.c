@@ -103,10 +103,34 @@ uint32_t timebase_v5f_us(void) { return TIM9->CNT_32; }
 // "hang on PC plug-in / no reports" bug). TIM9 is V5F-private and only ever READ
 // here (no shared status register, no RMW), so it cannot be raced by V3F.
 // These wrap correctly across the 32-bit TIM9 counter (unsigned subtraction).
+// BENCH DIAG / SAFETY: the wedge witnessed on the bench is V5F frozen at the
+// USBHS transfer-wait stamp (0x40A3), whose body is this delay. If TIM9 ever
+// stops counting, the original `while (CNT - start < us)` spins FOREVER (the
+// subtraction stays 0 < us) — wedging the relay/enum. We now bound the spin with
+// an instruction-count fallback so a stalled TIM9 can NEVER hang V5F, and we
+// publish a liveness witness so the oracle can confirm whether TIM9 actually
+// stalled (cnt_seen_equal>0 with a huge fallback_hits => TIM9 frozen).
+volatile uint32_t tim9_dbg_fallback_hits;   // times the fallback bound fired
+volatile uint32_t tim9_dbg_last_cnt;        // last TIM9 CNT observed
+volatile uint32_t tim9_dbg_max_spin;        // worst-case fallback spin count seen
+
 void timebase_v5f_delay_us(uint32_t us)
 {
     uint32_t start = TIM9->CNT_32;
-    while ((uint32_t)(TIM9->CNT_32 - start) < us) { /* spin */ }
+    // Fallback ceiling: at 400 MHz core, this loop is a few instructions/iter, so
+    // ~4000 iters ≈ at least 1 µs of real time even if TIM9 is dead. Scale by us,
+    // with generous headroom (×8000) so a LIVE TIM9 always wins the race first and
+    // timing stays accurate; the bound only matters when TIM9 is frozen.
+    uint32_t guard = 0;
+    uint32_t guard_max = (us > 524287u ? 524287u : us) * 8000u + 8000u;
+    while ((uint32_t)(TIM9->CNT_32 - start) < us) {
+        if (++guard >= guard_max) {
+            tim9_dbg_fallback_hits++;
+            if (guard > tim9_dbg_max_spin) tim9_dbg_max_spin = guard;
+            break;
+        }
+    }
+    tim9_dbg_last_cnt = TIM9->CNT_32;
 }
 
 void timebase_v5f_delay_ms(uint32_t ms)

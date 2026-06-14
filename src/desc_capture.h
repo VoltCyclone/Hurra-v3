@@ -25,6 +25,13 @@ typedef struct {
 	bool     has_hid_desc;         // true if interface contained a HID descriptor
 	uint8_t  hid_report_desc[MAX_HID_REPORT_DESC_SIZE];
 	uint16_t hid_report_desc_len;  // 0 if not HID or not fetched
+	// BENCH DIAG: parsed report length from the embedded HID descriptor (survives
+	// a failed fetch, unlike hid_report_desc_len which gets zeroed) + the signed
+	// return code of the GET_REPORT_DESCRIPTOR control transfer. Lets the oracle
+	// distinguish "parser never saw a report length" from "fetch transfer failed
+	// with ret=-N". report_fetch_ret == 127 means "not attempted".
+	uint16_t hid_report_parsed_len;
+	int8_t   report_fetch_ret;
 } captured_iface_t;
 
 typedef struct {
