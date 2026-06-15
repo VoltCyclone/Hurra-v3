@@ -70,6 +70,36 @@ bool icc_recv_from_v5f(icc_record_t *out);     // call from V3F
 void icc_ring_doorbell_v5f(void);              // V3F side
 // V5F's IPC_CH0_Handler clears the doorbell; defined in icc.c.
 
+// --- V5F->V3F coherent stage telemetry (IPC CH1 status bits) -----------------
+// Replaces the dead shared-SRAM dbg_stage marker for the relay. V5F writing
+// 0x2017xxxx is an UNSANCTIONED cross-core store into V3F-side SRAM that
+// intermittently STALLS the V5F core (no-trap wedge) — see icc.c:5-16. The IPC
+// status bits are peripheral-bus MMIO (0xE000D000), coherent across both cores,
+// and SINGLE-WRITER here (only V5F writes CH1 bits, only V3F reads them) — the
+// established lock-free dual-core mailbox pattern (NXP/OpenAMP/Single-Writer SPSC).
+//
+// Encoding: CH1 owns STS bits [8..15]. We pack a 2-bit rolling heartbeat seq in
+// bits [15:14] and a 6-bit stage/wedge code in bits [13:8]. A CHANGING seq means
+// V5F is alive; a FROZEN seq with a stuck code names exactly where V5F wedged.
+// icc_telem_stage_v5f sets the new byte and clears the stale bits (V5F is the sole
+// writer, so this is race-free). icc_telem_read_v3f returns the raw 8-bit value
+// (seq<<6 | code) for V3F to decode + print. NO MSG, NO lock, NO SRAM.
+void    icc_telem_stage_v5f(uint8_t code);     // V5F: publish a 6-bit stage code
+uint8_t icc_telem_read_v3f(void);              // V3F: read seq<<6 | code
+
+// Relay-loop stage codes (6-bit, distinct from the boot DBG_V5F_* SRAM markers).
+enum {
+    TLM_RLY_TOP     = 0x01,   // top of relay loop iteration
+    TLM_RLY_DRAIN   = 0x02,   // after usb_merge_drain_icc
+    TLM_RLY_DEVPOLL = 0x03,   // after usb_device_poll
+    TLM_RLY_INPOLL  = 0x04,   // after host interrupt-IN poll
+    TLM_RLY_MERGE   = 0x05,   // after usb_merge_report
+    TLM_RLY_SEND    = 0x06,   // after usb_device_send_report
+    TLM_RLY_OUT     = 0x07,   // after device-OUT loop
+    TLM_RLY_PENDING = 0x08,   // after usb_merge_send_pending
+    TLM_RLY_BOTTOM  = 0x09,   // end of iteration (pre-wfi)
+};
+
 // --- Bench debug: V5F boot-stage marker -------------------------------------
 // A single volatile word at a FIXED shared-SRAM address (well past g_icc, which
 // ends ~0x2017A014, and below the V3F stack) that V5F overwrites as it advances

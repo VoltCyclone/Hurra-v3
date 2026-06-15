@@ -204,19 +204,24 @@ static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32
 
     trans_retry = 0;
     do {
-        *(volatile uint32_t *)0x2017F0E0u = 0x40A20000u | trans_retry;  /* transact: loop top */
+        /* NOTE: the per-transaction tracer writes to 0x2017F0E0 that used to live
+         * here (loop-top / pre-wait / post-wait) were REMOVED. 0x2017F0E0 is in
+         * V3F-side SRAM (outside every region V5F links); writing it 3x PER
+         * TRANSACTION from this hottest USB path was a cross-core store storm that
+         * intermittently stalled the V5F core on an unreturned AHB access — the
+         * no-trap wedge. Transact is called on every interrupt-IN poll, so this was
+         * the worst offender. Cross-core diagnostics now go only through the
+         * time-throttled (~2 Hz) publish in the relay loop. See src/icc.c:5-16. */
         /* Launch the transaction. */
         USBHSH->CONTROL = USBHS_UH_HOST_ACTION | pre | endp_pid | endp_tog | endp_number;
 
         /* Clear the transfer-done flag (W1C), then wait for it to re-assert. */
         USBHSH->INT_FLAG = USBHS_UHIF_TRANSFER;
-        *(volatile uint32_t *)0x2017F0E0u = 0x40A30000u | trans_retry;  /* transact: pre INT_FLAG wait */
         for (i = DEF_WAIT_USB_TRANSFER_CNT;
              (i != 0) && ((USBHSH->INT_FLAG & USBHS_UHIF_TRANSFER) == 0);
              i--) {
             Delay_Us(1);
         }
-        *(volatile uint32_t *)0x2017F0E0u = 0x40A40000u | (i & 0xFFFF);  /* transact: post-wait, i remaining */
 
         /* Retire the token from CONTROL. */
         USBHSH->CONTROL = (USBHSH->CONTROL & ~USBHS_UH_T_TOKEN_MASK);

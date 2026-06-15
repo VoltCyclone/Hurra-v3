@@ -158,6 +158,12 @@ typedef struct {
 	uint8_t  dev_ep_num;
 	uint16_t maxpkt;
 	uint8_t  iface_protocol;  // 1=keyboard, 2=mouse (for usb_merge)
+	// bInterval pacing (matches WCH EVT app_km.c InEndpInterval/InEndpTimeCount):
+	// the device only refreshes its IN FIFO once per service interval, so polling
+	// faster just floods the bus with NAKs (we saw 1 report in 600k unpaced polls).
+	// We pace each EP by its descriptor bInterval using the free-running µs counter.
+	uint32_t interval_us;     // poll period in µs derived from bInterval + speed
+	uint32_t next_poll_us;    // TIM9 µs timestamp when this EP may next be polled
 } ep_mapping_t;
 
 typedef struct {
@@ -299,20 +305,14 @@ int main(void)
 	dbg_stage(DBG_V5F_DESC_OK);
 
 	// capture_descriptors() already sends SET_CONFIG and SET_IDLE.
-	// Send SET_PROTOCOL (Report Protocol) for each HID interface.
-	usb_setup_t setup;
-	int ret;
-	for (uint8_t i = 0; i < desc.num_ifaces; i++) {
-		// SET_PROTOCOL: bmRequestType=0x21, bRequest=0x0B
-		setup.bmRequestType = 0x21;
-		setup.bRequest = 0x0B; // SET_PROTOCOL
-		setup.wValue = 1;      // 1 = Report Protocol (not Boot Protocol)
-		setup.wIndex = desc.ifaces[i].iface_num;
-		setup.wLength = 0;
-		ret = usb_host_control_transfer(desc.dev_addr, desc.ep0_maxpkt,
-			&setup, NULL, 2000);
-		(void)ret;
-	}
+	// NOTE: we deliberately do NOT send SET_PROTOCOL. The WCH EVT host reference
+	// (USBHS_Host_KM) never issues SET_PROTOCOL at all — SetupSetprotocol is
+	// declared but unreferenced. SET_PROTOCOL(Report) is only spec-defined for
+	// Boot-subclass (bInterfaceSubClass==1) interfaces; a gaming mouse (e.g. Razer
+	// Basilisk V3) uses report-protocol/vendor interfaces (subclass 0), where
+	// SET_PROTOCOL is out-of-spec and a dual-mode interface may STALL it or switch
+	// to a NON-streaming mode — exactly the "device NAKs every interrupt-IN" symptom.
+	// Sending it to ALL interfaces (incl. non-HID vendor ones) made it worse.
 
 	// --- Build the host->device endpoint maps (ports verbatim from v2) ----
 	ep_mapping_t ep_map[MAX_INTR_EPS];
@@ -333,6 +333,22 @@ int main(void)
 		ep_map[slot].dev_ep_num     = ep;
 		ep_map[slot].maxpkt         = desc.ifaces[i].interrupt_in_maxpkt;
 		ep_map[slot].iface_protocol = desc.ifaces[i].iface_protocol;
+		// bInterval -> poll period in µs. For FS/LS, bInterval is in FRAMES (1 ms).
+		// For HS it is 2^(bInterval-1) MICROframes (125 µs). The captured device
+		// here enumerates full-speed (spd=0), so treat bInterval as milliseconds,
+		// which also matches the EVT host (1 ms frame timer * InEndpInterval). Clamp
+		// to >=1 ms so a 0/garbage bInterval can't busy-poll. We poll a touch faster
+		// than the nominal interval (interval - small slack) so we never MISS the
+		// device's fresh report by being a hair late, but we don't flood with NAKs.
+		{
+			uint32_t iv = desc.ifaces[i].interrupt_in_interval;
+			if (iv == 0) iv = 1;
+			if (iv > 255) iv = 255;
+			uint32_t us = iv * 1000u;          // ms -> µs (full-speed framing)
+			if (us > 300u) us -= 250u;         // small lead so we don't poll late
+			ep_map[slot].interval_us  = us;
+			ep_map[slot].next_poll_us = timebase_v5f_us();   // eligible immediately
+		}
 		num_ep_mappings++;
 	}
 
@@ -461,6 +477,7 @@ int main(void)
 
 	// --- Relay loop ------------------------------------------------------
 	uint32_t loop_count = 0;
+	uint32_t hb_led_ms  = millis();   // last PC3 liveness-blink toggle time
 
 	// Telemetry counters (ported from v2 main.c): reports successfully forwarded
 	// to the PC vs. dropped (device-side EP busy). Streamed to V3F over the ICC
@@ -477,13 +494,18 @@ int main(void)
 	uint32_t host_in_reports = 0;
 	uint8_t  last_in_len     = 0;
 
-	// BENCH DIAG: iteration-1 sub-stage tracer. V5F reaches 0x58 then appears to
-	// hang on the first relay iteration (loop heartbeat stuck at 1, publish block
-	// never runs). Write a distinct byte before each call so the LAST value at
-	// 0x2017F0DC pinpoints which call hangs/faults: 0x10 top, 0x20 after drain,
-	// 0x30 after device_poll, 0x40+m before EP poll m, 0x50+m after merge_report m,
-	// 0x60 after EP loop, 0x70 after send_pending, 0x80 publish done.
-	#define ITRC(v) (*(volatile uint32_t *)0x2017F0DCu = (v))
+	// ROOT-CAUSE FIX (the no-trap wedge): every 0x2017xxxx store from V5F is a
+	// CROSS-CORE write into V3F-side SRAM (V5F's own RAM ends at 0x20100000;
+	// 0x2017xxxx is outside every region V5F links — see core/link_v5f.ld and the
+	// bench-proven note in src/icc.c:5-16). The WCH part has NO sanctioned shared-
+	// SRAM pattern; a high-rate storm of these foreign-SRAM stores intermittently
+	// stalls the V5F store pipeline on an AHB access that never returns → whole core
+	// frozen, TIM4 dead, NO trap. Even ONE such store can hit the unlucky V3F-bus
+	// collision. So ALL per-loop diagnostics now go over the IPC status-bit channel
+	// (icc_telem_stage_v5f → coherent peripheral MMIO, single-writer, no SRAM). ITRC
+	// is repointed to that coherent stage marker; the 0x2017xxxx publish block is
+	// DELETED. V5F makes ZERO writes to 0x2017xxxx in the relay/USB hot path.
+	#define ITRC(v) icc_telem_stage_v5f((uint8_t)(v))
 
 	while (1) {
 		bool did_work = false;
@@ -492,24 +514,60 @@ int main(void)
 		// work. If this advances but the publish block below stays frozen, the
 		// loop body hangs mid-iteration; if this is frozen too, the loop never
 		// iterates. (0x2017F0CC — distinct from the publish-block addresses.)
-		*(volatile uint32_t *)0x2017F0CCu = ++loop_count;
-		ITRC(0x10);
+		++loop_count;
+		// ROOT-CAUSE FIX (the no-trap wedge): every 0x2017xxxx store from V5F is a
+		// CROSS-CORE write into V3F-side SRAM (V5F's own RAM ends at 0x20100000;
+		// 0x2017xxxx is outside every region V5F links — see core/link_v5f.ld and
+		// the bench-proven note in src/icc.c:5-16). The WCH part has NO sanctioned
+		// shared-SRAM pattern — the vendor reference moves all cross-core data over
+		// the IPC MSG mailbox. A high-RATE storm of these foreign-SRAM stores from
+		// the 400MHz loop intermittently stalls the V5F store pipeline on an AHB
+		// access that never returns → whole core frozen, TIM4 dead, NO trap (the
+		// exact wedge signature, accumulating over ~95-150k loops until the unlucky
+		// V3F-bus collision). The OLD throttle was ITERATION-based (1/1024 loops ≈
+		// still ~400 bursts/sec at loop speed) — not low enough. Gate ALL cross-core
+		// diagnostics on TIME instead: ~2 Hz (every 500ms of TIM4 millis). Low-rate
+		// V5F→V3F-SRAM writes are empirically safe (boot/enum does dozens and never
+		// wedges); only the per-loop storm was fatal. ~30 cross-core writes/sec total.
+		uint32_t now_ms = millis();
+		// LIVENESS: toggle PC3 (V5F's OWN GPIO — no cross-core write, always safe)
+		// every ~250ms → human-visible ~2 Hz blink. Redundant with the IPC heartbeat
+		// below; kept as a probe-free eyeball signal.
+		if ((now_ms - hb_led_ms) >= 250u) {
+			hb_led_ms = now_ms;
+			led_toggle();
+		}
+		// Coherent stage marker over IPC status bits (NOT shared SRAM). The seq half
+		// of the byte rolls every call, so V3F sees a CHANGING heartbeat while the
+		// loop runs and a FROZEN one (with the stuck code) the instant V5F wedges.
+		ITRC(TLM_RLY_TOP);
 
 		// Drain injection from the V3F command core into the merge accumulators
 		// (also runs scheduled click/key-release bookkeeping). Phase-5 cadence:
 		// drain + merge + send every iteration, no PIT pacing.
 		usb_merge_drain_icc();
-		ITRC(0x20);
+		ITRC(TLM_RLY_DRAIN);
 
 		// USB device EP completion (unblock EPs for next send).
 		usb_device_poll();
-		ITRC(0x30);
+		ITRC(TLM_RLY_DEVPOLL);
 
 		// Host IN endpoints: capture -> merge -> forward to PC.
+		// bInterval PACING (matches WCH EVT app_km.c): only issue an IN token for an
+		// endpoint once its per-EP service interval has elapsed. Polling flat-out
+		// every loop pass floods the bus with NAKs (the device only refreshes its IN
+		// FIFO once per interval) — measured 1 report per 600k unpaced polls. Pacing
+		// by the captured bInterval lets each poll land in the device's fresh-report
+		// window, and collapses host bus/CPU load by ~1000x (which also removes the
+		// per-iteration USBHS-register/cross-core storm implicated in the wedge).
+		uint32_t now_us = timebase_v5f_us();
 		for (uint8_t m = 0; m < num_ep_mappings; m++) {
-			ITRC(0x40 | m);
+			// Not yet due? skip this EP this pass. Unsigned wrap-safe compare.
+			if ((int32_t)(now_us - ep_map[m].next_poll_us) < 0)
+				continue;
+			ep_map[m].next_poll_us = now_us + ep_map[m].interval_us;
 			uint8_t *rpt_ptr = NULL;
-			ret = usb_host_interrupt_poll_zerocopy(ep_map[m].host_slot,
+			int ret = usb_host_interrupt_poll_zerocopy(ep_map[m].host_slot,
 				&rpt_ptr, ep_map[m].maxpkt);
 			if (ret > 0 && rpt_ptr) {
 				did_work = true;
@@ -522,9 +580,10 @@ int main(void)
 				// (humanize_record_arrival(gpt_profile_us()), line ~309).
 				if (ep_map[m].iface_protocol == 2)
 					humanize_record_arrival(timebase_v5f_us());
+				ITRC(TLM_RLY_MERGE);
 				usb_merge_report(ep_map[m].iface_protocol,
 					rpt_ptr, (uint8_t)ret);
-				ITRC(0x50 | m);
+				ITRC(TLM_RLY_SEND);
 				// Count forwarded vs. dropped reports for telemetry (ports v2
 				// main.c: send_report true -> report_count, false -> drop_count).
 				if (usb_device_send_report(
@@ -534,7 +593,7 @@ int main(void)
 					drop_count++;
 			}
 		}
-		ITRC(0x60);
+		ITRC(TLM_RLY_OUT);
 
 		// Device OUT endpoints: PC -> real device (vendor HID++ etc.).
 		for (uint8_t m = 0; m < num_out_mappings; m++) {
@@ -555,80 +614,19 @@ int main(void)
 		// merge path never both emit in one frame. Mirrors v2 main.c's
 		// kmbox_send_pending() call (line ~331), placed after the EP loops.
 		usb_merge_send_pending();
-		ITRC(0x70);
+		ITRC(TLM_RLY_PENDING);
 
-		// V5F->V3F telemetry was DROPPED (see icc.c): a lock-free SRAM ring needs
-		// coherent cross-core reads of head+tail, which this part does not provide,
-		// and the IPC MSG mailbox is fully used by the V3F->V5F injection path.
-		// report_count/drop_count are still maintained locally for the optional
-		// stage marker below and future use; they're just no longer streamed.
+		// V5F->V3F telemetry now goes over the IPC status-bit channel (the per-pass
+		// ITRC stage marker above), NOT the 0x2017xxxx shared-SRAM publish block that
+		// used to live here. That block was DELETED: every store in it was a cross-
+		// core write into V3F-side SRAM that intermittently stalled the V5F core (the
+		// no-trap wedge — see icc.c:5-16). Word-level counters (host_in/fwd/inS/etc.)
+		// are deferred to Phase-2 IPC-MSG telemetry; the coherent stage+heartbeat is
+		// enough to tell alive-vs-wedged-and-where. report/drop kept local for now.
 		(void)report_count; (void)drop_count; (void)telem_tick;
+		(void)host_in_reports; (void)last_in_len;
 
-		// BENCH DIAG: publish live relay flow so the V3F oracle can show it at the
-		// relay stage. host_in = IN reports seen from the real device; fwd =
-		// forwarded to PC; drop = device EP busy/unconfigured; last_in_len in the
-		// high byte of the fwd word.
-		*(volatile uint32_t *)0x2017F0A8u = host_in_reports;
-		*(volatile uint32_t *)0x2017F0ACu = report_count | ((uint32_t)last_in_len << 24);
-		*(volatile uint32_t *)0x2017F0B0u = drop_count;
-		// Host-side IN-poll outcome (why host_in stays 0): total polls, OK count,
-		// last transact status + RX len + addr/ep. Packed:
-		//   0x2017F0B8 = polls; 0x2017F0BC = oks;
-		//   0x2017F0C0 = last_s | last_n<<8 | addr<<16 | ep<<24.
-		{
-			extern volatile uint32_t usbh_dbg_in_polls, usbh_dbg_in_oks;
-			extern volatile uint8_t  usbh_dbg_in_last_s, usbh_dbg_in_last_n;
-			extern volatile uint8_t  usbh_dbg_in_addr, usbh_dbg_in_ep;
-			*(volatile uint32_t *)0x2017F0B8u = usbh_dbg_in_polls;
-			*(volatile uint32_t *)0x2017F0BCu = usbh_dbg_in_oks;
-			*(volatile uint32_t *)0x2017F0C0u = (uint32_t)usbh_dbg_in_last_s
-				| ((uint32_t)usbh_dbg_in_last_n << 8)
-				| ((uint32_t)usbh_dbg_in_addr << 16)
-				| ((uint32_t)usbh_dbg_in_ep << 24);
-		}
-		// Per-slot IN-poll status (slot0/1/2 packed): byte = transact status, so
-		// the oracle shows the MOUSE EP separately from the vendor EP. 0x2017F0D4
-		// = s0|s1<<8|s2<<16; 0x2017F0D8 = n0|n1<<8|n2<<16 (last RX len per slot).
-		{
-			extern volatile uint8_t usbh_dbg_slot_s[], usbh_dbg_slot_n[];
-			*(volatile uint32_t *)0x2017F0D4u = (uint32_t)usbh_dbg_slot_s[0]
-				| ((uint32_t)usbh_dbg_slot_s[1] << 8)
-				| ((uint32_t)usbh_dbg_slot_s[2] << 16);
-			*(volatile uint32_t *)0x2017F0D8u = (uint32_t)usbh_dbg_slot_n[0]
-				| ((uint32_t)usbh_dbg_slot_n[1] << 8)
-				| ((uint32_t)usbh_dbg_slot_n[2] << 16);
-		}
-		// USBFS device ISR activity: irq count + "currently inside ISR" flag. If
-		// the count explodes and/or in_isr stays 1 when V5F freezes, the wedge is
-		// an interrupt storm / hang inside USBFS_IRQHandler (triggered by the PC
-		// enumerating), not the host poll itself. 0x2017F0E0 region is the trap
-		// witness; use 0x2017F0DC+? — pack at 0x2017F0CC is loop; use a fresh slot.
-		{
-			extern volatile uint32_t usbd_dbg_irq;
-			extern volatile uint8_t  usbd_dbg_in_isr;
-			*(volatile uint32_t *)0x2017F0F0u = usbd_dbg_irq;
-			*(volatile uint32_t *)0x2017F0F4u = usbd_dbg_in_isr;
-		}
-		// BENCH DIAG: raw last interrupt-IN response, to decode inS=0x20.
-		// 0x2017F0F8 = last_r | last_intflag<<8 | last_tog<<16.
-		{
-			extern volatile uint8_t  usbh_dbg_in_last_r, usbh_dbg_in_last_intflag;
-			extern volatile uint16_t usbh_dbg_in_last_tog;
-			*(volatile uint32_t *)0x2017F0F8u = (uint32_t)usbh_dbg_in_last_r
-				| ((uint32_t)usbh_dbg_in_last_intflag << 8)
-				| ((uint32_t)usbh_dbg_in_last_tog << 16);
-		}
-		// V5F's own millis: if frozen, TIM4 isn't waking V5F (the relay-loop wfi
-		// never returns and the loop stalls); if ticking, the wake path is alive.
-		*(volatile uint32_t *)0x2017F0C4u = millis();
-		// Live USBHS port status + detected device speed: resolves whether the real
-		// device is LS/FS/HS (PORT_STATUS speed bits) — the root question behind
-		// "interrupt-IN NAKs forever". Packs PORT_STATUS | speed<<16 (0=FS 1=LS 2=HS
-		// per usb_host_device_speed) | CFG-low<<24.
-		*(volatile uint32_t *)0x2017F0C8u = (uint32_t)(USBHSH->PORT_STATUS & 0xFFFF)
-			| ((uint32_t)usb_host_device_speed() << 16)
-			| ((uint32_t)((uint8_t)USBHSH->CFG) << 24);
-
+		ITRC(TLM_RLY_BOTTOM);
 		if (!did_work)
 			__asm volatile("wfi");
 
@@ -642,7 +640,10 @@ int main(void)
 			static uint8_t disc_run;
 			if (!usb_host_device_connected()) {
 				if (++disc_run >= 4) {
-					*(volatile uint32_t *)0x2017F0D0u = 0xDEAD0000u | disc_run;
+					// Sustained disconnect: report via the coherent IPC channel
+					// (NOT a 0x2017xxxx SRAM store). A distinct code lets V3F show
+					// "device removed" without any cross-core SRAM write.
+					icc_telem_stage_v5f(0x3F);   // 0x3F = device-removed marker
 				}
 			} else {
 				disc_run = 0;

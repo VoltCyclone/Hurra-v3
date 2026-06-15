@@ -97,14 +97,33 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
     uint8_t  stage = *(volatile uint8_t  *)DBG_STAGE_ADDR;
     uint32_t magic = *(volatile uint32_t *)0x20178000u;   // icc_shared_t.magic
     uint32_t now   = millis();
+    // Coherent V5F relay telemetry over IPC CH1 status bits (NOT shared SRAM, which
+    // V5F can no longer write in the hot path — see icc.c:5-16). tlm = seq<<6|code:
+    // the seq half rolls every relay iteration so a CHANGING tlm_hb proves V5F is
+    // alive; a FROZEN tlm_hb with a stuck tlm_code names exactly where V5F wedged.
+    uint8_t  tlm      = icc_telem_read_v3f();
+    uint8_t  tlm_hb   = (uint8_t)(tlm >> 6);          // 2-bit rolling heartbeat
+    uint8_t  tlm_code = (uint8_t)(tlm & 0x3F);        // 6-bit relay stage code
+    // Snapshot the heartbeat ONCE per ~1s print window and compare ACROSS windows:
+    // the seq rolls every relay iteration, so we must NOT trigger a print on every
+    // change (that floods the UART). We print on a fixed ~1s cadence (or on a real
+    // boot-stage change) and SHOW whether hb advanced since the previous print —
+    // that delta is the alive/wedged signal, not a per-change trigger.
+    static uint8_t s_prev_hb = 0xFF;
     bool changed   = (stage != *last_stage);
     if (!changed && (now - *hb_tick) < 1000) return;
+    bool hb_alive  = (tlm_hb != s_prev_hb);           // advanced since last print
+    s_prev_hb = tlm_hb;
 
     *last_stage = stage;
     *hb_tick    = now;
     diag_puts("[t=");      diag_put_u32(now);  diag_puts("ms] V5F=0x");
     diag_put_hex8(stage);  diag_puts(" ");     diag_puts(diag_stage_name(stage));
     diag_puts(changed ? " <NEW>" : " (still)");
+    // Relay telemetry: hb_alive=1 means the V5F loop heartbeat advanced since the
+    // last print (V5F running); =0 means FROZEN (V5F wedged) and rly names where.
+    diag_puts(" hb=");     diag_puts(hb_alive ? "ALIVE" : "FROZEN");
+    diag_puts(" rly=0x");  diag_put_hex8(tlm_code);
     diag_puts(" icc_magic=");
     diag_puts(magic == ICC_MAGIC ? "OK" : "BAD");
     // Trap witness (any vector): if V5F took a trap/NMI/ecall it stamped a witness
@@ -186,44 +205,14 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
               else        { diag_put_u32((uint32_t)fr); } }
             diag_puts("]");
         }
-        diag_puts(" host_in=");  diag_put_u32(*(volatile uint32_t *)0x2017F0A8u);
-        uint32_t fwd = *(volatile uint32_t *)0x2017F0ACu;
-        diag_puts(" fwd=");      diag_put_u32(fwd & 0xFFFFFF);
-        diag_puts(" lastLen=");  diag_put_u32(fwd >> 24);
-        diag_puts(" drop=");     diag_put_u32(*(volatile uint32_t *)0x2017F0B0u);
-        // Host-side IN-poll outcome: why host_in stays 0.
-        diag_puts(" inPolls="); diag_put_u32(*(volatile uint32_t *)0x2017F0B8u);
-        diag_puts(" inOks=");   diag_put_u32(*(volatile uint32_t *)0x2017F0BCu);
-        uint32_t ip = *(volatile uint32_t *)0x2017F0C0u;
-        diag_puts(" inS=0x");   diag_put_hex8((uint8_t)ip);
-        diag_puts(" inN=");     diag_put_u32((ip >> 8) & 0xFF);
-        diag_puts(" inAddr=");  diag_put_u32((ip >> 16) & 0xFF);
-        diag_puts(" inEP=");    diag_put_u32((ip >> 24) & 0xFF);
-        // Raw last IN response: decode inS=0x20. r=device PID (0=none 0x03=DATA0
-        // 0x0B=DATA1 0x0A=NAK 0x0E=STALL); tog=toggle we requested (0x000=DATA0
-        // 0x100=DATA1). r=DATAx but exhaust => toggle mismatch; r=0 => silent EP.
-        uint32_t rr = *(volatile uint32_t *)0x2017F0F8u;
-        diag_puts(" inR=0x");    diag_put_hex8((uint8_t)rr);
-        diag_puts(" inIF=0x");   diag_put_hex8((uint8_t)(rr >> 8));
-        diag_puts(" inTog=0x");  diag_put_hex8((uint8_t)(rr >> 16));
-        diag_puts(" v5ms=");    diag_put_u32(*(volatile uint32_t *)0x2017F0C4u);
-        uint32_t ps = *(volatile uint32_t *)0x2017F0C8u;
-        diag_puts(" portSt=0x"); diag_put_hex8((uint8_t)(ps >> 8));
-        diag_put_hex8((uint8_t)ps);
-        diag_puts(" spd=");      diag_put_u32((ps >> 16) & 0xFF);  // 0=FS 1=LS 2=HS
-        diag_puts(" cfg=0x");    diag_put_hex8((uint8_t)(ps >> 24));
-        diag_puts(" loop=");     diag_put_u32(*(volatile uint32_t *)0x2017F0CCu);
-        uint32_t ss = *(volatile uint32_t *)0x2017F0D4u;
-        uint32_t sn = *(volatile uint32_t *)0x2017F0D8u;
-        diag_puts(" s0=0x"); diag_put_hex8((uint8_t)ss);
-        diag_puts("/n"); diag_put_u32((uint8_t)sn);
-        diag_puts(" s1=0x"); diag_put_hex8((uint8_t)(ss >> 8));
-        diag_puts("/n"); diag_put_u32((uint8_t)(sn >> 8));
-        diag_puts(" s2=0x"); diag_put_hex8((uint8_t)(ss >> 16));
-        diag_puts("/n"); diag_put_u32((uint8_t)(sn >> 16));
-        diag_puts(" itrc=0x"); diag_put_hex8((uint8_t)*(volatile uint32_t *)0x2017F0DCu);
-        diag_puts(" usbdIrq="); diag_put_u32(*(volatile uint32_t *)0x2017F0F0u);
-        diag_puts(" inISR=");   diag_put_u32(*(volatile uint32_t *)0x2017F0F4u);
+        // NOTE: the per-loop flow counters (host_in/fwd/inPolls/v5ms/loop/itrc/…)
+        // that used to print here read 0x2017xxxx — which V5F NO LONGER writes in
+        // the relay hot path (those cross-core SRAM stores were the no-trap wedge;
+        // see icc.c:5-16). Live relay state now comes from the coherent IPC channel
+        // printed in the header (hb=ALIVE/FROZEN + rly=<stage code>). The interface
+        // table above (nif/rdlen/fret) is written ONCE before the loop, so it stays
+        // valid and is kept. Word-level relay counters are deferred to Phase-2 IPC
+        // MSG telemetry.
     }
     // capture_descriptors() failure detail (stage 0x9F): which control-transfer
     // step failed (p@0x2017F048) and its return code (p@0x2017F04C).

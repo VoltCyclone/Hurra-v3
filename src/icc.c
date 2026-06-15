@@ -182,6 +182,33 @@ void icc_ring_doorbell_v5f(void)
     IPC_SetFlagStatus(IPC_CH0, IPC_CH_Sta_Bit0);
 }
 
+// --- V5F->V3F coherent stage telemetry (IPC CH1 status bits 8..15) -----------
+// CH1 owns STS bits [8..15] (bit = CH*8 + n = 8 + n). We use that byte as a
+// single-writer V5F->V3F register: [15:14]=heartbeat seq, [13:8]=stage code.
+// V5F is the ONLY writer (sole-writer => race-free, no lock); V3F only reads.
+// These are peripheral-bus MMIO (0xE000D000), coherent across cores — unlike the
+// 0x2017xxxx shared-SRAM writes that stall V5F. IPC->SET sets bits, IPC->CLR
+// clears them, IPC->STS reads them back (see ch32h417_ipc.c). We write the whole
+// CH1 byte each call: clear the 8 CH1 bits, then set the new value's bits.
+#define ICC_TLM_CH1_SHIFT   8u                 // CH1 status bits start at bit 8
+#define ICC_TLM_CH1_MASK    (0xFFu << ICC_TLM_CH1_SHIFT)
+
+void icc_telem_stage_v5f(uint8_t code)
+{
+    static uint8_t s_seq;                       // V5F-local rolling heartbeat (0..3)
+    uint8_t val = (uint8_t)(((++s_seq & 0x3u) << 6) | (code & 0x3Fu));
+    // Single 32-bit clear of all CH1 bits, then a single set of the new byte.
+    // SET/CLR are write-1-to-action registers, so this is two MMIO stores, no RMW
+    // race (and V5F is the only writer of CH1 regardless).
+    IPC->CLR = ICC_TLM_CH1_MASK;
+    IPC->SET = ((uint32_t)val << ICC_TLM_CH1_SHIFT);
+}
+
+uint8_t icc_telem_read_v3f(void)
+{
+    return (uint8_t)((IPC->STS >> ICC_TLM_CH1_SHIFT) & 0xFFu);
+}
+
 void IPC_CH0_Handler(void) WCH_IRQ;
 void IPC_CH0_Handler(void)
 {
