@@ -479,7 +479,9 @@ int main(void)
 	uint32_t loop_count = 0;
 	// QUICK end-to-end report-path probe latches (emitted every poll as code 0x20|…).
 	uint8_t s_probe_got = 0, s_probe_fwd = 0, s_probe_drop = 0, s_probe_zerolen = 0;
+	uint8_t s_probe_gotmask = 0;
 	uint32_t s_probe_ms = millis();
+	uint8_t s_probe_phase = 0;   // alternate the two probe codes each emit
 	uint32_t hb_led_ms  = millis();   // last PC3 liveness-blink toggle time
 
 	// Telemetry counters (ported from v2 main.c): reports successfully forwarded
@@ -585,8 +587,12 @@ int main(void)
 			// n>0; fwd=a report reached the USBFS device EP; drop=send_report rejected
 			// one; zerolen=a SUCCESS poll had n==0 (RX_LEN read as 0 → ret=0 → skips
 			// the forward path). This tells us EXACTLY where the report path stops.
-			if (ret > 0) s_probe_got = 1u;
-			else {
+			if (ret > 0) {
+				s_probe_got = 1u;
+				// Latch which slots deliver reports (per-slot bitmask) — purely
+				// diagnostic; every slot is forwarded identically (transparent MITM).
+				s_probe_gotmask |= (uint8_t)(1u << (m & 0x3));
+			} else {
 				// distinguish "SUCCESS but zero-length" from a real NAK: oks counts
 				// SUCCESS regardless of n, so a SUCCESS with ret==0 is a zero-len RX.
 				extern volatile uint8_t usbh_dbg_in_last_s;
@@ -655,8 +661,15 @@ int main(void)
 		// keep IPC traffic light. Code 0x20 | got<<3 | fwd<<2 | drop<<1 | zerolen.
 		if ((now_ms - s_probe_ms) >= 200u) {
 			s_probe_ms = now_ms;
-			icc_telem_stage_v5f((uint8_t)(0x20u | (s_probe_got << 3)
-				| (s_probe_fwd << 2) | (s_probe_drop << 1) | s_probe_zerolen));
+			s_probe_phase ^= 1u;
+			if (s_probe_phase)
+				// 0x20 | got<<3 | fwd<<2 | drop<<1 | zerolen  (end-to-end path)
+				icc_telem_stage_v5f((uint8_t)(0x20u | (s_probe_got << 3)
+					| (s_probe_fwd << 2) | (s_probe_drop << 1) | s_probe_zerolen));
+			else
+				// 0x10 | gotmask[3:0]  (WHICH host IN slots ever delivered a report;
+				// slot order matches ep_map = capture order = if0,if1,if2,if3).
+				icc_telem_stage_v5f((uint8_t)(0x10u | (s_probe_gotmask & 0x0F)));
 		}
 		if (!did_work)
 			__asm volatile("wfi");
