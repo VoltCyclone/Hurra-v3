@@ -477,6 +477,9 @@ int main(void)
 
 	// --- Relay loop ------------------------------------------------------
 	uint32_t loop_count = 0;
+	// QUICK end-to-end report-path probe latches (emitted every poll as code 0x20|…).
+	uint8_t s_probe_got = 0, s_probe_fwd = 0, s_probe_drop = 0, s_probe_zerolen = 0;
+	uint32_t s_probe_ms = millis();
 	uint32_t hb_led_ms  = millis();   // last PC3 liveness-blink toggle time
 
 	// Telemetry counters (ported from v2 main.c): reports successfully forwarded
@@ -505,7 +508,11 @@ int main(void)
 	// (icc_telem_stage_v5f → coherent peripheral MMIO, single-writer, no SRAM). ITRC
 	// is repointed to that coherent stage marker; the 0x2017xxxx publish block is
 	// DELETED. V5F makes ZERO writes to 0x2017xxxx in the relay/USB hot path.
-	#define ITRC(v) icc_telem_stage_v5f((uint8_t)(v))
+	// ITRC was the per-stage wedge tracer (TLM_RLY_*). The wedge is resolved (V5F
+	// loops cleanly off the cross-core SRAM), so the intermediate stage markers are
+	// now NO-OPS — they would otherwise overwrite the end-to-end report-path probe
+	// byte that the loop bottom emits as the dominant, sampling-stable telemetry.
+	#define ITRC(v) ((void)0)
 
 	while (1) {
 		bool did_work = false;
@@ -566,9 +573,26 @@ int main(void)
 			if ((int32_t)(now_us - ep_map[m].next_poll_us) < 0)
 				continue;
 			ep_map[m].next_poll_us = now_us + ep_map[m].interval_us;
+			// Fine wedge markers: 0x30|slot = ABOUT to poll EP slot m; if rly freezes
+			// at 0x30|m, the hang is INSIDE usb_host_interrupt_poll_zerocopy/transact
+			// for that slot. 0x38|m = poll returned (so it did NOT hang).
 			uint8_t *rpt_ptr = NULL;
 			int ret = usb_host_interrupt_poll_zerocopy(ep_map[m].host_slot,
 				&rpt_ptr, ep_map[m].maxpkt);
+			// QUICK PROBE (latched, emitted EVERY poll so 1s sampling always sees it):
+			// one persistent status byte tracking the whole relay path end-to-end.
+			// Code 0x20 | got<<3 | fwd<<2 | drop<<1 | zerolen. got=a poll returned
+			// n>0; fwd=a report reached the USBFS device EP; drop=send_report rejected
+			// one; zerolen=a SUCCESS poll had n==0 (RX_LEN read as 0 → ret=0 → skips
+			// the forward path). This tells us EXACTLY where the report path stops.
+			if (ret > 0) s_probe_got = 1u;
+			else {
+				// distinguish "SUCCESS but zero-length" from a real NAK: oks counts
+				// SUCCESS regardless of n, so a SUCCESS with ret==0 is a zero-len RX.
+				extern volatile uint8_t usbh_dbg_in_last_s;
+				if (usbh_dbg_in_last_s == 0 /*ERR_SUCCESS*/) s_probe_zerolen = 1u;
+			}
+			// (probe byte is emitted once per iteration at the loop bottom — see there)
 			if (ret > 0 && rpt_ptr) {
 				did_work = true;
 				host_in_reports++;          // bench: a real IN report arrived
@@ -586,11 +610,10 @@ int main(void)
 				ITRC(TLM_RLY_SEND);
 				// Count forwarded vs. dropped reports for telemetry (ports v2
 				// main.c: send_report true -> report_count, false -> drop_count).
-				if (usb_device_send_report(
-					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret))
-					report_count++;
-				else
-					drop_count++;
+				bool fwd_ok = usb_device_send_report(
+					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret);
+				if (fwd_ok) { report_count++; s_probe_fwd = 1u; }
+				else        { drop_count++;   s_probe_drop = 1u; }
 			}
 		}
 		ITRC(TLM_RLY_OUT);
@@ -626,7 +649,15 @@ int main(void)
 		(void)report_count; (void)drop_count; (void)telem_tick;
 		(void)host_in_reports; (void)last_in_len;
 
-		ITRC(TLM_RLY_BOTTOM);
+		// DOMINANT telemetry: emit the latched end-to-end report-path probe at the
+		// BOTTOM of every iteration (last-write-wins, so the slow 1s oracle sampling
+		// always catches THIS, not a transient stage marker). Throttled to ~200ms to
+		// keep IPC traffic light. Code 0x20 | got<<3 | fwd<<2 | drop<<1 | zerolen.
+		if ((now_ms - s_probe_ms) >= 200u) {
+			s_probe_ms = now_ms;
+			icc_telem_stage_v5f((uint8_t)(0x20u | (s_probe_got << 3)
+				| (s_probe_fwd << 2) | (s_probe_drop << 1) | s_probe_zerolen));
+		}
 		if (!did_work)
 			__asm volatile("wfi");
 
