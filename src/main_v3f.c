@@ -199,6 +199,13 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
         diag_puts(" inN=");     diag_put_u32((ip >> 8) & 0xFF);
         diag_puts(" inAddr=");  diag_put_u32((ip >> 16) & 0xFF);
         diag_puts(" inEP=");    diag_put_u32((ip >> 24) & 0xFF);
+        // Raw last IN response: decode inS=0x20. r=device PID (0=none 0x03=DATA0
+        // 0x0B=DATA1 0x0A=NAK 0x0E=STALL); tog=toggle we requested (0x000=DATA0
+        // 0x100=DATA1). r=DATAx but exhaust => toggle mismatch; r=0 => silent EP.
+        uint32_t rr = *(volatile uint32_t *)0x2017F0F8u;
+        diag_puts(" inR=0x");    diag_put_hex8((uint8_t)rr);
+        diag_puts(" inIF=0x");   diag_put_hex8((uint8_t)(rr >> 8));
+        diag_puts(" inTog=0x");  diag_put_hex8((uint8_t)(rr >> 16));
         diag_puts(" v5ms=");    diag_put_u32(*(volatile uint32_t *)0x2017F0C4u);
         uint32_t ps = *(volatile uint32_t *)0x2017F0C8u;
         diag_puts(" portSt=0x"); diag_put_hex8((uint8_t)(ps >> 8));
@@ -242,6 +249,13 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
         // suspect for the cap_step=1 / tx=0x40A3 freeze.
         diag_puts(" tim9_c0="); diag_put_u32(*(volatile uint32_t *)0x2017F01Cu);
         diag_puts(" tim9d=");   diag_put_u32(*(volatile uint32_t *)0x2017F020u);
+        // PHY/PLL state at SETUP failure: pllrdy | CFG<<8 | PORT_CTRL<<16 | PORT_STATUS<<24.
+        // pllrdy=0 => USBHS 480M PLL not locked => PHY has no clock => port never
+        // enables => SETUP gets no response. This is the prime intermittency suspect.
+        uint32_t pp = *(volatile uint32_t *)0x2017F024u;
+        diag_puts(" pllrdy=");   diag_put_u32(pp & 1);
+        diag_puts(" CFG=0x");    diag_put_hex8((uint8_t)(pp >> 8));
+        diag_puts(" PORTCTRL=0x"); diag_put_hex8((uint8_t)(pp >> 16));
     }
     // On a V5F trap (stage 0x8x) the handler also stamped mcause/mepc in the two
     // words after the marker — surface them so the fault is fully self-describing.

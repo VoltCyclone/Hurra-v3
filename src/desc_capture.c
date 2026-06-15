@@ -176,9 +176,18 @@ static void capture_ms_os_1_0(captured_descriptors_t *desc)
 // single-shot code reported as a hard failure (cap_step=1, ret=-1).
 static bool enum_wait_port_stable(void)
 {
+	// Mirror the EVT post-reset enable loop (USBH_EnumRootDevice: loop calling
+	// USBHSH_EnableRootHubPort until >6 consecutive successes). EnableRootHubPort
+	// checks CONNECT, reads the port speed, and re-asserts CFG.SOF_EN — so on each
+	// successful connect read we do the same: re-read speed (caches s_dev_speed for
+	// the transact PRE-PID decision) and re-assert SOF (usb_host_power_on). This
+	// keeps the port actively clocked while the just-reset device settles, instead
+	// of only passively polling the CONNECT bit.
 	uint8_t stable = 0;
 	for (uint16_t i = 0; i < 300; i++) {   // ~300 ms worst case
 		if (usb_host_device_connected()) {
+			(void)usb_host_device_speed();   // EVT: CheckRootHubPortSpeed each pass
+			usb_host_power_on();             // EVT: CFG |= SOF_EN each pass
 			if (++stable > 6) return true;
 		} else {
 			stable = 0;
@@ -205,8 +214,16 @@ bool capture_descriptors(captured_descriptors_t *desc)
 	for (uint8_t attempt = 0; attempt < 6 && !enumerated; attempt++) {
 		CAP_DBG(0x10 | attempt);   // 0x1N = enum attempt N
 
-		// Escalating settle + re-reset + stability poll (reference: 100ms + 8<<n).
-		delay(20u + (8u << attempt));
+		// Escalating settle + re-reset + stability poll. Match the EVT reference
+		// (USBH_EnumRootDevice: Delay_Ms(100); Delay_Ms(8<<enum_cnt), enum_cnt
+		// starts at 1) EXACTLY — gives 116,132,164,228,356,612 ms. The previous
+		// 20+(8<<attempt) (28..276 ms) fired the first SETUP only ~28 ms after
+		// settling, too soon for a slow-booting gaming-mouse MCU (Razer Basilisk
+		// V3) to be ready after bus reset, causing intermittent first-SETUP
+		// failures (setup_s=0xFE). The reference's longer, escalating settle is
+		// what makes its enumeration reliable.
+		delay(100u);                 // EVT: fixed 100 ms device-stabilize
+		delay(8u << (attempt + 1));  // EVT: Delay_Ms(8 << enum_cnt), enum_cnt from 1
 		usb_host_port_reset();
 		if (!enum_wait_port_stable()) {
 			CAP_DBG(0x20 | attempt);   // 0x2N = port never stabilized this attempt

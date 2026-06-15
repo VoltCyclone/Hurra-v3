@@ -96,6 +96,12 @@ static intr_slot_t out_slots[MAX_INTR_OUT_EPS];
  * PRE preamble (CONTROL.PRE_PID_EN). Updated on port reset / speed query. */
 static uint8_t s_dev_speed = USB_SPEED_FULL;
 
+/* BENCH DIAG: defined later, but written from usbhs_transact() above their
+ * definition — forward-declare here. See the definitions for semantics. */
+volatile uint8_t  usbh_dbg_in_last_r;
+volatile uint8_t  usbh_dbg_in_last_intflag;
+volatile uint16_t usbh_dbg_in_last_tog;
+
 /* ------------------------------------------------------------------------ */
 /* usbhs_rcc_init — port of USBHS_RCC_Init (ENABLE path).                    */
 /*                                                                           */
@@ -233,6 +239,14 @@ static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32
         } else if (USBHSH->INT_FLAG & USBHS_UHIF_TRANSFER) {
             /* Transfer completed — inspect the response PID. */
             r = USBHSH->INT_ST & USBHS_UH_T_TOKEN_MASK;
+            /* BENCH DIAG: snapshot the raw response PID + flags of every IN token
+             * so the oracle can decode the inS=0x20 exhaust. Only meaningful for
+             * IN (the relay poll); cheap enough to always record. */
+            if (endp_pid == USB_PID_IN) {
+                usbh_dbg_in_last_r       = r;
+                usbh_dbg_in_last_intflag = (uint8_t)USBHSH->INT_FLAG;
+                usbh_dbg_in_last_tog     = endp_tog;
+            }
             if (endp_pid == USB_PID_IN) {
                 /* IN: response DATAx must match the toggle we requested. */
                 if ((r == USB_PID_DATA0 && endp_tog == USBHS_UH_T_TOG_DATA0) ||
@@ -421,6 +435,17 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
             ((uint32_t)(USBHSH->INT_FLAG & 0xFF) << 8) |
             ((uint32_t)(USBHSH->INT_ST & 0xFF) << 16) |
             ((uint32_t)(USBHSH->PORT_STATUS & 0xFF) << 24);
+        // BENCH DIAG: PHY/PLL state at the SETUP failure. The host enumeration is
+        // intermittent across power cycles (sometimes 0x58, sometimes stuck here),
+        // and the port stays at CONNECT-not-ENABLED — classic marginal USB PHY
+        // clock. Stamp 0x2017F024: [0]=USBHS_PLLRDY, CFG<<8, PORT_CTRL<<16,
+        // full PORT_STATUS<<24..16? Pack: pllrdy(1b) | CFG(8b)<<1 | PORTCTRL(8b)<<9
+        // | PORT_STATUS(16b)... too wide; use two words.
+        *(volatile uint32_t *)0x2017F024u =
+            ((RCC->CTLR & RCC_USBHS_PLLRDY) ? 1u : 0u) |
+            ((uint32_t)(USBHSH->CFG & 0xFF) << 8) |
+            ((uint32_t)(USBHSH->PORT_CTRL & 0xFF) << 16) |
+            ((uint32_t)(USBHSH->PORT_STATUS & 0xFF) << 24);
         return -1;
     }
 
@@ -546,6 +571,8 @@ volatile uint8_t  usbh_dbg_in_ep;
  * legitimately always NAKs). Indexed by slot. */
 volatile uint8_t  usbh_dbg_slot_s[MAX_INTR_EPS];
 volatile uint8_t  usbh_dbg_slot_n[MAX_INTR_EPS];
+/* usbh_dbg_in_last_r / _intflag / _tog defined near top (used by usbhs_transact
+ * which appears earlier in this file). See that forward declaration's comment. */
 
 int usb_host_interrupt_poll_zerocopy(uint8_t index, uint8_t **data_ptr, uint16_t len)
 {

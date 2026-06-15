@@ -609,6 +609,15 @@ int main(void)
 			*(volatile uint32_t *)0x2017F0F0u = usbd_dbg_irq;
 			*(volatile uint32_t *)0x2017F0F4u = usbd_dbg_in_isr;
 		}
+		// BENCH DIAG: raw last interrupt-IN response, to decode inS=0x20.
+		// 0x2017F0F8 = last_r | last_intflag<<8 | last_tog<<16.
+		{
+			extern volatile uint8_t  usbh_dbg_in_last_r, usbh_dbg_in_last_intflag;
+			extern volatile uint16_t usbh_dbg_in_last_tog;
+			*(volatile uint32_t *)0x2017F0F8u = (uint32_t)usbh_dbg_in_last_r
+				| ((uint32_t)usbh_dbg_in_last_intflag << 8)
+				| ((uint32_t)usbh_dbg_in_last_tog << 16);
+		}
 		// V5F's own millis: if frozen, TIM4 isn't waking V5F (the relay-loop wfi
 		// never returns and the loop stalls); if ticking, the wake path is alive.
 		*(volatile uint32_t *)0x2017F0C4u = millis();
