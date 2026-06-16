@@ -14,20 +14,46 @@ typedef enum {
 
 // Live status the display renders. Populated on V3F from V5F telemetry + local.
 typedef struct {
-    uint8_t  state;        // disp_state_t
+    uint8_t  state;            // disp_state_t
     uint16_t vid;
     uint16_t pid;
     uint16_t reports_per_sec;
-    uint32_t uptime_s;     // V3F-local (millis based)
+    uint32_t uptime_s;         // V3F-local
+    // --- relay health (from V5F telemetry) ---
+    uint16_t drops;            // forwarded-report drop count
+    uint8_t  zerolen;          // 1 if any zero-length poll seen this window
+    uint8_t  probe;            // packed: bit3 got, bit2 fwd, bit1 drop, bit0 zerolen
+    uint8_t  gotmask;          // which host IN slots delivered (bits 0..3)
+    // --- V3F-local stats ---
+    uint32_t cmd_rx;           // USART rx byte count
+    uint16_t cmd_err;          // overrun+framing+noise total
+    uint8_t  human_lvl;        // humanize level 0..3
+    uint16_t inj_m;            // mouse injection count
+    uint16_t inj_k;            // keyboard injection count
 } display_status_t;
 
-// Text grid. 240px / (6px glyph cell * scale 3) = 13 cols; 5 rows * (8*3)=120px.
-#define DISP_COLS   13
-#define DISP_ROWS    5
-#define DISP_SCALE   3
+// Text grid. Scale 1 => 6px glyphs; 240px / 6px = 40 cols but we cap at 26 for
+// readability. 12 rows * 8px = 96px; fits the 240px display height.
+#define DISP_COLS   26
+#define DISP_ROWS   12
+#define DISP_SCALE   1
 
-// Row indices into the DISP_ROWS text grid.
-enum { ROW_STATE = 0, ROW_IDS = 1, ROW_RPS = 2, ROW_UPTIME = 3, ROW_SPARE = 4 };
+// Row indices. Top block (0..5) = V5F relay telemetry; row 6 divider;
+// bottom block (7..11) = V3F-local stats. Blank rows render as empty bands.
+enum {
+    ROW_STATE  = 0,   // relay state name
+    ROW_IDS    = 1,   // dev VID:PID (blank if no device)
+    ROW_RPS    = 2,   // reports/s (blank if no device)
+    ROW_HEALTH = 3,   // drops N  zlen N
+    ROW_PATH   = 4,   // decoded probe: GOT/FWD/DROP/ZLEN flags
+    ROW_SLOTS  = 5,   // which host IN slots delivered (gotmask)
+    ROW_DIV    = 6,   // divider
+    ROW_UPTIME = 7,   // uptime M:SS  (V3F-local)
+    ROW_CMDRX  = 8,   // cmd rx N B   (V3F-local)
+    ROW_CMDERR = 9,   // cmd err N    (V3F-local)
+    ROW_HUMAN  = 10,  // human lvl N  (V3F-local)
+    ROW_INJ    = 11,  // inj m N  k N (V3F-local)
+};
 
 // PURE: render `st` into `rows` (DISP_ROWS NUL-terminated strings, each <=DISP_COLS
 // chars). Compares against `prev` and returns a dirty bitmask (bit r set = row r
