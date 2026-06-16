@@ -37,7 +37,7 @@ LIBSRC = $(wildcard vendor/wch/Peripheral/src/*.c) \
          vendor/wch/Debug/debug.c
 
 V3F_SRC = src/main_v3f.c src/icc.c src/led.c src/uart.c src/kmbox_cmd.c \
-          src/actions.c src/humanize.c core/timebase.c $(PROTO_SRC) \
+          src/actions.c src/humanize.c src/st7789.c core/timebase.c $(PROTO_SRC) \
           core/system_ch32h417.c $(LIBSRC)
 V3F_ASM = core/startup_v3f.S
 V3F_DEF = -DCore_V3F
