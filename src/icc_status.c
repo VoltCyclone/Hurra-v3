@@ -14,6 +14,8 @@ uint16_t icc_status_pack(uint8_t sel, uint8_t seq, const display_status_t *st)
         case ICC_ST_SEL_PID_LO: payload = (uint16_t)(st->pid & 0xFFu); break;
         case ICC_ST_SEL_RPS:    payload = (st->reports_per_sec > 1023u)
                                           ? 1023u : st->reports_per_sec; break;
+        case ICC_ST_SEL_DROPS:  payload = (st->drops > 1023u) ? 1023u : st->drops; break;
+        case ICC_ST_SEL_PROBE:  payload = (uint16_t)(((st->probe & 0xFu) << 4) | (st->gotmask & 0xFu)); break;
         default: break;
     }
     return (uint16_t)(((seq & 0x3u) << 14) | ((sel & 0xFu) << 10) | (payload & 0x3FFu));
@@ -31,6 +33,12 @@ uint8_t icc_status_unpack(uint16_t word, display_status_t *acc)
         case ICC_ST_SEL_PID_HI: acc->pid = (uint16_t)((acc->pid & 0x00FFu) | ((uint32_t)payload << 8)); break;
         case ICC_ST_SEL_PID_LO: acc->pid = (uint16_t)((acc->pid & 0xFF00u) | (payload & 0xFFu)); break;
         case ICC_ST_SEL_RPS:    acc->reports_per_sec = payload; break;
+        case ICC_ST_SEL_DROPS:  acc->drops = payload; break;
+        case ICC_ST_SEL_PROBE:
+            acc->probe   = (uint8_t)((payload >> 4) & 0xFu);
+            acc->gotmask = (uint8_t)(payload & 0xFu);
+            acc->zerolen = (uint8_t)(acc->probe & 0x1u);
+            break;
         default: break;
     }
     return seq;

@@ -111,6 +111,8 @@ enum {                          // field selectors
     ICC_ST_SEL_PID_HI,          // payload[7:0] = pid >> 8
     ICC_ST_SEL_PID_LO,          // payload[7:0] = pid & 0xFF
     ICC_ST_SEL_RPS,             // payload[9:0] = reports_per_sec (clamped 0..1023)
+    ICC_ST_SEL_DROPS,           // payload[9:0] = drops (clamped 0..1023)
+    ICC_ST_SEL_PROBE,           // payload[7:4] = probe[3:0], payload[3:0] = gotmask[3:0]
     ICC_ST_SEL__COUNT
 };
 

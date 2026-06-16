@@ -60,7 +60,8 @@ int main(void) {
 
     // --- icc_status pack/unpack round-trip ---
     display_status_t src = { .state = DISP_STATE_RELAYING, .vid = 0x1A2C,
-                             .pid = 0x0094, .reports_per_sec = 980 };
+                             .pid = 0x0094, .reports_per_sec = 980,
+                             .drops = 7, .probe = 0x0C, .gotmask = 0x3 };
     display_status_t acc = {0};
     for (uint8_t sel = 0; sel < ICC_ST_SEL__COUNT; sel++) {
         uint16_t w = icc_status_pack(sel, sel & 3, &src);
@@ -70,8 +71,20 @@ int main(void) {
     assert(acc.vid == 0x1A2C);
     assert(acc.pid == 0x0094);
     assert(acc.reports_per_sec == 980);
+    assert(acc.drops == 7);
+    assert(acc.probe == 0x0C);
+    assert(acc.gotmask == 0x3);
+    assert(acc.zerolen == 0);   // probe bit0 = 0 here
     // seq is the high 2 bits.
     assert(icc_status_unpack(icc_status_pack(ICC_ST_SEL_STATE, 2, &src), &acc) == 2);
+
+    // zerolen derived from probe bit0
+    display_status_t z = { .probe = 0x0D /*got|fwd|zerolen*/, .gotmask = 0x1 };
+    display_status_t za = {0};
+    icc_status_unpack(icc_status_pack(ICC_ST_SEL_PROBE, 0, &z), &za);
+    assert(za.probe == 0x0D);
+    assert(za.gotmask == 0x1);
+    assert(za.zerolen == 1);   // probe bit0 = 1
 
     // 7. Transition WAITING->RELAYING: ROW_IDS goes blank->populated (dirty).
     //    `w` is the WAITING status from case 6; `rows` currently holds its render.
