@@ -27,7 +27,9 @@ VPATH_INC = -Iinclude -Isrc -Icore -Isrc/third_party/TinyFrame \
 DEFINES = -DCH32H417 -DCMD_BAUD=$(CMD_BAUD) $(PROTO_DEF)
 EXTRADEF ?=
 CFLAGS  = $(ARCH) $(DEFINES) $(EXTRADEF) $(VPATH_INC) -Os -Wall -Wno-unused-variable \
-          -ffunction-sections -fdata-sections -fsingle-precision-constant
+          -ffunction-sections -fdata-sections -fsingle-precision-constant $(FP_CFLAGS)
+# Per-core FP codegen flags (empty for V3F soft-float; set on the v5f target).
+FP_CFLAGS ?=
 LDBASE  = $(ARCH) -nostartfiles -Wl,--gc-sections --specs=nano.specs --specs=nosys.specs -lm
 
 LIBSRC = $(wildcard vendor/wch/Peripheral/src/*.c) \
@@ -59,6 +61,20 @@ V5F_SRC = src/main_v5f.c src/icc.c src/usb_host.c src/usb_device.c \
           core/system_ch32h417.c $(LIBSRC)
 V5F_ASM = core/startup_v5f.S
 V5F_DEF = -DCore_V5F -Dsystick2
+# V5F claims the QingKe hardware FPU (powered on in startup_v5f.S, mstatus FS=3).
+# ilp32f is an ABI break vs the ilp32 baseline — every object in the V5F image
+# (vendor libs, libm, libgcc) is rebuilt with this -mabi because each core links
+# as its own ELF (merge_images.py concatenates the two .bin's; no cross-core
+# object linking), so V3F can stay ilp32 while V5F is ilp32f. Requires a clean
+# build. ISRs are FP-free (relay hot path runs in the main loop), so no FP
+# context save/restore is needed. See docs/TODO-hardfloat-fpu.md.
+v5f: ARCH = -march=rv32imafc_zicsr -mabi=ilp32f
+# -fno-math-errno lets GCC inline the hot-path sqrtf() (humanize.c) to a single
+# hardware `fsqrt.s` instead of newlib's software __ieee754_sqrtf. Safe here:
+# both call sites are sqrtf(x*x + y*y) (always >= 0, no domain error) and the
+# firmware never reads errno. It does not reassociate or change rounding (unlike
+# full -ffast-math), so the humanize math stays bit-stable.
+v5f: FP_CFLAGS = -fno-math-errno
 v5f: build
 	# Trailing -lm: the merge pulls humanize.c, whose humanize_filter() calls
 	# sqrtf(). With -lm only in LDBASE (before the objects) the linker has not
