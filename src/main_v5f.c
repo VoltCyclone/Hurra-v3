@@ -400,7 +400,7 @@ int main(void)
 	uint8_t s_probe_phase = 0;   // alternate the two probe codes each emit
 	uint32_t hb_led_ms  = millis();   // last PC3 liveness-blink toggle time
 	static uint32_t s_rep_count, s_rep_tick;
-	static uint32_t s_drop_count;
+	static uint32_t s_drop_count;     // cumulative, never reset — clamped at display time
 
 	// V5F->V3F relay telemetry uses ONLY the coherent IPC status-bit channel
 	// (icc_telem_stage_v5f). It must never write V3F-side SRAM (0x2017xxxx) from
