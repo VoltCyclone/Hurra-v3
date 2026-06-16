@@ -162,11 +162,12 @@ static void capture_ms_os_1_0(captured_descriptors_t *desc)
 	desc->ms_os_vendor_code = buf[16]; // bMS_VendorCode at offset 0x10
 }
 
-// BENCH DIAG: capture_descriptors writes a {step, last ret} record into shared
-// SRAM (0x2017F048 = step, 0x2017F04C = ret) so the V3F UART oracle can show
-// exactly which control transfer failed when capture returns false (stage 0x9F).
-#define CAP_DBG(step)  (*(volatile uint32_t *)0x2017F048u = (step))
-#define CAP_RET(r)     (*(volatile uint32_t *)0x2017F04Cu = (uint32_t)(r))
+// Bring-up diagnostics removed for release. CAP_DBG/CAP_RET were single-shot
+// {step, last-ret} markers the V3F UART oracle read to pinpoint which control
+// transfer failed during enumeration; the call sites are kept (no-ops) to leave
+// the capture/retry flow undisturbed.
+#define CAP_DBG(step)  ((void)0)
+#define CAP_RET(r)     ((void)0)
 
 // Wait for the port to settle after a bus reset: poll for a stable CONNECT
 // (several consecutive reads, mirroring WCH's USBH_EnableRootHubPort >6-in-a-row
@@ -306,8 +307,6 @@ bool capture_descriptors(captured_descriptors_t *desc)
 	parse_config_descriptor(desc);
 	for (uint8_t i = 0; i < desc->num_ifaces; i++) {
 		captured_iface_t *iface = &desc->ifaces[i];
-		iface->report_fetch_ret = 127;   // 127 = not attempted (bench diag)
-		iface->hid_report_parsed_len = iface->hid_report_desc_len;  // pre-fetch parse
 		if (!iface->has_hid_desc) continue;
 		if (iface->hid_report_desc_len == 0) continue;
 
@@ -319,10 +318,6 @@ bool capture_descriptors(captured_descriptors_t *desc)
 			iface->iface_num, rdlen);
 		ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 			&setup, iface->hid_report_desc, 2000);
-		// BENCH DIAG: record the signed return code (clamped to int8) so the oracle
-		// can show WHY if2/if3 come back rdlen=0 — a STALL/timeout/short-read each
-		// has a distinct negative code from usb_host_control_transfer.
-		iface->report_fetch_ret = (ret < -128) ? -128 : (ret > 126 ? 126 : (int8_t)ret);
 		if (ret < 0) {
 			iface->hid_report_desc_len = 0;
 		} else {

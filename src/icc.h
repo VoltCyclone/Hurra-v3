@@ -135,24 +135,3 @@ enum {                                         // V5F boot stages (monotonic)
     DBG_V5F_TRAP_BASE     = 0x80,              // 0x80 | (mcause & 0x0F)
 };
 static inline void dbg_stage(uint32_t s) { *(volatile uint32_t *)DBG_STAGE_ADDR = s; }
-
-// --- Bench debug: live USBHS host port-register snapshot ---------------------
-// V5F stamps its USBHS host port registers here each host-wait iteration so V3F
-// can print them over UART. This is the evidence for "device attached but the
-// port CONNECT bit never sets" — it shows whether the PHY sees ANY bus activity
-// (PORT_STATUS line state / speed bits / connect-change edge) while V5F waits.
-// Reading USBHSH registers in firmware (V5F) is safe; it's reading them over SWD
-// (wlink) that wedges the debug module — hence the firmware-side stamp.
-// Layout (words): [0]=valid magic 0x55485250 'USBHSP' [1]=CFG [2]=PORT_CFG
-// [3]=PORT_STATUS [4]=PORT_STATUS_CHG [5]=PORT_CTRL [6]=snapshot counter.
-#define DBG_USBHS_REGS_ADDR  0x2017F010u
-#define DBG_USBHS_REGS_MAGIC 0x55485250u
-static inline void dbg_usbhs_regs(uint32_t cfg, uint32_t port_cfg,
-                                  uint32_t port_status, uint32_t port_status_chg,
-                                  uint32_t port_ctrl, uint32_t counter)
-{
-    volatile uint32_t *p = (volatile uint32_t *)DBG_USBHS_REGS_ADDR;
-    p[1] = cfg; p[2] = port_cfg; p[3] = port_status;
-    p[4] = port_status_chg; p[5] = port_ctrl; p[6] = counter;
-    p[0] = DBG_USBHS_REGS_MAGIC;   // publish last so V3F never reads a torn snapshot
-}

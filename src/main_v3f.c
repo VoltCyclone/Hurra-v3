@@ -144,108 +144,6 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
             diag_puts(":"); diag_put_u32(w & 0xFFFF);
         }
     }
-    // At DEV_INIT (0x57, waiting for the PC to enumerate the cloned USBFS device),
-    // show USBFS device-side activity. irq=0 => the device PHY sees no bus traffic.
-    if (stage == DBG_V5F_DEV_INIT) {
-        uint32_t base_st = *(volatile uint32_t *)0x2017F034u;
-        diag_puts(" usbd_irq=");  diag_put_u32(*(volatile uint32_t *)0x2017F028u);
-        diag_puts(" busrst=");    diag_put_u32(*(volatile uint32_t *)0x2017F02Cu);
-        diag_puts(" setup=");     diag_put_u32(*(volatile uint32_t *)0x2017F030u);
-        diag_puts(" BASE_CTRL=0x"); diag_put_hex8((uint8_t)base_st);
-        diag_puts(" lastst=0x");  diag_put_hex8((uint8_t)(base_st >> 8));
-        diag_puts(" alloc(b/a)="); diag_put_u32((base_st >> 16) & 1);
-        diag_puts("/");            diag_put_u32((base_st >> 17) & 1);
-        // Live USBFS PHY/line state: MIS_ST | UDEV_CTRL<<8 | INT_EN<<16.
-        uint32_t phy = *(volatile uint32_t *)0x2017F054u;
-        diag_puts(" MIS_ST=0x");   diag_put_hex8((uint8_t)phy);
-        diag_puts(" UDEV=0x");     diag_put_hex8((uint8_t)(phy >> 8));
-        diag_puts(" INT_EN=0x");   diag_put_hex8((uint8_t)(phy >> 16));
-        // Last SETUP (req|type|wValue), wLength, STALL count, SET_CONFIG seen.
-        uint32_t ls = *(volatile uint32_t *)0x2017F058u;
-        uint32_t lc = *(volatile uint32_t *)0x2017F05Cu;
-        diag_puts(" lastSETUP req=0x"); diag_put_hex8((uint8_t)(ls >> 24));
-        diag_puts(" type=0x");          diag_put_hex8((uint8_t)(ls >> 16));
-        diag_puts(" wVal=0x");          diag_put_hex8((uint8_t)(ls >> 8));
-        diag_put_hex8((uint8_t)ls);
-        diag_puts(" wLen=");            diag_put_u32(lc & 0xFFFF);
-        diag_puts(" stalls=");          diag_put_u32(lc >> 16);
-        uint32_t cfgw = *(volatile uint32_t *)0x2017F060u;
-        diag_puts(" cfgSeen=0x");        diag_put_hex8((uint8_t)cfgw);
-        diag_puts(" cfgLive=");          diag_put_u32((cfgw >> 16) & 1);
-    }
-    // At RELAY (0x58): show what we cloned + whether reports flow. The captured
-    // interface table (0x2017F080..) tells us if the device is composite and
-    // whether the mouse interface's HID report descriptor was actually captured
-    // (rdlen>0); the flow counters (0x2017F0A8..) tell us if real IN reports
-    // arrive and forward to the PC. This pinpoints "named right but shows as a
-    // keyboard / no reports".
-    if (stage == DBG_V5F_RELAY) {
-        uint32_t hdr = *(volatile uint32_t *)0x2017F080u;
-        uint8_t nif = (uint8_t)hdr;
-        diag_puts(" nif=");      diag_put_u32(nif);
-        diag_puts(" devCls=0x"); diag_put_hex8((uint8_t)(hdr >> 8));
-        diag_puts(" inEPs=");    diag_put_u32((hdr >> 16) & 0xFF);
-        diag_puts(" outEPs=");   diag_put_u32((hdr >> 24) & 0xFF);
-        if (nif > 4) nif = 4;
-        for (uint8_t i = 0; i < nif; i++) {
-            uint32_t a = *(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u);
-            uint32_t b = *(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u + 4);
-            diag_puts(" if"); diag_put_u32(i);
-            diag_puts("[cls=0x");   diag_put_hex8((uint8_t)a);
-            diag_puts(" sub=0x");   diag_put_hex8((uint8_t)(a >> 8));
-            diag_puts(" prot=0x");  diag_put_hex8((uint8_t)(a >> 16));
-            diag_puts(" inEP=0x");  diag_put_hex8((uint8_t)(a >> 24));
-            diag_puts(" rdlen=");   diag_put_u32(b & 0xFFFF);
-            diag_puts(" hid=");     diag_put_u32((b >> 16) & 1);
-            // Per-iface GET_REPORT_DESCRIPTOR outcome (signed byte i of 0x2017F0A4):
-            // 0x7F=skipped(parse len 0); negative=fetch failed (code); >=0=bytes.
-            diag_puts(" fret=");
-            { int8_t fr = (int8_t)(uint8_t)(*(volatile uint32_t *)0x2017F0A4u >> (i * 8));
-              if (fr < 0) { diag_puts("-"); diag_put_u32((uint32_t)(-(int32_t)fr)); }
-              else        { diag_put_u32((uint32_t)fr); } }
-            diag_puts("]");
-        }
-        // NOTE: the per-loop flow counters (host_in/fwd/inPolls/v5ms/loop/itrc/…)
-        // that used to print here read 0x2017xxxx — which V5F NO LONGER writes in
-        // the relay hot path (those cross-core SRAM stores were the no-trap wedge;
-        // see icc.c:5-16). Live relay state now comes from the coherent IPC channel
-        // printed in the header (hb=ALIVE/FROZEN + rly=<stage code>). The interface
-        // table above (nif/rdlen/fret) is written ONCE before the loop, so it stays
-        // valid and is kept. Word-level relay counters are deferred to Phase-2 IPC
-        // MSG telemetry.
-    }
-    // capture_descriptors() failure detail (stage 0x9F): which control-transfer
-    // step failed (p@0x2017F048) and its return code (p@0x2017F04C).
-    if (stage == 0x9F || stage == 0x92) {
-        diag_puts(" cap_step="); diag_put_u32(*(volatile uint32_t *)0x2017F048u);
-        diag_puts(" cap_ret=");  diag_put_u32(*(volatile uint32_t *)0x2017F04Cu);
-        // SETUP-stage failure detail: s | INT_FLAG<<8 | INT_ST<<16 | PORT_STATUS<<24.
-        // s: 0x20=TRANSFER(NAK/no-resp exhausted) 0xFE=UNKNOWN(transfer-done never
-        // set=no response) 0x15=CONNECT 0x16=DISCON.
-        uint32_t d = *(volatile uint32_t *)0x2017F050u;
-        diag_puts(" setup_s=0x");      diag_put_hex8((uint8_t)d);
-        diag_puts(" INT_FLAG=0x");     diag_put_hex8((uint8_t)(d >> 8));
-        diag_puts(" INT_ST=0x");       diag_put_hex8((uint8_t)(d >> 16));
-        diag_puts(" PORT_STATUS=0x");  diag_put_hex8((uint8_t)(d >> 24));
-        // V5F clock facts (written once at boot): if HCLK is wrong, every V5F
-        // delay is mis-scaled -> flaky USB timing. Expect HCLK=200MHz, sys=400MHz.
-        diag_puts(" HCLK=");  diag_put_u32(*(volatile uint32_t *)0x2017F010u);
-        diag_puts(" core=");  diag_put_u32(*(volatile uint32_t *)0x2017F014u);
-        diag_puts(" sys=");   diag_put_u32(*(volatile uint32_t *)0x2017F018u);
-        // TIM9 liveness: tim9d should be ~50 (µs counted during a 50µs vendor
-        // delay). tim9d=0 => TIM9 NOT counting => timebase_v5f_delay_us spins
-        // forever => V5F wedges in the USBHS transfer-wait. This is the prime
-        // suspect for the cap_step=1 / tx=0x40A3 freeze.
-        diag_puts(" tim9_c0="); diag_put_u32(*(volatile uint32_t *)0x2017F01Cu);
-        diag_puts(" tim9d=");   diag_put_u32(*(volatile uint32_t *)0x2017F020u);
-        // PHY/PLL state at SETUP failure: pllrdy | CFG<<8 | PORT_CTRL<<16 | PORT_STATUS<<24.
-        // pllrdy=0 => USBHS 480M PLL not locked => PHY has no clock => port never
-        // enables => SETUP gets no response. This is the prime intermittency suspect.
-        uint32_t pp = *(volatile uint32_t *)0x2017F024u;
-        diag_puts(" pllrdy=");   diag_put_u32(pp & 1);
-        diag_puts(" CFG=0x");    diag_put_hex8((uint8_t)(pp >> 8));
-        diag_puts(" PORTCTRL=0x"); diag_put_hex8((uint8_t)(pp >> 16));
-    }
     // On a V5F trap (stage 0x8x) the handler also stamped mcause/mepc in the two
     // words after the marker — surface them so the fault is fully self-describing.
     if ((stage & 0xF0) == DBG_V5F_TRAP_BASE) {
@@ -255,24 +153,6 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
         diag_puts(" mepc=0x");  diag_put_hex8((uint8_t)(mepc >> 24));
         diag_put_hex8((uint8_t)(mepc >> 16)); diag_put_hex8((uint8_t)(mepc >> 8));
         diag_put_hex8((uint8_t)mepc);
-    }
-    // While V5F waits in HOST_WAITING, print its live USBHS port-register snapshot
-    // so "device attached but CONNECT never sets" becomes visible: PORT_STATUS
-    // line-state/speed bits show whether the PHY sees the device on the bus.
-    if (stage == DBG_V5F_HOST_WAITING) {
-        volatile uint32_t *p = (volatile uint32_t *)DBG_USBHS_REGS_ADDR;
-        // Print raw (no magic gate) so the snapshot state itself is ground truth:
-        // magic=0 => V5F never wrote it (loop body not running); n frozen => loop
-        // not iterating; n climbing => loop alive, read PORT_STATUS for PHY state.
-        diag_puts(" | magic=");                  diag_put_u32(p[0] == DBG_USBHS_REGS_MAGIC);
-        diag_puts(" CFG=0x");                     diag_put_hex8((uint8_t)p[1]);
-        diag_puts(" PORT_CFG=0x");                diag_put_hex8((uint8_t)p[2]);
-        diag_puts(" PORT_STATUS=0x");             diag_put_hex8((uint8_t)(p[3] >> 8));
-        diag_put_hex8((uint8_t)p[3]);
-        diag_puts(" CHG=0x");                     diag_put_hex8((uint8_t)p[4]);
-        diag_puts(" CTRL=0x");                    diag_put_hex8((uint8_t)(p[5] >> 8));
-        diag_put_hex8((uint8_t)p[5]);
-        diag_puts(" n=");                         diag_put_u32(p[6]);
     }
     diag_puts("\r\n");
 }

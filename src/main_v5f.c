@@ -186,27 +186,6 @@ int main(void)
 	timebase_v5f_init(SystemCoreClock);
 	dbg_stage(DBG_V5F_TIMEBASE);
 
-	// BENCH DIAG: publish V5F's clock facts so the oracle can verify delay scaling.
-	// The flaky first-SETUP failure (setup_s=0xFE) is consistent with mis-scaled
-	// V5F delays (TIM9/TIM4 prescaler from a wrong HCLK). Publish HCLK + the live
-	// TIM9 µs counter so we can measure its true rate against the Mac wall clock.
-	{
-		RCC_ClocksTypeDef ck;
-		RCC_GetClocksFreq(&ck);
-		*(volatile uint32_t *)0x2017F010u = ck.HCLK_Frequency;   // free slot
-		*(volatile uint32_t *)0x2017F014u = SystemCoreClock;
-		*(volatile uint32_t *)0x2017F018u = ck.SYSCLK_Frequency;
-	}
-	// BENCH DIAG: prove TIM9 is actually counting. Sample CNT twice with a short
-	// vendor-SysTick delay between (independent of TIM9). If d==0, TIM9 is dead.
-	{
-		uint32_t c0 = TIM9->CNT_32;
-		Delay_Us(50);                 // vendor SysTick delay (NOT TIM9-based)
-		uint32_t c1 = TIM9->CNT_32;
-		*(volatile uint32_t *)0x2017F01Cu = c0;
-		*(volatile uint32_t *)0x2017F020u = c1 - c0;   // expect ~50 if TIM9 @1MHz
-	}
-
 	// Humanization filter seed (level defaults inside). The interval is a nominal
 	// 1 kHz here; Phase-7 wires the measured poll interval (adaptive feed rate).
 	humanize_init(1000);
@@ -263,8 +242,6 @@ int main(void)
 	// 0x55 SWJ wedge), then have the real mouse hot-plugged afterward and still
 	// enumerate. A failed capture re-powers the port and re-arms the wait.
 	uint32_t wait_blink   = millis();
-	uint32_t wait_iter    = 0;
-	uint32_t cap_attempts = 0;
 	for (;;) {
 		// Host-wait. With no device on the port this blinks PC3 at ~2 Hz
 		// ("searching"). The wfi wakes each ms from the TIM4 millis IRQ.
@@ -277,8 +254,6 @@ int main(void)
 			if ((now - wait_blink) >= 250) {   // ~2 Hz "searching"
 				wait_blink = now;
 				led_toggle();
-				dbg_usbhs_regs(USBHSH->CFG, USBHSH->PORT_CFG, USBHSH->PORT_STATUS,
-				               USBHSH->PORT_STATUS_CHG, USBHSH->PORT_CTRL, ++wait_iter);
 			}
 			__asm volatile("wfi");
 		}
@@ -289,8 +264,6 @@ int main(void)
 		dbg_stage(0x92);                 // before capture_descriptors
 		// capture_descriptors() owns the bus-reset + post-reset stability poll +
 		// the full address-assignment retry loop, so the caller does not pre-reset.
-		// Publish the attempt count so the oracle shows re-tries (0x2017F0B4).
-		*(volatile uint32_t *)0x2017F0B4u = ++cap_attempts;
 		if (capture_descriptors(&desc))
 			break;                       // captured — proceed to clone + relay
 
@@ -386,98 +359,20 @@ int main(void)
 	// Parse the cloned HID report descriptor into the merge layout.
 	usb_merge_cache_endpoints(&desc);
 
-	// BENCH DIAG (descriptor-clone bring-up): publish the captured interface table
-	// so the V3F oracle can show, at the relay stage, exactly what we cloned —
-	// per-interface class/subclass/protocol, the IN endpoint, and whether the HID
-	// report descriptor was actually captured (len>0). This distinguishes "mouse
-	// report descriptor STALLed/empty so Windows kept only the keyboard" from a
-	// protocol-keying mismatch. Header word: num_ifaces | bDeviceClass<<8 |
-	// num_ep_mappings<<16 | num_out_mappings<<24.
-	*(volatile uint32_t *)0x2017F080u =
-		(uint32_t)desc.num_ifaces
-		| ((uint32_t)desc.device_desc[4] << 8)   // bDeviceClass
-		| ((uint32_t)num_ep_mappings << 16)
-		| ((uint32_t)num_out_mappings << 24);
-	for (uint8_t i = 0; i < 4; i++) {
-		uint32_t a = 0, b = 0;
-		if (i < desc.num_ifaces) {
-			const captured_iface_t *f = &desc.ifaces[i];
-			a = (uint32_t)f->iface_class
-			  | ((uint32_t)f->iface_subclass << 8)
-			  | ((uint32_t)f->iface_protocol << 16)
-			  | ((uint32_t)f->interrupt_in_ep << 24);
-			b = (uint32_t)f->hid_report_desc_len
-			  | ((uint32_t)(f->has_hid_desc ? 1u : 0u) << 16)
-			  | ((uint32_t)f->interrupt_in_maxpkt << 17);
-		}
-		*(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u)     = a;
-		*(volatile uint32_t *)(0x2017F084u + (uint32_t)i * 8u + 4) = b;
-	}
-	// BENCH DIAG: per-interface GET_REPORT_DESCRIPTOR outcome, one signed byte each
-	// (if0..if3 in bytes 0..3). 127 = parser saw report-len 0 so fetch was skipped;
-	// negative = fetch transfer failed with that code; >=0 = bytes fetched. Resolves
-	// whether if2/if3 rdlen=0 is a parse miss or a fetch failure. Lives in the
-	// write-once interface-table region (0x2017F0A4 free slot), which the oracle
-	// reads reliably (unlike the per-loop counters subject to cross-core staleness).
-	{
-		uint32_t fr = 0;
-		for (uint8_t i = 0; i < 4; i++) {
-			uint8_t v = 0x7F;   // default: not present
-			if (i < desc.num_ifaces)
-				v = (uint8_t)desc.ifaces[i].report_fetch_ret;
-			fr |= (uint32_t)v << (i * 8);
-		}
-		*(volatile uint32_t *)0x2017F0A4u = fr;
-	}
-
 	// --- USBFS device: replay descriptors, wait for the PC to configure --
 	if (!usb_device_init(&desc)) {
 		led_blink_forever(9, 80, 120);
 	}
 	dbg_stage(DBG_V5F_DEV_INIT);
 	led_off();
-	uint32_t dev_wait_start = millis();
 	uint32_t dev_led_toggle = millis();
-	extern volatile uint32_t usbd_dbg_irq, usbd_dbg_busrst, usbd_dbg_setup, usbd_dbg_lastst;
-	extern volatile uint32_t usbd_dbg_alloc_before, usbd_dbg_alloc_after;
-	extern volatile uint32_t usbd_dbg_lastsetup, usbd_dbg_lastsetup_len;
-	extern volatile uint32_t usbd_dbg_stalls, usbd_dbg_configval;
 	while (!usb_device_is_configured()) {
 		usb_device_poll();
 		usb_merge_drain_icc(); // keep the ICC mailbox drained during bring-up
-		// BENCH DIAG: publish USBFS device-side activity so V3F can print it.
-		// irq=0 => the device PHY sees NO bus activity (not wired / no pullup);
-		// busrst climbing => host is driving the bus; setup climbing => enumerating.
-		*(volatile uint32_t *)0x2017F028u = usbd_dbg_irq;
-		*(volatile uint32_t *)0x2017F02Cu = usbd_dbg_busrst;
-		*(volatile uint32_t *)0x2017F030u = usbd_dbg_setup;
-		*(volatile uint32_t *)0x2017F034u = (USBFSD->BASE_CTRL) | (usbd_dbg_lastst << 8)
-		                                    | (usbd_dbg_alloc_before << 16)
-		                                    | (usbd_dbg_alloc_after << 17);
-		// Live PHY/line state: MIS_ST (bit0=DEV_ATTACH bit1=DM_LEVEL bit3=BUS_RESET
-		// bit7=SOF_PRES) + UDEV_CTRL (bit5=DP_PIN bit4=DM_PIN live levels). If
-		// DEV_ATTACH/line pins are dead, the PHY sees no host; if SOF_PRES toggles,
-		// the bus is alive. Packs MIS_ST | UDEV_CTRL<<8 | INT_EN<<16.
-		*(volatile uint32_t *)0x2017F054u = (uint8_t)USBFSD->MIS_ST
-		                                    | ((uint32_t)(uint8_t)USBFSD->UDEV_CTRL << 8)
-		                                    | ((uint32_t)(uint8_t)USBFSD->INT_EN << 16);
-		// Last SETUP request + STALL count + config-seen: pinpoints which control
-		// request Windows sends that the device chokes on (where enum stalls).
-		*(volatile uint32_t *)0x2017F058u = usbd_dbg_lastsetup;
-		*(volatile uint32_t *)0x2017F05Cu = (usbd_dbg_lastsetup_len & 0xFFFF)
-		                                    | (usbd_dbg_stalls << 16);
-		// pack live is_configured into the high byte of the configval slot so we
-		// can distinguish "SET_CONFIG was once seen" (low byte) from "configured
-		// RIGHT NOW" (high byte) — a bus reset clears the live flag.
-		*(volatile uint32_t *)0x2017F060u = usbd_dbg_configval
-		                                    | (usb_device_is_configured() ? 0x10000u : 0u);
 		if ((millis() - dev_led_toggle) >= 250) {
 			led_toggle();
 			dev_led_toggle = millis();
 		}
-		// BENCH: do NOT dead-end on the 30s timeout — keep the loop alive so the
-		// register snapshot stays live for the oracle while we debug enumeration.
-		(void)dev_wait_start;
 	}
 	// CROSS-CORE BUG FIX: do NOT call led_heartbeat_start() here. That starts
 	// TIM2 + NVIC_EnableIRQ(TIM2_IRQn), but TIM2 is V3F's heartbeat timer (it owns
@@ -499,73 +394,29 @@ int main(void)
 	uint8_t s_probe_phase = 0;   // alternate the two probe codes each emit
 	uint32_t hb_led_ms  = millis();   // last PC3 liveness-blink toggle time
 
-	// Telemetry counters (ported from v2 main.c): reports successfully forwarded
-	// to the PC vs. dropped (device-side EP busy). Streamed to V3F over the ICC
-	// for the LED status ladder.
-	uint32_t report_count = 0;
-	uint32_t drop_count   = 0;
-	uint32_t telem_tick   = millis();   // last time telemetry was emitted
-
-	// BENCH DIAG: live relay report-flow counters, published to shared SRAM each
-	// loop so the V3F oracle can show whether real IN reports arrive from the
-	// device (host_in_reports) and whether they forward to the PC (report_count)
-	// vs. drop (device EP busy / not configured). Distinguishes "no reports from
-	// the real mouse" from "reports arrive but never reach Windows".
-	uint32_t host_in_reports = 0;
-	uint8_t  last_in_len     = 0;
-
-	// ROOT-CAUSE FIX (the no-trap wedge): every 0x2017xxxx store from V5F is a
-	// CROSS-CORE write into V3F-side SRAM (V5F's own RAM ends at 0x20100000;
-	// 0x2017xxxx is outside every region V5F links — see core/link_v5f.ld and the
-	// bench-proven note in src/icc.c:5-16). The WCH part has NO sanctioned shared-
-	// SRAM pattern; a high-rate storm of these foreign-SRAM stores intermittently
-	// stalls the V5F store pipeline on an AHB access that never returns → whole core
-	// frozen, TIM4 dead, NO trap. Even ONE such store can hit the unlucky V3F-bus
-	// collision. So ALL per-loop diagnostics now go over the IPC status-bit channel
-	// (icc_telem_stage_v5f → coherent peripheral MMIO, single-writer, no SRAM). ITRC
-	// is repointed to that coherent stage marker; the 0x2017xxxx publish block is
-	// DELETED. V5F makes ZERO writes to 0x2017xxxx in the relay/USB hot path.
-	// ITRC was the per-stage wedge tracer (TLM_RLY_*). The wedge it was used to find
-	// (a .fastrun orphan-section landmine — humanize_record_arrival fetch-stalled
-	// because .fastrun was never relocated to ITCM, see core/link_v5f.ld) is FIXED,
-	// so the intermediate stage markers are back to NO-OPS — they would otherwise
-	// overwrite the end-to-end report-path probe byte the loop bottom emits as the
-	// dominant, sampling-stable telemetry.
+	// V5F->V3F relay telemetry uses ONLY the coherent IPC status-bit channel
+	// (icc_telem_stage_v5f). It must never write V3F-side SRAM (0x2017xxxx) from
+	// this hot loop: such cross-core stores can stall the V5F pipeline on an AHB
+	// access that never returns, freezing the core with no trap. ITRC is a
+	// per-stage wedge tracer kept as a no-op for production (re-point it to
+	// icc_telem_stage_v5f when locating a relay-loop hang); the loop bottom emits
+	// the dominant, sampling-stable report-path probe.
 	#define ITRC(v) ((void)0)
 
 	while (1) {
 		bool did_work = false;
 
-		// BENCH DIAG: raw loop heartbeat at the very TOP of the loop, before any
-		// work. If this advances but the publish block below stays frozen, the
-		// loop body hangs mid-iteration; if this is frozen too, the loop never
-		// iterates. (0x2017F0CC — distinct from the publish-block addresses.)
 		++loop_count;
-		// ROOT-CAUSE FIX (the no-trap wedge): every 0x2017xxxx store from V5F is a
-		// CROSS-CORE write into V3F-side SRAM (V5F's own RAM ends at 0x20100000;
-		// 0x2017xxxx is outside every region V5F links — see core/link_v5f.ld and
-		// the bench-proven note in src/icc.c:5-16). The WCH part has NO sanctioned
-		// shared-SRAM pattern — the vendor reference moves all cross-core data over
-		// the IPC MSG mailbox. A high-RATE storm of these foreign-SRAM stores from
-		// the 400MHz loop intermittently stalls the V5F store pipeline on an AHB
-		// access that never returns → whole core frozen, TIM4 dead, NO trap (the
-		// exact wedge signature, accumulating over ~95-150k loops until the unlucky
-		// V3F-bus collision). The OLD throttle was ITERATION-based (1/1024 loops ≈
-		// still ~400 bursts/sec at loop speed) — not low enough. Gate ALL cross-core
-		// diagnostics on TIME instead: ~2 Hz (every 500ms of TIM4 millis). Low-rate
-		// V5F→V3F-SRAM writes are empirically safe (boot/enum does dozens and never
-		// wedges); only the per-loop storm was fatal. ~30 cross-core writes/sec total.
+		// V5F must NOT write V3F-side SRAM (0x2017xxxx) from this hot loop: those
+		// are cross-core stores that can stall the V5F store pipeline on an AHB
+		// access that never returns, freezing the core with no trap. All V5F->V3F
+		// telemetry goes over the coherent IPC status-bit channel instead, and the
+		// only liveness signal here is PC3 (V5F's own GPIO).
 		uint32_t now_ms = millis();
-		// LIVENESS: toggle PC3 (V5F's OWN GPIO — no cross-core write, always safe)
-		// every ~250ms → human-visible ~2 Hz blink. Redundant with the IPC heartbeat
-		// below; kept as a probe-free eyeball signal.
-		if ((now_ms - hb_led_ms) >= 250u) {
+		if ((now_ms - hb_led_ms) >= 250u) {   // ~2 Hz "relay running" blink on PC3
 			hb_led_ms = now_ms;
 			led_toggle();
 		}
-		// Coherent stage marker over IPC status bits (NOT shared SRAM). The seq half
-		// of the byte rolls every call, so V3F sees a CHANGING heartbeat while the
-		// loop runs and a FROZEN one (with the stuck code) the instant V5F wedges.
 		ITRC(TLM_RLY_TOP);
 
 		// Drain injection from the V3F command core into the merge accumulators
@@ -615,25 +466,19 @@ int main(void)
 			// (probe byte is emitted once per iteration at the loop bottom — see there)
 			if (ret > 0 && rpt_ptr) {
 				did_work = true;
-				host_in_reports++;          // bench: a real IN report arrived
-				last_in_len = (uint8_t)ret; // bench: its length
-				// Timestamp real mouse-report arrival from the free-running
-				// 1 MHz TIM9 µs counter (single CNT read, monotonic). This is
-				// the precise "a report just arrived" point; only the mouse
-				// interface drives the adaptive feed rate. Mirrors v2 main.c
-				// (humanize_record_arrival(gpt_profile_us()), line ~309).
+				// Feed the adaptive humanizer with the real mouse-report arrival
+				// time (free-running 1 MHz TIM9 µs counter). Only the boot mouse
+				// interface (protocol==2) drives the feed rate.
 				if (ep_map[m].iface_protocol == 2)
 					humanize_record_arrival(timebase_v5f_us());
 				ITRC(TLM_RLY_MERGE);
 				usb_merge_report(ep_map[m].iface_protocol,
 					rpt_ptr, (uint8_t)ret);
 				ITRC(TLM_RLY_SEND);
-				// Count forwarded vs. dropped reports for telemetry (ports v2
-				// main.c: send_report true -> report_count, false -> drop_count).
 				bool fwd_ok = usb_device_send_report(
 					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret);
-				if (fwd_ok) { report_count++; s_probe_fwd = 1u; }
-				else        { drop_count++;   s_probe_drop = 1u; }
+				if (fwd_ok) s_probe_fwd  = 1u;
+				else        s_probe_drop = 1u;
 			}
 		}
 		ITRC(TLM_RLY_OUT);
@@ -658,16 +503,6 @@ int main(void)
 		// kmbox_send_pending() call (line ~331), placed after the EP loops.
 		usb_merge_send_pending();
 		ITRC(TLM_RLY_PENDING);
-
-		// V5F->V3F telemetry now goes over the IPC status-bit channel (the per-pass
-		// ITRC stage marker above), NOT the 0x2017xxxx shared-SRAM publish block that
-		// used to live here. That block was DELETED: every store in it was a cross-
-		// core write into V3F-side SRAM that intermittently stalled the V5F core (the
-		// no-trap wedge — see icc.c:5-16). Word-level counters (host_in/fwd/inS/etc.)
-		// are deferred to Phase-2 IPC-MSG telemetry; the coherent stage+heartbeat is
-		// enough to tell alive-vs-wedged-and-where. report/drop kept local for now.
-		(void)report_count; (void)drop_count; (void)telem_tick;
-		(void)host_in_reports; (void)last_in_len;
 
 		// DOMINANT telemetry: emit the latched end-to-end report-path probe at the
 		// BOTTOM of every iteration (last-write-wins, so the slow 1s oracle sampling

@@ -102,26 +102,6 @@ static uint8_t s_out_ep_mask;
 static volatile uint8_t s_out_rx_len[USB_DEV_NUM_ENDPOINTS];
 static volatile uint8_t s_out_rx_pend[USB_DEV_NUM_ENDPOINTS];
 
-/* BENCH DIAG: USBFS device-side activity counters, so the V3F UART oracle can
- * show whether the device PHY sees the PC at all when s_configured stays 0:
- *   irq    = total USBFS_IRQHandler entries (0 => no bus activity / not wired)
- *   busrst = bus-reset interrupts (host driving reset => device is on the bus)
- *   setup  = SETUP packets seen (host enumerating)
- *   lastst = last INT_ST token snapshot. */
-volatile uint32_t usbd_dbg_irq;
-volatile uint32_t usbd_dbg_busrst;
-volatile uint32_t usbd_dbg_setup;
-volatile uint32_t usbd_dbg_lastst;
-volatile uint32_t usbd_dbg_alloc_before;   /* NVIC IRQ-alloc bit before SetAllocate */
-volatile uint32_t usbd_dbg_alloc_after;    /* and after (1 => routed to V5F) */
-/* Last SETUP request seen + a STALL (errflag) counter, so the UART oracle can
- * show exactly which control request Windows sends that the device chokes on.
- * usbd_dbg_lastsetup = bRequest<<24 | bmRequestType<<16 | wValue. */
-volatile uint32_t usbd_dbg_lastsetup;
-volatile uint32_t usbd_dbg_lastsetup_len;  /* wLength of the last SETUP */
-volatile uint32_t usbd_dbg_stalls;         /* count of errflag=0xFF (STALL) responses */
-volatile uint32_t usbd_dbg_configval;      /* SET_CONFIGURATION value seen */
-
 /* HID class state (single interface). */
 static volatile uint8_t  USBFS_HidIdle;
 static volatile uint8_t  USBFS_HidProtocol;
@@ -332,11 +312,9 @@ bool usb_device_init(const captured_descriptors_t *desc)
     // RESET DEFAULT is Core_ID_V3F (0). The USBFS enumeration ISR runs on V5F, so
     // without this the interrupt is delivered to V3F (which has no USBFS handler)
     // and V5F's USBFS_IRQHandler never fires — s_configured stays 0 forever. Route
-    // USBFS_IRQn (67) to V5F before enabling it. Publish the pre/post allocation
-    // bit for the UART oracle. (USBHS host works without this because it's polled.)
-    usbd_dbg_alloc_before = NVIC_GetAllocateIRQ(USBFS_IRQn);
+    // USBFS_IRQn (67) to V5F before enabling it. (USBHS host works without this
+    // because it's polled.)
     NVIC_SetAllocateIRQ(USBFS_IRQn, Core_ID_V5F);
-    usbd_dbg_alloc_after = NVIC_GetAllocateIRQ(USBFS_IRQn);
 
     NVIC_EnableIRQ(USBFS_IRQn);
     return true;
@@ -420,21 +398,13 @@ int usb_device_poll_out(uint8_t ep_num, uint8_t **data_ptr)
 /* ======================================================================== */
 /* USBFS_IRQHandler — ported standard-request enumeration state machine.    */
 /* ======================================================================== */
-volatile uint8_t usbd_dbg_in_isr;   /* bench: 1 while inside the ISR (stuck-detect) */
-
 void USBFS_IRQHandler(void)
 {
     uint8_t  intflag, intst, errflag;
     uint16_t len;
 
-    usbd_dbg_in_isr = 1;      /* bench: if this stays 1, V5F is wedged in the ISR */
     intflag = USBFSD->INT_FG;
     intst   = USBFSD->INT_ST;
-
-    usbd_dbg_irq++;            /* bench: count every IRQ entry */
-    usbd_dbg_lastst = intst;
-    if (intflag & USBFS_UIF_BUS_RST) usbd_dbg_busrst++;
-    if ((intst & USBFS_UIS_TOKEN_MASK) == USBFS_UIS_TOKEN_SETUP) usbd_dbg_setup++;
 
     if (intflag & USBFS_UIF_TRANSFER) {
         switch (intst & USBFS_UIS_TOKEN_MASK) {
@@ -546,11 +516,6 @@ void USBFS_IRQHandler(void)
             USBFS_SetupReqLen   = pUSBFS_SetupReqPak->wLength;
             USBFS_SetupReqValue = pUSBFS_SetupReqPak->wValue;
             USBFS_SetupReqIndex = pUSBFS_SetupReqPak->wIndex;
-            /* bench: record the last SETUP so the oracle shows where enum stalls. */
-            usbd_dbg_lastsetup = ((uint32_t)USBFS_SetupReqCode << 24)
-                               | ((uint32_t)USBFS_SetupReqType << 16)
-                               | (uint32_t)USBFS_SetupReqValue;
-            usbd_dbg_lastsetup_len = USBFS_SetupReqLen;
             len     = 0;
             errflag = 0;
 
@@ -693,7 +658,6 @@ void USBFS_IRQHandler(void)
                 case USB_SET_CONFIGURATION:
                     USBFS_DevConfig = (uint8_t)(USBFS_SetupReqValue & 0xFF);
                     s_configured = 1;
-                    usbd_dbg_configval = 0x100u | USBFS_DevConfig;  /* bench: saw SET_CONFIG */
                     break;
 
                 case USB_CLEAR_FEATURE:
@@ -807,7 +771,6 @@ void USBFS_IRQHandler(void)
             /* Drive the EP0 response: STALL on error, else Tx/Rx the data or
              * zero-length status stage. */
             if (errflag == 0xFF) {
-                usbd_dbg_stalls++;   /* bench: device STALLed this request */
                 USBFSD->UEP0_TX_CTRL = USBFS_UEP_T_TOG | USBFS_UEP_T_RES_STALL;
                 USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_TOG | USBFS_UEP_R_RES_STALL;
             } else {
@@ -861,5 +824,4 @@ void USBFS_IRQHandler(void)
     } else {
         USBFSD->INT_FG = intflag;
     }
-    usbd_dbg_in_isr = 0;      /* bench: clean ISR exit */
 }
