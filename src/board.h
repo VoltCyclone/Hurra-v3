@@ -72,3 +72,39 @@
 #define CMD_USART_RX_PIN        GPIO_Pin_10
 #define CMD_USART_RX_PINSRC     GPIO_PinSource10
 #define CMD_USART_GPIO_AF       GPIO_AF7
+
+// ── Status display (ST7789 240x240 SPI TFT on the 12-pin FPC) ────────────────
+// The board ships a 1.54" ST7789 240x240 panel. Driven by V3F over SPI2 in
+// 4-wire mode, exactly as the wuxx EVT example doc/EVT/EXAM/SPI/SPI_LCD does.
+// SPI2 is on the HB1 bus; the GPIO ports are on HB2. None of these pins collide
+// with the relay firmware (V5F touches GPIOB only at PB8/PB9 for SWJ-disable).
+//
+//   SCK  = PB13 (AF5)      MOSI = PB15 (AF5)      MISO = PB14 (AF5, unused)
+//   CS   = PB12 (GPIO)     RES  = PD8  (GPIO)     DC   = PD9  (GPIO)
+//
+// VIO18 rail must be 3.3V for the panel; display_init() sets it in software
+// (PWR_VIO18*). EVT recommends a hardware config for external-device safety.
+#define LCD_SPI                 SPI2
+#define LCD_SPI_RCC_HB1         RCC_HB1Periph_SPI2
+#define LCD_GPIO_RCC_HB2        (RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOB | RCC_HB2Periph_GPIOD)
+
+#define LCD_SCK_PORT            GPIOB
+#define LCD_SCK_PIN             GPIO_Pin_13
+#define LCD_SCK_PINSRC          GPIO_PinSource13
+#define LCD_MISO_PORT           GPIOB
+#define LCD_MISO_PIN            GPIO_Pin_14
+#define LCD_MISO_PINSRC         GPIO_PinSource14
+#define LCD_MOSI_PORT           GPIOB
+#define LCD_MOSI_PIN            GPIO_Pin_15
+#define LCD_MOSI_PINSRC         GPIO_PinSource15
+#define LCD_SPI_AF              GPIO_AF5
+
+#define LCD_CS_PORT             GPIOB
+#define LCD_CS_PIN              GPIO_Pin_12
+#define LCD_RES_PORT            GPIOD
+#define LCD_RES_PIN             GPIO_Pin_8
+#define LCD_DC_PORT             GPIOD
+#define LCD_DC_PIN              GPIO_Pin_9
+
+#define LCD_WIDTH               240
+#define LCD_HEIGHT              240
