@@ -305,14 +305,29 @@ int main(void)
 	dbg_stage(DBG_V5F_DESC_OK);
 
 	// capture_descriptors() already sends SET_CONFIG and SET_IDLE.
-	// NOTE: we deliberately do NOT send SET_PROTOCOL. The WCH EVT host reference
-	// (USBHS_Host_KM) never issues SET_PROTOCOL at all — SetupSetprotocol is
-	// declared but unreferenced. SET_PROTOCOL(Report) is only spec-defined for
-	// Boot-subclass (bInterfaceSubClass==1) interfaces; a gaming mouse (e.g. Razer
-	// Basilisk V3) uses report-protocol/vendor interfaces (subclass 0), where
-	// SET_PROTOCOL is out-of-spec and a dual-mode interface may STALL it or switch
-	// to a NON-streaming mode — exactly the "device NAKs every interrupt-IN" symptom.
-	// Sending it to ALL interfaces (incl. non-HID vendor ones) made it worse.
+	// SET_PROTOCOL(Report) for BOOT-SUBCLASS interfaces ONLY (bInterfaceSubClass==1).
+	// Root cause of "cursor doesn't move": the Razer Basilisk V3's movement interface
+	// (if0, EP0x81) is a BOOT mouse (class=0x03 sub=0x01 prot=0x02, GenericDesktop/
+	// Mouse/Pointer w/ 16-bit X/Y — descriptor-verified). A boot-subclass HID device
+	// may power up in Boot Protocol; without SET_PROTOCOL(Report) it does not stream
+	// its report-protocol data and NAKs every interrupt-IN (bench: s0=0x2A NAK, n=0).
+	// The working v2 host (USBHS i.MX) sends this and the cursor moves; v3 had dropped
+	// it. We send it ONLY to subclass==1 interfaces (hits if0; spares the subclass-0
+	// vendor/consumer interfaces if1..if3 that STALL it — sending to ALL made it worse,
+	// which was the basis for the earlier blanket removal). wValue=1 = Report Protocol.
+	for (uint8_t i = 0; i < desc.num_ifaces; i++) {
+		if (desc.ifaces[i].iface_class != 0x03) continue;     // HID only
+		if (desc.ifaces[i].iface_subclass != 0x01) continue;  // BOOT subclass only
+		usb_setup_t sp;
+		sp.bmRequestType = 0x21;   // Host->Device | Class | Interface
+		sp.bRequest      = 0x0B;   // HID SET_PROTOCOL
+		sp.wValue        = 1;      // 1 = Report Protocol (not Boot)
+		sp.wIndex        = desc.ifaces[i].iface_num;
+		sp.wLength       = 0;
+		// Best-effort: a device may legally STALL; don't fail the relay over it.
+		(void)usb_host_control_transfer(desc.dev_addr, desc.ep0_maxpkt,
+			&sp, NULL, 2000);
+	}
 
 	// --- Build the host->device endpoint maps (ports verbatim from v2) ----
 	ep_mapping_t ep_map[MAX_INTR_EPS];
@@ -510,10 +525,12 @@ int main(void)
 	// (icc_telem_stage_v5f → coherent peripheral MMIO, single-writer, no SRAM). ITRC
 	// is repointed to that coherent stage marker; the 0x2017xxxx publish block is
 	// DELETED. V5F makes ZERO writes to 0x2017xxxx in the relay/USB hot path.
-	// ITRC was the per-stage wedge tracer (TLM_RLY_*). The wedge is resolved (V5F
-	// loops cleanly off the cross-core SRAM), so the intermediate stage markers are
-	// now NO-OPS — they would otherwise overwrite the end-to-end report-path probe
-	// byte that the loop bottom emits as the dominant, sampling-stable telemetry.
+	// ITRC was the per-stage wedge tracer (TLM_RLY_*). The wedge it was used to find
+	// (a .fastrun orphan-section landmine — humanize_record_arrival fetch-stalled
+	// because .fastrun was never relocated to ITCM, see core/link_v5f.ld) is FIXED,
+	// so the intermediate stage markers are back to NO-OPS — they would otherwise
+	// overwrite the end-to-end report-path probe byte the loop bottom emits as the
+	// dominant, sampling-stable telemetry.
 	#define ITRC(v) ((void)0)
 
 	while (1) {
@@ -575,9 +592,6 @@ int main(void)
 			if ((int32_t)(now_us - ep_map[m].next_poll_us) < 0)
 				continue;
 			ep_map[m].next_poll_us = now_us + ep_map[m].interval_us;
-			// Fine wedge markers: 0x30|slot = ABOUT to poll EP slot m; if rly freezes
-			// at 0x30|m, the hang is INSIDE usb_host_interrupt_poll_zerocopy/transact
-			// for that slot. 0x38|m = poll returned (so it did NOT hang).
 			uint8_t *rpt_ptr = NULL;
 			int ret = usb_host_interrupt_poll_zerocopy(ep_map[m].host_slot,
 				&rpt_ptr, ep_map[m].maxpkt);
