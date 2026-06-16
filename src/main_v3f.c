@@ -12,6 +12,7 @@
 #include "kmbox_cmd.h"
 #include "timebase.h"
 #include "debug.h"
+#include "display.h"
 
 // ── V5F stage diagnostic (bench bring-up) ───────────────────────────────────
 // The running V5F disables SWJ (PB8/PB9) during USB init, so SWD/SDI debug NAKs
@@ -179,6 +180,10 @@ int main(void)
     kmbox_cmd_init();                   // act_init + proto_init + bind tx
     led_heartbeat_start();
 
+    display_init();
+    display_status_t g_disp = { .state = DISP_STATE_BOOT };
+    uint32_t disp_render_tick = millis();
+
 #if defined(V5F_STAGE_DIAG)
     // One-shot banner so a freshly-opened terminal knows the build + baud and can
     // confirm V3F itself is alive on the link before any V5F line appears.
@@ -211,6 +216,22 @@ int main(void)
         // record per free mailbox; loop here to drain a burst quickly rather than
         // one-per-main-loop, since the mailbox frees as fast as V5F drains it.
         while (icc_pump_to_v5f()) { /* keep pumping while mailbox frees */ }
+
+        // Pull V5F status telemetry every iteration (cheap MMIO read); render at
+        // ~4 Hz. Display is non-essential and must never gate the relay or command
+        // link — it only consumes V3F idle time. Window-based liveness: if no
+        // heartbeat-seq advance is seen across a whole render interval, show NOSIGNAL.
+        static bool s_seen_advance;
+        if (icc_status_poll_v3f(&g_disp)) s_seen_advance = true;
+        uint32_t dnow = millis();
+        if ((dnow - disp_render_tick) >= 250) {
+            disp_render_tick = dnow;
+            g_disp.uptime_s = dnow / 1000u;
+            if (!s_seen_advance && g_disp.state != DISP_STATE_BOOT)
+                g_disp.state = DISP_STATE_NOSIGNAL;
+            s_seen_advance = false;
+            display_render(&g_disp);
+        }
 
         // --- LED status ladder (ports v2 main.c, MINUS the overtemp tier) -
         // Sampled every 100 ms; the heartbeat keeps blinking on its own and we

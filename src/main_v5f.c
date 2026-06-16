@@ -241,11 +241,13 @@ int main(void)
 	// flashed with nothing plugged in (the only reliable flash state — see the
 	// 0x55 SWJ wedge), then have the real mouse hot-plugged afterward and still
 	// enumerate. A failed capture re-powers the port and re-arms the wait.
+	display_status_t s_disp = { .state = DISP_STATE_BOOT };
 	uint32_t wait_blink   = millis();
 	for (;;) {
 		// Host-wait. With no device on the port this blinks PC3 at ~2 Hz
 		// ("searching"). The wfi wakes each ms from the TIM4 millis IRQ.
 		dbg_stage(DBG_V5F_HOST_WAITING);
+		s_disp.state = DISP_STATE_WAITING;
 		while (!usb_host_device_connected()) {
 			usb_host_power_on();
 			// Drain V3F injection so the ICC mailbox never backs up pre-relay.
@@ -258,6 +260,7 @@ int main(void)
 			__asm volatile("wfi");
 		}
 		dbg_stage(DBG_V5F_DEV_CONNECTED);
+		s_disp.state = DISP_STATE_CAPTURING;
 
 		led_on();
 		delay(10);
@@ -276,6 +279,8 @@ int main(void)
 		delay(200);                      // let a glitching device settle / re-detect
 	}
 	dbg_stage(DBG_V5F_DESC_OK);
+	s_disp.vid = (uint16_t)(desc.device_desc[8]  | (desc.device_desc[9]  << 8));
+	s_disp.pid = (uint16_t)(desc.device_desc[10] | (desc.device_desc[11] << 8));
 
 	// capture_descriptors() already sends SET_CONFIG and SET_IDLE.
 	// SET_PROTOCOL(Report) for BOOT-SUBCLASS interfaces ONLY (bInterfaceSubClass==1).
@@ -384,6 +389,7 @@ int main(void)
 	// running". The heartbeat ladder belongs to V3F on PC2.
 	led_on();
 	dbg_stage(DBG_V5F_RELAY);   // bench: 0x58 here == full relay reached
+	s_disp.state = DISP_STATE_RELAYING;
 
 	// --- Relay loop ------------------------------------------------------
 	uint32_t loop_count = 0;
@@ -393,6 +399,7 @@ int main(void)
 	uint32_t s_probe_ms = millis();
 	uint8_t s_probe_phase = 0;   // alternate the two probe codes each emit
 	uint32_t hb_led_ms  = millis();   // last PC3 liveness-blink toggle time
+	static uint32_t s_rep_count, s_rep_tick;
 
 	// V5F->V3F relay telemetry uses ONLY the coherent IPC status-bit channel
 	// (icc_telem_stage_v5f). It must never write V3F-side SRAM (0x2017xxxx) from
@@ -477,7 +484,7 @@ int main(void)
 				ITRC(TLM_RLY_SEND);
 				bool fwd_ok = usb_device_send_report(
 					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret);
-				if (fwd_ok) s_probe_fwd  = 1u;
+				if (fwd_ok) { s_probe_fwd  = 1u; s_rep_count++; }
 				else        s_probe_drop = 1u;
 			}
 		}
@@ -546,6 +553,15 @@ int main(void)
 				// slot order matches ep_map = capture order = if0,if1,if2,if3).
 				icc_telem_stage_v5f((uint8_t)(0x10u | (s_probe_gotmask & 0x0F)));
 		}
+		// Status display feed (non-essential, coherent IPC MMIO only — never SRAM).
+		if ((now_ms - s_rep_tick) >= 1000u) {
+			s_rep_tick = now_ms;
+			s_disp.reports_per_sec = (s_rep_count > 1023u) ? 1023u : (uint16_t)s_rep_count;
+			s_rep_count = 0;
+			s_disp.uptime_s++;   // coarse 1 Hz uptime (V3F also tracks its own)
+		}
+		icc_status_pump_v5f(&s_disp);   // rotate-publish one field; cheap IPC MMIO
+
 		if (!did_work)
 			__asm volatile("wfi");
 

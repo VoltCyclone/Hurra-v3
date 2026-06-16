@@ -2,6 +2,11 @@
 #include "display.h"
 #include <stdio.h>
 #include <string.h>
+// Hardware headers are RISC-V / embedded only — exclude from host unit tests.
+#ifdef __riscv
+#include "st7789.h"
+#include "board.h"
+#endif
 
 static const char *state_name(uint8_t s) {
     switch (s) {
@@ -45,3 +50,31 @@ uint32_t display_format_lines(const display_status_t *st,
     }
     return dirty;
 }
+
+#ifdef __riscv
+void display_init(void)
+{
+    st7789_init();   // includes a black clear
+}
+
+void display_render(const display_status_t *st)
+{
+    static char prev[DISP_ROWS][DISP_COLS + 1];
+    static bool have_prev;
+    char rows[DISP_ROWS][DISP_COLS + 1];
+    uint32_t dirty = display_format_lines(st, rows,
+                        have_prev ? (const char (*)[DISP_COLS + 1])prev : 0);
+    for (int r = 0; r < DISP_ROWS; r++) {
+        if (!(dirty & (1u << r))) continue;
+        uint16_t y = (uint16_t)(r * 8 * DISP_SCALE);
+        // Clear the whole row band, then draw text (opaque bg also covers it).
+        st7789_fill_rect(0, y, LCD_WIDTH, (uint16_t)(y + 8 * DISP_SCALE), ST_BLACK);
+        uint16_t fg = (st->state == DISP_STATE_RELAYING) ? ST_GREEN :
+                      (st->state == DISP_STATE_ERROR ||
+                       st->state == DISP_STATE_NOSIGNAL) ? ST_RED : ST_WHITE;
+        st7789_draw_string(0, y, rows[r], fg, ST_BLACK, DISP_SCALE);
+    }
+    memcpy(prev, rows, sizeof rows);
+    have_prev = true;
+}
+#endif /* __riscv */
