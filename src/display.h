@@ -26,6 +26,9 @@ typedef struct {
 #define DISP_ROWS    5
 #define DISP_SCALE   3
 
+// Row indices into the DISP_ROWS text grid.
+enum { ROW_STATE = 0, ROW_IDS = 1, ROW_RPS = 2, ROW_UPTIME = 3, ROW_SPARE = 4 };
+
 // PURE: render `st` into `rows` (DISP_ROWS NUL-terminated strings, each <=DISP_COLS
 // chars). Compares against `prev` and returns a dirty bitmask (bit r set = row r
 // changed). `prev` may be NULL (everything dirty). After the call, the caller

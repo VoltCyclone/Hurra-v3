@@ -41,6 +41,14 @@ int main(void) {
     row_should_contain(rows[0], "WAIT");
     assert(strstr(rows[1], "1A2C") == NULL);
 
+    // 6. State transition WAITING->RELAYING: row 1 goes empty->populated (dirty).
+    memcpy(prev, rows, sizeof rows);   // prev = WAITING rows (row 1 empty)
+    w.state = DISP_STATE_RELAYING; w.vid = 0x046D; w.pid = 0xC08B;
+    dirty = display_format_lines(&w, rows, (const char (*)[DISP_COLS+1])prev);
+    assert(dirty & (1u << 1));
+    row_should_contain(rows[1], "046D");
+    row_should_contain(rows[1], "C08B");
+
     printf("display_test OK\n");
     return 0;
 }
