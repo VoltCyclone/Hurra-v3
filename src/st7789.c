@@ -7,7 +7,7 @@
 #include "board.h"
 #include "ch32h417_conf.h"
 #include "debug.h"          // Delay_Ms / Delay_Init already used elsewhere
-// #include "font5x7.h"  // enabled in Task 4 (draw_char/draw_string)
+#include "font5x7.h"
 
 #define LCD_W LCD_WIDTH
 #define LCD_H LCD_HEIGHT
@@ -149,4 +149,37 @@ void st7789_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16
     cs_set();
 }
 
-// (st7789_draw_char / st7789_draw_string are added in Task 4.)
+void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg, uint8_t scale)
+{
+    if ((uint8_t)c < 0x20 || (uint8_t)c > 0x7E) c = ' ';
+    const uint8_t *glyph = FONT5X7[(uint8_t)c - 0x20];
+    if (scale < 1) scale = 1;
+    // 5 columns + 1 spacing column; 7 rows used of an 8-row cell.
+    uint16_t cell_w = (uint16_t)(6 * scale), cell_h = (uint16_t)(8 * scale);
+    set_window(x, y, (uint16_t)(x + cell_w - 1), (uint16_t)(y + cell_h - 1));
+    uint8_t fhi = fg >> 8, flo = fg, bhi = bg >> 8, blo = bg;
+    cs_clr();
+    for (uint16_t row = 0; row < 8; row++) {
+        for (uint8_t sy = 0; sy < scale; sy++) {
+            for (uint16_t col = 0; col < 6; col++) {
+                uint8_t on = (col < 5) && (glyph[col] & (1u << row));
+                for (uint8_t sx = 0; sx < scale; sx++) {
+                    if (on) { lcd_send_byte(fhi); lcd_send_byte(flo); }
+                    else    { lcd_send_byte(bhi); lcd_send_byte(blo); }
+                }
+            }
+        }
+    }
+    cs_set();
+}
+
+uint16_t st7789_draw_string(uint16_t x, uint16_t y, const char *s, uint16_t fg, uint16_t bg, uint8_t scale)
+{
+    uint16_t cell_w = (uint16_t)(6 * (scale < 1 ? 1 : scale));
+    for (; *s; s++) {
+        if (x + cell_w > LCD_W) break;
+        st7789_draw_char(x, y, *s, fg, bg, scale);
+        x = (uint16_t)(x + cell_w);
+    }
+    return x;
+}
