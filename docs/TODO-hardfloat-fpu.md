@@ -1,7 +1,10 @@
 # TODO: Enable the V5F hardware FPU (hard-float ABI)
 
-**Status:** documented, not started. Pick up on a fresh branch.
-**Owner:** unassigned. **Filed:** 2026-06-16.
+**Status:** DONE — implemented & hardware-verified 2026-06-16 (commit a93ab66,
+merged to master). V5F now builds `-march=rv32imafc_zicsr -mabi=ilp32f` with
+`-fno-math-errno`; soft-float libgcc calls eliminated (376→0), `.text`
+23012→18844, ITCM pinning intact, V3F unchanged. Bench: hb=ALIVE + cursor smooth.
+**Filed:** 2026-06-16. Retained as the implementation record.
 
 ## Summary
 
