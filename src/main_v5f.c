@@ -496,6 +496,32 @@ int main(void)
 			}
 		}
 
+		// EP0 vendor reports: PC -> real device via control endpoint.
+		// Razer Synapse / Logitech HID++ push config writes (RGB, DPI, macros)
+		// as HID SET_REPORT control transfers, which land on our USBFS device
+		// EP0. usb_device captured the setup + payload; replay it verbatim onto
+		// the real device's EP0 over USBHS. Same-core hand-off (both run on V5F),
+		// so no ICC channel — just drain, forward, release. Best-effort: a STALL
+		// or NAK timeout from the real device is dropped silently; we never fail
+		// the relay over a vendor control write. The transfer is synchronous and
+		// rare, so issuing it inline in the loop is acceptable.
+		{
+			uint8_t *rpt = NULL;
+			uint16_t rpt_val = 0, rpt_idx = 0;
+			int rn = usb_device_poll_ep0_report(&rpt, &rpt_val, &rpt_idx);
+			if (rn > 0 && rpt) {
+				usb_setup_t sp;
+				sp.bmRequestType = 0x21;  // Host->Device | Class | Interface
+				sp.bRequest      = 0x09;  // HID SET_REPORT
+				sp.wValue        = rpt_val;
+				sp.wIndex        = rpt_idx;
+				sp.wLength       = (uint16_t)rn;
+				(void)usb_host_control_transfer(desc.dev_addr, desc.ep0_maxpkt,
+					&sp, rpt, 2000);
+				usb_device_ep0_report_done();
+			}
+		}
+
 		// Standalone synth-injection: emit injected motion when the physical
 		// mouse is silent (the merge path above only fires on real reports).
 		// One-per-ms cap + merged_this_cycle gate ensure the synth path and the

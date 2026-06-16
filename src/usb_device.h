@@ -32,3 +32,13 @@ bool usb_device_is_configured(void);
 //   = 0  : no completion yet
 //   < 0  : EP not configured / error
 int usb_device_poll_out(uint8_t ep_num, uint8_t **data_ptr);
+
+// Drain a completed EP0 HID SET_REPORT (host->device control write captured on
+// the device side) for replay onto the real device's EP0. Returns:
+//   > 0 : payload length; *data points into the staging buffer (valid until
+//         usb_device_ep0_report_done()), *wValue/*wIndex hold the setup fields
+//   = 0 : nothing pending
+// Call usb_device_ep0_report_done() once the payload has been forwarded.
+int  usb_device_poll_ep0_report(uint8_t **data_ptr, uint16_t *wValue,
+                                uint16_t *wIndex);
+void usb_device_ep0_report_done(void);

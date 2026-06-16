@@ -106,6 +106,24 @@ static volatile uint8_t s_out_rx_pend[USB_DEV_NUM_ENDPOINTS];
 static volatile uint8_t  USBFS_HidIdle;
 static volatile uint8_t  USBFS_HidProtocol;
 
+/* Captured EP0 HID SET_REPORT (host->device control write). The ISR latches the
+ * SET_REPORT setup and accumulates its EP0 OUT payload here; the V5F relay loop
+ * drains it and replays it onto the real device's EP0 (vendor config writes —
+ * Razer Synapse, Logitech HID++, keyboard LEDs). Single-writer (this ISR),
+ * single-reader (the relay). s_ep0_rpt_pending gates a COMPLETE payload ready to
+ * forward and back-pressures the writer: while a payload awaits drain we do not
+ * start a new capture, so the reader never sees a half-written buffer.
+ * EP0_RPT_BUF_MAX (256) covers multi-packet vendor reports (e.g. Razer's ~90 B
+ * feature reports span two 64 B EP0 packets); larger writes are truncated into
+ * the buffer but still fully drained from the wire so the control transfer ACKs. */
+#define EP0_RPT_BUF_MAX 256
+static volatile uint8_t  s_ep0_rpt_buf[EP0_RPT_BUF_MAX];
+static volatile uint16_t s_ep0_rpt_len;        /* bytes accumulated so far      */
+static volatile uint16_t s_ep0_rpt_value;      /* wValue: reportType<<8 | id    */
+static volatile uint16_t s_ep0_rpt_index;      /* wIndex: target interface      */
+static volatile uint8_t  s_ep0_rpt_capturing;  /* between SETUP and OUT-complete */
+static volatile uint8_t  s_ep0_rpt_pending;    /* complete payload ready to fwd  */
+
 /* ------------------------------------------------------------------------ */
 /* ISR declaration — must match the vector table in core/startup_v5f.S.     */
 /* ------------------------------------------------------------------------ */
@@ -395,6 +413,28 @@ int usb_device_poll_out(uint8_t ep_num, uint8_t **data_ptr)
     return n;
 }
 
+/* Expose a completed EP0 HID SET_REPORT for the relay to forward. Returns the
+ * payload length (>0) with *data/*value/*index populated, or 0 if none pending.
+ * The buffer stays valid until usb_device_ep0_report_done() is called — until
+ * then the ISR will not start a new capture (pending flag back-pressures it). */
+int usb_device_poll_ep0_report(uint8_t **data_ptr, uint16_t *wValue,
+                               uint16_t *wIndex)
+{
+    if (!s_ep0_rpt_pending) return 0;
+    if (data_ptr) *data_ptr = (uint8_t *)s_ep0_rpt_buf;
+    if (wValue)   *wValue   = s_ep0_rpt_value;
+    if (wIndex)   *wIndex   = s_ep0_rpt_index;
+    return (int)s_ep0_rpt_len;
+}
+
+/* Release the EP0 report buffer after the relay has forwarded it, re-opening
+ * capture for the next SET_REPORT. */
+void usb_device_ep0_report_done(void)
+{
+    s_ep0_rpt_len     = 0;
+    s_ep0_rpt_pending = 0;
+}
+
 /* ======================================================================== */
 /* USBFS_IRQHandler — ported standard-request enumeration state machine.    */
 /* ======================================================================== */
@@ -472,8 +512,33 @@ void USBFS_IRQHandler(void)
                         if ((USBFS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_CLASS) {
                             switch (USBFS_SetupReqCode) {
                             case HID_SET_REPORT:
-                                /* e.g. keyboard LED state; ignored for mouse. */
-                                USBFS_SetupReqLen = 0;
+                                /* Vendor/class config write (Razer Synapse, HID++,
+                                 * keyboard LEDs). Append this EP0 OUT packet to the
+                                 * staging buffer; the relay replays the whole thing
+                                 * onto the real device's EP0. RX_LEN is this packet's
+                                 * byte count (<= s_ep0_mps). We keep consuming until
+                                 * SetupReqLen hits 0 (the host's full wLength), then
+                                 * publish. Buffer overflow truncates the copy but the
+                                 * bytes are still drained off the wire so the toggle
+                                 * stays in sync and the transfer completes. */
+                                if (s_ep0_rpt_capturing) {
+                                    uint16_t pk = USBFSD->RX_LEN;
+                                    if (pk > s_ep0_mps) pk = s_ep0_mps;
+                                    for (uint16_t b = 0; b < pk; b++) {
+                                        if (s_ep0_rpt_len < EP0_RPT_BUF_MAX)
+                                            s_ep0_rpt_buf[s_ep0_rpt_len++] =
+                                                USBFS_EP0_Buf[b];
+                                    }
+                                }
+                                if (USBFS_SetupReqLen > s_ep0_mps)
+                                    USBFS_SetupReqLen -= s_ep0_mps;
+                                else
+                                    USBFS_SetupReqLen = 0;
+                                /* Last packet consumed: hand the payload to the relay. */
+                                if (USBFS_SetupReqLen == 0 && s_ep0_rpt_capturing) {
+                                    s_ep0_rpt_capturing = 0;
+                                    s_ep0_rpt_pending   = 1;
+                                }
                                 break;
                             default:
                                 break;
@@ -484,6 +549,12 @@ void USBFS_IRQHandler(void)
                 if (USBFS_SetupReqLen == 0) {
                     USBFSD->UEP0_TX_LEN  = 0;
                     USBFSD->UEP0_TX_CTRL = USBFS_UEP_T_TOG | USBFS_UEP_T_RES_ACK;
+                } else {
+                    /* More OUT data to come: re-arm EP0 RX with the flipped toggle
+                     * so the next DATAx packet is accepted (multi-packet payload). */
+                    USBFSD->UEP0_RX_CTRL ^= USBFS_UEP_R_TOG;
+                    USBFSD->UEP0_RX_CTRL =
+                        (USBFSD->UEP0_RX_CTRL & ~USBFS_UEP_R_RES_MASK) | USBFS_UEP_R_RES_ACK;
                 }
                 break;
 
@@ -524,6 +595,18 @@ void USBFS_IRQHandler(void)
                 if ((USBFS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_CLASS) {
                     switch (USBFS_SetupReqCode) {
                     case HID_SET_REPORT:
+                        /* Begin capturing the EP0 OUT payload that follows, but
+                         * only if the relay has drained the previous one (the
+                         * pending flag is the back-pressure gate). If still
+                         * pending, we don't latch — the bytes are dropped from
+                         * our staging buffer but the transfer is still ACKed
+                         * below, so the host's control write completes. */
+                        if (!s_ep0_rpt_pending) {
+                            s_ep0_rpt_capturing = 1;
+                            s_ep0_rpt_len       = 0;
+                            s_ep0_rpt_value     = USBFS_SetupReqValue;
+                            s_ep0_rpt_index     = USBFS_SetupReqIndex;
+                        }
                         break;
                     case HID_SET_IDLE:
                         USBFS_HidIdle = (uint8_t)(USBFS_SetupReqValue >> 8);
@@ -803,6 +886,12 @@ void USBFS_IRQHandler(void)
         USBFS_DevAddr        = 0;
         USBFS_DevSleepStatus = 0;
         s_configured         = 0;
+
+        /* Abandon any in-flight or pending EP0 report capture: a re-enumeration
+         * invalidates it, and the relay must not replay stale config bytes. */
+        s_ep0_rpt_capturing  = 0;
+        s_ep0_rpt_pending    = 0;
+        s_ep0_rpt_len        = 0;
 
         USBFSD->DEV_ADDR = 0;
         usbfs_endp_init();
