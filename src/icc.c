@@ -258,3 +258,8 @@ bool icc_status_poll_v3f(display_status_t *acc)
     s_last_seq = seq;
     return advanced;
 }
+
+uint16_t icc_status_read_raw_v3f(void)
+{
+    return (uint16_t)((IPC->STS >> ICC_ST_SHIFT) & 0xFFFFu);
+}

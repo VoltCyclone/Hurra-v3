@@ -263,6 +263,28 @@ int main(void)
         // Print V5F's live boot stage (read from shared SRAM) on change or ~1 Hz.
         // This is the probe-free oracle that replaces eyeballing PC3's blink pile.
         diag_v5f_stage_poll(&diag_last_stage, &diag_hb_tick);
+        // Dump the raw reverse status word + decoded g_disp fields at ~1 Hz so
+        // IPC bits [16:31] are visible over UART without a logic analyzer.
+        // Reuses diag_hb_tick (already updated by diag_v5f_stage_poll) for the
+        // same ~1 Hz cadence — no extra static tick needed.
+        {
+            static uint32_t s_sts_tick;
+            uint32_t _now = millis();
+            if ((_now - s_sts_tick) >= 1000) {
+                s_sts_tick = _now;
+                uint16_t raw = icc_status_read_raw_v3f();
+                diag_puts("STS16=0x");
+                diag_put_hex8((uint8_t)(raw >> 8));
+                diag_put_hex8((uint8_t)(raw));
+                diag_puts(" st=");   diag_put_u32(g_disp.state);
+                diag_puts(" vid=");  diag_put_hex8((uint8_t)(g_disp.vid >> 8));
+                                     diag_put_hex8((uint8_t)(g_disp.vid));
+                diag_puts(" pid=");  diag_put_hex8((uint8_t)(g_disp.pid >> 8));
+                                     diag_put_hex8((uint8_t)(g_disp.pid));
+                diag_puts(" rps=");  diag_put_u32(g_disp.reports_per_sec);
+                diag_puts("\r\n");
+            }
+        }
 #endif
     }
 }

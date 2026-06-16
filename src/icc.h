@@ -125,6 +125,10 @@ void icc_status_pump_v5f(const display_status_t *st);
 // V3F: read the current reverse word and merge into `acc`. Returns true if the
 // heartbeat seq advanced since the last call (i.e. V5F is alive & publishing).
 bool icc_status_poll_v3f(display_status_t *acc);
+// V3F: read the raw 16-bit reverse status word (IPC->STS bits [16:31]) without
+// decoding it. Used by the V5F_STAGE_DIAG dump in main_v3f.c to avoid pulling
+// IPC MMIO headers into that file.
+uint16_t icc_status_read_raw_v3f(void);
 
 // --- Bench debug: V5F boot-stage marker -------------------------------------
 // A single volatile word at a FIXED shared-SRAM address (well past g_icc, which

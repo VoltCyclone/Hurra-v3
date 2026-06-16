@@ -31,7 +31,10 @@ static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COL
     else
         memset(rows[ROW_IDS], 0, DISP_COLS + 1);
 
-    snprintf(rows[ROW_RPS], DISP_COLS + 1, "rps %u", (unsigned)st->reports_per_sec);
+    if (have_dev)
+        snprintf(rows[ROW_RPS], DISP_COLS + 1, "rps %u", (unsigned)st->reports_per_sec);
+    else
+        memset(rows[ROW_RPS], 0, DISP_COLS + 1);
 
     unsigned m = (unsigned)(st->uptime_s / 60), s = (unsigned)(st->uptime_s % 60);
     snprintf(rows[ROW_UPTIME], DISP_COLS + 1, "up %u:%02u", m, s);

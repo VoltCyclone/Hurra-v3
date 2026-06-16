@@ -151,11 +151,15 @@ void st7789_fill_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16
 
 void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg, uint8_t scale)
 {
+    if (x >= LCD_WIDTH || y >= LCD_HEIGHT) return;
     if ((uint8_t)c < 0x20 || (uint8_t)c > 0x7E) c = ' ';
     const uint8_t *glyph = FONT5X7[(uint8_t)c - 0x20];
     if (scale < 1) scale = 1;
     // 5 columns + 1 spacing column; 7 rows used of an 8-row cell.
     uint16_t cell_w = (uint16_t)(6 * scale), cell_h = (uint16_t)(8 * scale);
+    // Skip glyphs that would not fully fit — avoids partial-glyph window math
+    // and matches draw_string's pre-clip behavior (it already breaks on x+cell_w>LCD_W).
+    if (x + cell_w > LCD_WIDTH || y + cell_h > LCD_HEIGHT) return;
     set_window(x, y, (uint16_t)(x + cell_w - 1), (uint16_t)(y + cell_h - 1));
     uint8_t fhi = fg >> 8, flo = fg, bhi = bg >> 8, blo = bg;
     cs_clr();
