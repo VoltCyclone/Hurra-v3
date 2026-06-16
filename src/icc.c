@@ -36,8 +36,7 @@ static uint32_t s_v5f_seen_seq;  // V5F: last seq consumed from the mailbox
 // example (EXAM/CPU/IPC, Common/hardware.c) for the same V3F<->V5F channel 0.
 // The reference configures CTLR on V3F only; V5F just enables its NVIC + IT
 // (done in main_v5f.c). Doorbell bit direction (V3F sets Bit0, V5F clears it)
-// is our convention, not the example's ping-pong — verify Bit0 delivery on the
-// bench (see CLAUDE.md ISR-name gotcha).
+// is our convention, not the example's ping-pong (verified on the bench).
 static void icc_ipc_config_v3f(void)
 {
     IPC_InitTypeDef ipc = {0};

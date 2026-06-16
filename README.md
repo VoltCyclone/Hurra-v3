@@ -29,16 +29,19 @@ Ferrum-compatible virtual COM port for older tooling.
 
 ## Status
 
-**Build-complete; on-device validation pending.** The firmware builds clean
-(both `PROTOCOL=hurra` and `PROTOCOL=ferrum`, both core images, merged flash
-binary) and the full v2 logic — USB host capture, device replay, HID merge,
-humanization, both protocol parsers, the inter-core channel — is ported and
-host-tested where it can be (`make test`). What has **not** yet happened is
-hardware bring-up: flashing a real board, USB enumeration, and the closed-loop
-aim/load tests against live silicon. Some pin assignments (LED, command USART)
-are placeholders to confirm against the actual board schematic — see
-[`src/board.h`](src/board.h). Nothing in this README should be read as
-"hardware-verified behavior" yet.
+**Hardware-verified end-to-end.** The firmware builds clean (both
+`PROTOCOL=hurra` and `PROTOCOL=ferrum`, both core images, merged flash binary)
+and the relay has been validated on a real CH32H417 board: a Razer Basilisk V3
+(4-interface composite HID) enumerates on the High-Speed host port, is cloned to
+Windows on the Full-Speed device port, and its reports forward through unchanged
+— the mouse cursor moves on the PC through the man-in-the-middle. USB host
+capture, device replay, HID merge, humanization, both protocol parsers, and the
+inter-core channel are all exercised on-device.
+
+Notes for other hardware: pin assignments (LED, command USART) are board
+specific — see [`src/board.h`](src/board.h). A boot-subclass HID device must be
+sent `SET_PROTOCOL(Report)` to leave Boot Protocol and stream report-protocol
+data; the host bring-up does this for boot-subclass interfaces (`main_v5f.c`).
 
 ## How it works
 
