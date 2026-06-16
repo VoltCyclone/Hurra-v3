@@ -558,7 +558,6 @@ int main(void)
 			s_rep_tick = now_ms;
 			s_disp.reports_per_sec = (s_rep_count > 1023u) ? 1023u : (uint16_t)s_rep_count;
 			s_rep_count = 0;
-			s_disp.uptime_s++;   // coarse 1 Hz uptime (V3F also tracks its own)
 		}
 		icc_status_pump_v5f(&s_disp);   // rotate-publish one field; cheap IPC MMIO
 

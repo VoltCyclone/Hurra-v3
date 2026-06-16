@@ -77,4 +77,7 @@ void display_render(const display_status_t *st)
     memcpy(prev, rows, sizeof rows);
     have_prev = true;
 }
+#else  /* !__riscv : host build — display is hardware-only, provide no-op stubs */
+void display_init(void) { }
+void display_render(const display_status_t *st) { (void)st; }
 #endif /* __riscv */
