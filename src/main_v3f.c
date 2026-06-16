@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "display.h"
 #include "humanize.h"
+#include "temp.h"
 
 // ── V5F stage diagnostic (bench bring-up) ───────────────────────────────────
 // The running V5F disables SWJ (PB8/PB9) during USB init, so SWD/SDI debug NAKs
@@ -181,6 +182,7 @@ int main(void)
     kmbox_cmd_init();                   // act_init + proto_init + bind tx
     led_heartbeat_start();
 
+    temp_init();        // ADC1 on HCLK — independent of USBHS PLL (V5F relay-safe)
     display_init();
     display_status_t g_disp = { .state = DISP_STATE_BOOT };
     uint32_t disp_render_tick = millis();
@@ -238,6 +240,7 @@ int main(void)
             uint32_t ik      = kmbox_cmd_inj_kbd_count();
             g_disp.inj_m     = (uint16_t)(im > 0xFFFFu ? 0xFFFFu : im);
             g_disp.inj_k     = (uint16_t)(ik > 0xFFFFu ? 0xFFFFu : ik);
+            g_disp.temp_c    = temp_read_c();   // single ADC conversion, ~µs, V3F-local
             if (!s_seen_advance && g_disp.state != DISP_STATE_BOOT)
                 g_disp.state = DISP_STATE_NOSIGNAL;
             s_seen_advance = false;

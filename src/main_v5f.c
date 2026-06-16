@@ -153,6 +153,31 @@ void HardFault_Handler(void)
 	}
 }
 
+// Extract the iProduct string from the captured descriptors into dst (ASCII,
+// <=16 chars + NUL). USB string descriptors are UTF-16LE; we take the low byte
+// of each code unit (fine for ASCII product names) and stop at 16 chars.
+static void extract_product_name(const captured_descriptors_t *d, char *dst, uint8_t dstcap)
+{
+	dst[0] = '\0';
+	uint8_t want = d->device_desc[15];      // iProduct index
+	if (want == 0) return;
+	for (uint8_t s = 0; s < d->num_strings; s++) {
+		if (d->string_index[s] != want) continue;
+		const uint8_t *sd = d->string_desc[s];
+		uint8_t len = d->string_desc_len[s];
+		// sd[0]=bLength, sd[1]=0x03; UTF-16LE chars start at sd[2].
+		if (len < 2) return;
+		uint8_t n = 0;
+		for (uint8_t i = 2; i + 1 < len && n < dstcap - 1; i += 2) {
+			char c = (char)sd[i];           // low byte = ASCII for Latin-1
+			if (c == '\0') break;
+			dst[n++] = c;
+		}
+		dst[n] = '\0';
+		return;
+	}
+}
+
 typedef struct {
 	uint8_t  host_slot;
 	uint8_t  dev_ep_num;
@@ -281,6 +306,10 @@ int main(void)
 	dbg_stage(DBG_V5F_DESC_OK);
 	s_disp.vid = (uint16_t)(desc.device_desc[8]  | (desc.device_desc[9]  << 8));
 	s_disp.pid = (uint16_t)(desc.device_desc[10] | (desc.device_desc[11] << 8));
+	// One-time extraction of the USB product name into the stack-local s_disp.
+	// extract_product_name reads only V5F-local desc (ITCM/stack) and writes only
+	// s_disp.name (stack-local) — NOT V3F-side SRAM. Safe: not in the hot loop.
+	extract_product_name(&desc, s_disp.name, (uint8_t)sizeof s_disp.name);
 
 	// capture_descriptors() already sends SET_CONFIG and SET_IDLE.
 	// SET_PROTOCOL(Report) for BOOT-SUBCLASS interfaces ONLY (bInterfaceSubClass==1).
