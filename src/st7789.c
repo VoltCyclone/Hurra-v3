@@ -30,17 +30,17 @@ static void lcd_send_byte(uint8_t dat)
 }
 
 static void wr_reg(uint8_t cmd)   { dc_clr(); cs_clr(); lcd_send_byte(cmd); cs_set(); dc_set(); }
-static void wr_data8(uint8_t dat) { cs_clr(); lcd_send_byte(dat); cs_set(); }
+static void wr_data8(uint8_t dat) { dc_set(); cs_clr(); lcd_send_byte(dat); cs_set(); }
 
 // Address window. Matches EVT LCD_Address_Set with USE_HORIZONTAL==0 (no offset).
-static void set_window(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2)
+static void set_window(uint16_t xa, uint16_t ya, uint16_t xb, uint16_t yb)
 {
     wr_reg(0x2A);
-    cs_clr(); lcd_send_byte(x1 >> 8); lcd_send_byte(x1 & 0xFF);
-              lcd_send_byte(x2 >> 8); lcd_send_byte(x2 & 0xFF); cs_set();
+    cs_clr(); lcd_send_byte(xa >> 8); lcd_send_byte(xa & 0xFF);
+              lcd_send_byte(xb >> 8); lcd_send_byte(xb & 0xFF); cs_set();
     wr_reg(0x2B);
-    cs_clr(); lcd_send_byte(y1 >> 8); lcd_send_byte(y1 & 0xFF);
-              lcd_send_byte(y2 >> 8); lcd_send_byte(y2 & 0xFF); cs_set();
+    cs_clr(); lcd_send_byte(ya >> 8); lcd_send_byte(ya & 0xFF);
+              lcd_send_byte(yb >> 8); lcd_send_byte(yb & 0xFF); cs_set();
     wr_reg(0x2C);   // memory write
 }
 
@@ -101,6 +101,7 @@ void st7789_init(void)
     PWR_VIO18LevelCfg(PWR_VIO18Level_MODE3);
 
     gpio_spi_init();
+    cs_set();   // idle-deassert CS before the reset pulse
 
     res_clr(); Delay_Ms(100);
     res_set(); Delay_Ms(100);
