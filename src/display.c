@@ -20,7 +20,7 @@ static const char *state_name(uint8_t s) {
     }
 }
 
-// Build all 12 rows. Each buffer is clamped to DISP_COLS by snprintf/memset.
+// Build all 14 rows. Each buffer is clamped to DISP_COLS by snprintf/memset.
 static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COLS + 1]) {
     // ROW_STATE (0): state name
     snprintf(rows[ROW_STATE], DISP_COLS + 1, "%s", state_name(st->state));
@@ -34,18 +34,24 @@ static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COL
     else
         memset(rows[ROW_IDS], 0, DISP_COLS + 1);
 
-    // ROW_RPS (2): reports/s, blank if no device
+    // ROW_NAME (2): product name (streamed from V5F), blank if no device or no name
+    if (have_dev && st->name[0])
+        snprintf(rows[ROW_NAME], DISP_COLS + 1, "%s", st->name);
+    else
+        memset(rows[ROW_NAME], 0, DISP_COLS + 1);
+
+    // ROW_RPS (3): reports/s, blank if no device
     if (have_dev)
         snprintf(rows[ROW_RPS], DISP_COLS + 1, "reports/s %u",
                  (unsigned)st->reports_per_sec);
     else
         memset(rows[ROW_RPS], 0, DISP_COLS + 1);
 
-    // ROW_HEALTH (3): drops and zero-length count
+    // ROW_HEALTH (4): drops and zero-length count
     snprintf(rows[ROW_HEALTH], DISP_COLS + 1, "drops %u  zlen %u",
              (unsigned)st->drops, (unsigned)st->zerolen);
 
-    // ROW_PATH (4): decode probe bits into flag string
+    // ROW_PATH (5): decode probe bits into flag string
     {
         char tmp[DISP_COLS + 1];
         int pos = 0;
@@ -61,35 +67,38 @@ static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COL
         snprintf(rows[ROW_PATH], DISP_COLS + 1, "%s", tmp);
     }
 
-    // ROW_SLOTS (5): which host IN slots delivered
+    // ROW_SLOTS (6): which host IN slots delivered
     snprintf(rows[ROW_SLOTS], DISP_COLS + 1, "slots 0x%X",
              (unsigned)(st->gotmask & 0x0F));
 
-    // ROW_DIV (6): divider
-    snprintf(rows[ROW_DIV], DISP_COLS + 1, "%s", "--------------------------");
+    // ROW_DIV (7): divider — 20 dashes (DISP_COLS=20)
+    snprintf(rows[ROW_DIV], DISP_COLS + 1, "%s", "--------------------");
 
-    // ROW_UPTIME (7): uptime in M:SS
+    // ROW_UPTIME (8): uptime in M:SS
     {
         unsigned m = (unsigned)(st->uptime_s / 60);
         unsigned s = (unsigned)(st->uptime_s % 60);
         snprintf(rows[ROW_UPTIME], DISP_COLS + 1, "uptime %u:%02u", m, s);
     }
 
-    // ROW_CMDRX (8): USART rx byte count
+    // ROW_CMDRX (9): USART rx byte count
     snprintf(rows[ROW_CMDRX], DISP_COLS + 1, "cmd rx %u B",
              (unsigned)st->cmd_rx);
 
-    // ROW_CMDERR (9): USART error count
+    // ROW_CMDERR (10): USART error count
     snprintf(rows[ROW_CMDERR], DISP_COLS + 1, "cmd err %u",
              (unsigned)st->cmd_err);
 
-    // ROW_HUMAN (10): humanize level
+    // ROW_HUMAN (11): humanize level
     snprintf(rows[ROW_HUMAN], DISP_COLS + 1, "human lvl %u",
              (unsigned)st->human_lvl);
 
-    // ROW_INJ (11): injection counts
+    // ROW_INJ (12): injection counts
     snprintf(rows[ROW_INJ], DISP_COLS + 1, "inj m %u  k %u",
              (unsigned)st->inj_m, (unsigned)st->inj_k);
+
+    // ROW_TEMP (13): board temperature (V3F-local ADC)
+    snprintf(rows[ROW_TEMP], DISP_COLS + 1, "temp %d C", (int)st->temp_c);
 }
 
 uint32_t display_format_lines(const display_status_t *st,
