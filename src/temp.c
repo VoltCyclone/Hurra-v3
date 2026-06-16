@@ -31,10 +31,14 @@ void temp_init(void)
     ADC_TempSensorVrefintCmd(ENABLE);       // enable the internal temp/vref block
     ADC_Cmd(ADC1, ENABLE);
 
+    // Calibration spins are hardware-self-clearing, but guard them anyway: a
+    // failed ADC must not hang V3F at boot before the display comes up (the temp
+    // read is non-essential — better to ship uncalibrated than to wedge).
+    uint32_t guard = 0;
     ADC_ResetCalibration(ADC1);
-    while (ADC_GetResetCalibrationStatus(ADC1));
+    while (ADC_GetResetCalibrationStatus(ADC1)) { if (++guard > 100000u) return; }
     ADC_StartCalibration(ADC1);
-    while (ADC_GetCalibrationStatus(ADC1));
+    while (ADC_GetCalibrationStatus(ADC1))      { if (++guard > 200000u) return; }
 }
 
 int8_t temp_read_c(void)
