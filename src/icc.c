@@ -242,8 +242,8 @@ void icc_status_pump_v5f(const display_status_t *st)
         sel = ICC_ST_SEL_STATE;
     } else {
         sel = s_sel;
-        s_sel = (uint8_t)((s_sel + 1) % ICC_ST_SEL__COUNT);
     }
+    s_sel = (uint8_t)((s_sel + 1) % ICC_ST_SEL__COUNT);  // always advance the rotation
     uint16_t word = icc_status_pack(sel, ++s_seq, st);
     IPC->CLR = ICC_ST_MASK;
     IPC->SET = ((uint32_t)word << ICC_ST_SHIFT);

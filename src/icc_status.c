@@ -26,9 +26,9 @@ uint8_t icc_status_unpack(uint16_t word, display_status_t *acc)
     uint16_t payload = (uint16_t)(word & 0x3FFu);
     switch (sel) {
         case ICC_ST_SEL_STATE:  acc->state = (uint8_t)(payload & 0x07u); break;
-        case ICC_ST_SEL_VID_HI: acc->vid = (uint16_t)((acc->vid & 0x00FFu) | (payload << 8)); break;
+        case ICC_ST_SEL_VID_HI: acc->vid = (uint16_t)((acc->vid & 0x00FFu) | ((uint32_t)payload << 8)); break;
         case ICC_ST_SEL_VID_LO: acc->vid = (uint16_t)((acc->vid & 0xFF00u) | (payload & 0xFFu)); break;
-        case ICC_ST_SEL_PID_HI: acc->pid = (uint16_t)((acc->pid & 0x00FFu) | (payload << 8)); break;
+        case ICC_ST_SEL_PID_HI: acc->pid = (uint16_t)((acc->pid & 0x00FFu) | ((uint32_t)payload << 8)); break;
         case ICC_ST_SEL_PID_LO: acc->pid = (uint16_t)((acc->pid & 0xFF00u) | (payload & 0xFFu)); break;
         case ICC_ST_SEL_RPS:    acc->reports_per_sec = payload; break;
         default: break;
