@@ -121,6 +121,11 @@ merge: v3f v5f
 WLINK        ?= wlink
 WCH_OPENOCD  ?= wch-openocd
 WCH_CFG      ?= scripts/wch-riscv.cfg
+# Running firmware disables SWJ (PB8/PB9) during USB init, so wlink commands then
+# NAK with `protocol error: 0x55`. A power-off erase gates the target rail via the
+# WCH-LinkE and attaches in the clean reset window, so flashing always works
+# without button-tapping. Passed as --chip; the part is the CH32H41X family.
+WLINK_CHIP   ?= CH32H41X
 # wlink programs at the 0x08000000 alias; wch-openocd at the 0x00000000 bank
 # base (same physical flash). Keep values bare — trailing chars before a `#` on
 # a `?=` line become part of the value and leak into the command.
@@ -154,11 +159,14 @@ sh -c 'tool="$(FLASH_TOOL)"; \
 endef
 
 # $(1)=image .bin  $(2)=program address (wlink only). Abort if no flasher.
+# wlink path: power-off erase first (clears the 0x55 SWJ-disabled NAK from running
+# firmware — see WLINK_CHIP), then flash with -e at the given address.
 define _FLASH_IMG
 	@tool=`$(_PICK_FLASHER)` || exit $$?; \
 	if [ "$$tool" = wlink ]; then \
-	  echo "==> wlink flash $(1) @ $(2)"; \
-	  $(WLINK) flash --address $(2) $(1); \
+	  echo "==> wlink erase (power-off) + flash $(1) @ $(2)"; \
+	  $(WLINK) --chip $(WLINK_CHIP) erase --method power-off; \
+	  $(WLINK) --chip $(WLINK_CHIP) flash -e --address $(2) $(1); \
 	else \
 	  echo "==> $(WCH_OPENOCD) program $(1) @ $(WCH_OCD_ADDR) (per $(WCH_CFG))"; \
 	  $(WCH_OPENOCD) -f $(WCH_CFG) -c init -c halt \
@@ -180,11 +188,13 @@ flash-v5f: v5f
 	$(OBJCOPY) -I ihex -O binary build/v5f.hex build/v5f.bin
 	$(call _FLASH_IMG,build/v5f.bin,0x08010000)
 
-# Full-chip erase.
+# Full-chip erase. wlink uses power-off so it works even against running firmware
+# (the 0x55 SWJ-disabled NAK), same as the flash path.
 erase:
 	@tool=`$(_PICK_FLASHER)` || exit $$?; \
 	if [ "$$tool" = wlink ]; then \
-	  echo "==> wlink erase"; $(WLINK) erase; \
+	  echo "==> wlink erase (power-off)"; \
+	  $(WLINK) --chip $(WLINK_CHIP) erase --method power-off; \
 	else \
 	  echo "==> $(WCH_OPENOCD) flash erase"; \
 	  $(WCH_OPENOCD) -f $(WCH_CFG) -c init -c halt \
