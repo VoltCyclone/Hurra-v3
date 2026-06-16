@@ -2,9 +2,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Inter-core channel. Two single-producer/single-consumer rings in shared SRAM.
-// V3F->V5F: injection commands. V5F->V3F: telemetry. Lock-free; HSEM only for
-// the one-time init rendezvous. IPC channel 0 is the V3F->V5F doorbell.
+// Inter-core channel. ONE single-producer/single-consumer FIFO (V3F->V5F
+// injection commands), drained into the coherent IPC MSG mailbox by
+// icc_pump_to_v5f (the SRAM ring is V3F-DTCM-local and unreadable by V5F).
+// IPC channel 0 is the V3F->V5F doorbell. There is no V5F->V3F ring; V5F status
+// rides the IPC CH1 stage telemetry (icc_telem_*).
 
 #define ICC_RECORD_BYTES   16
 #define ICC_RING_SLOTS     256          // power of two
@@ -21,12 +23,8 @@ enum {
     ICC_TAG_SET_BAUD,
     ICC_TAG_SET_HUMAN_LEVEL,
     ICC_TAG_PHYS_MASK,
-    // V5F -> V3F (telemetry)
-    ICC_TAG_TELEM_COUNTS,
-    ICC_TAG_TELEM_STATUS,
-    // Phase-2 smoke test
-    ICC_TAG_PING,
-    ICC_TAG_PONG,
+    // (V5F->V3F telemetry tags removed — that direction is not carried; V5F
+    //  liveness rides the IPC CH1 stage telemetry, see icc_telem_* below.)
 };
 
 typedef struct {
@@ -41,10 +39,13 @@ typedef struct {
 } icc_ring_t;
 
 // The shared block lives at a fixed address in both images' .shared section.
+// `magic` MUST stay first: V3F reads it raw at 0x20178000 (main_v3f.c) as the
+// "V5F is up" handshake. Only V3F->V5F is carried (and only as a V3F-local
+// producer FIFO that icc_pump_to_v5f drains into the IPC mailbox); there is no
+// V5F->V3F ring — that direction reads back stale across the DTCM boundary.
 typedef struct {
     volatile uint32_t magic;            // set by V3F at init
     icc_ring_t v3f_to_v5f;
-    icc_ring_t v5f_to_v3f;
 } icc_shared_t;
 
 #define ICC_MAGIC  0x48563343u          // 'HV3C'
@@ -52,9 +53,8 @@ typedef struct {
 void icc_init_v3f(void);   // master: zero rings, set magic, then signal via HSEM
 void icc_init_v5f(void);   // slave: wait for magic via HSEM rendezvous
 
-// Producer side (returns false if ring full).
+// Producer side (returns false if ring full). V3F->V5F only.
 bool icc_send_to_v5f(const icc_record_t *r);   // call from V3F (enqueue to local FIFO)
-bool icc_send_to_v3f(const icc_record_t *r);   // call from V5F
 
 // V3F: drain one queued V3F->V5F record from the local FIFO into the coherent IPC
 // MSG mailbox if it is free. Call every V3F main-loop iteration. Returns true if a
@@ -62,9 +62,8 @@ bool icc_send_to_v3f(const icc_record_t *r);   // call from V5F
 // V5F — it lives in V3F's DTCM — so records cross via the IPC hardware mailbox.)
 bool icc_pump_to_v5f(void);                    // call from V3F
 
-// Consumer side (returns false if empty).
+// Consumer side (returns false if empty). V5F reads the IPC mailbox.
 bool icc_recv_from_v3f(icc_record_t *out);     // call from V5F
-bool icc_recv_from_v5f(icc_record_t *out);     // call from V3F
 
 // Doorbell: V3F rings V5F after enqueue so V5F can wfi when idle.
 void icc_ring_doorbell_v5f(void);              // V3F side

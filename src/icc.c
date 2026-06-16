@@ -5,15 +5,18 @@
 // Single instance, pinned into shared SRAM (0x20178000) by both linker scripts.
 // IMPORTANT (bench-proven 2026-06-13): 0x20178000 lands in V3F's DTCM. A core
 // can WRITE the other core's DTCM and that core reads its OWN DTCM back fine, but
-// a core READING the other core's DTCM gets STALE/garbage data. So:
-//   * V5F->V3F (telemetry): V5F writes g_icc.v5f_to_v3f (remote write, OK), V3F
-//     reads its own DTCM (OK) — this ring works unchanged.
+// a core READING the other core's DTCM gets STALE/garbage data. Consequences:
 //   * V3F->V5F (injection): V5F reading g_icc.v3f_to_v5f from V3F's DTCM returns
 //     garbage — V5F's ring_pop saw head!=tail forever and spun. So this direction
 //     is NOT carried in SRAM; it goes through the IPC MSG hardware mailbox
 //     (IPC->MSG[0..3], MMIO at 0xE000D000, proven coherent across both cores).
 //     g_icc.v3f_to_v5f is now a V3F-LOCAL producer FIFO that icc_pump_to_v5f()
 //     drains into the mailbox; V5F never reads it.
+//   * V5F->V3F (telemetry): a return ring would hit the SAME stale-read wall (V3F
+//     reading V5F's writes), and the 4 IPC MSG regs are taken by the injection
+//     mailbox, so bulk telemetry is not carried at all. The v5f_to_v3f ring was
+//     removed (reclaiming ~4 KB of shared SRAM per image). V5F liveness/stage
+//     instead rides the coherent IPC CH1 status bits (icc_telem_* at the bottom).
 icc_shared_t g_icc __attribute__((section(".shared_data")));
 
 static inline void mem_fence(void) { __asm volatile("fence" ::: "memory"); }
@@ -56,10 +59,8 @@ void icc_init_v3f(void)
 {
     for (uint32_t i = 0; i < ICC_RING_SLOTS; i++) {
         g_icc.v3f_to_v5f.slot[i].tag = ICC_TAG_NONE;
-        g_icc.v5f_to_v3f.slot[i].tag = ICC_TAG_NONE;
     }
     g_icc.v3f_to_v5f.head = g_icc.v3f_to_v5f.tail = 0;
-    g_icc.v5f_to_v3f.head = g_icc.v5f_to_v3f.tail = 0;
     mem_fence();
     g_icc.magic = ICC_MAGIC;
     mem_fence();
@@ -137,20 +138,28 @@ bool icc_pump_to_v5f(void)
     IPC->MSG[1] = w1;
     mem_fence();                    // publish payload before bumping the seq
     IPC->MSG[2] = ++s_v3f_pub_seq;  // signal "new record" to V5F
+
+    // Wake V5F NOW that the record is actually in the coherent mailbox. The
+    // doorbell used to be rung by the producers (kmbox_cmd_inject_*) at FIFO-push
+    // time — but that is BEFORE this pump loads MSG[0..2], so V5F woke, saw an
+    // unchanged seq in icc_recv_from_v3f(), and went straight back to wfi; the
+    // record was then only picked up on the next TIM4 1 ms poll (up to ~1 ms of
+    // added injection latency, plus one spurious wakeup per pushed record during
+    // a UART burst). Ringing here — after MSG[2] is published — makes every
+    // wakeup meaningful: V5F wakes exactly when a record is visible, and the
+    // single-slot mailbox rate-limits this to one doorbell per record.
+    icc_ring_doorbell_v5f();
     return true;
 }
 
-// V5F->V3F telemetry is DROPPED. A lock-free SRAM ring needs BOTH cores to read
-// the shared head+tail, but cross-core DTCM reads are stale on this part (only
-// the producer's remote WRITE lands; the consumer can only read its OWN DTCM).
-// That makes the telemetry ring as broken as the injection ring was, and the 4
-// IPC MSG registers are fully consumed by the V3F->V5F mailbox. Telemetry
-// (report/drop counts + status) is non-essential, so these are no-ops: V5F sends
-// nothing, V3F receives nothing. The V3F LED ladder simply never sees the
-// "locked/reports-flowing" tier (stays on the ACQUIRING heartbeat), which is
-// cosmetic. If telemetry is ever needed, carry it over IPC CH1 + MSG time-slice.
-bool icc_send_to_v3f(const icc_record_t *r)  { (void)r; return true; }
-bool icc_recv_from_v5f(icc_record_t *out)    { (void)out; return false; }
+// V5F->V3F bulk telemetry (report/drop counts, status flags) is DROPPED — not
+// carried at all. A lock-free SRAM ring would need BOTH cores to read the shared
+// head+tail, but cross-core DTCM reads are stale on this part (only the producer's
+// remote WRITE lands; the consumer can only read its OWN DTCM), and the 4 IPC MSG
+// registers are fully consumed by the V3F->V5F injection mailbox. The send/recv
+// API and the v5f_to_v3f ring were removed (dead no-ops). V5F liveness instead
+// rides the coherent IPC CH1 stage telemetry below (icc_telem_*), which is all
+// the V3F diagnostic UART actually consumes.
 
 // --- V5F side ---------------------------------------------------------------
 // icc_recv_from_v3f: read one record from the IPC mailbox if V3F published a new
