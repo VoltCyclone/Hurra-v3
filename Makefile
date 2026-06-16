@@ -75,6 +75,12 @@ v5f: ARCH = -march=rv32imafc_zicsr -mabi=ilp32f
 # firmware never reads errno. It does not reassociate or change rounding (unlike
 # full -ffast-math), so the humanize math stays bit-stable.
 v5f: FP_CFLAGS = -fno-math-errno
+# Unroll the V5F per-report hot path (humanize + HID field merge + FIFO copies),
+# all pinned to ITCM. ITCM is ~86% free (18.5K of 128K), so trading a few hundred
+# bytes for fewer per-report bound checks is worth it on the latency-critical core.
+# v5f-scoped: V3F stays pure -Os. -funroll-loops only touches GCC-bounded loops, so
+# the FIFO/field loops unroll while the unbounded poll/NAK spins are left alone.
+v5f: EXTRADEF += -funroll-loops
 v5f: build
 	# Trailing -lm: the merge pulls humanize.c, whose humanize_filter() calls
 	# sqrtf(). With -lm only in LDBASE (before the objects) the linker has not
