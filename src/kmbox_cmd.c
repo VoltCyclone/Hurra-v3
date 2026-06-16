@@ -8,6 +8,9 @@
 
 static void cmd_tx(const uint8_t *buf, uint16_t len) { uart_tx_write(buf, len); }
 
+static uint32_t s_inj_mouse_count;
+static uint32_t s_inj_kbd_count;
+
 void kmbox_cmd_init(void)
 {
     act_init();
@@ -30,6 +33,7 @@ void kmbox_cmd_poll(void)
 
 void kmbox_cmd_inject_mouse(int16_t dx, int16_t dy, uint8_t buttons, int8_t wheel)
 {
+    s_inj_mouse_count++;
     icc_record_t r = { .tag = ICC_TAG_INJECT_MOUSE };
     r.b[0] = (uint8_t)(dx);     r.b[1] = (uint8_t)((uint16_t)dx >> 8);
     r.b[2] = (uint8_t)(dy);     r.b[3] = (uint8_t)((uint16_t)dy >> 8);
@@ -41,6 +45,7 @@ void kmbox_cmd_inject_mouse(int16_t dx, int16_t dy, uint8_t buttons, int8_t whee
 
 void kmbox_cmd_inject_keyboard(uint8_t modifier, const uint8_t keys[6])
 {
+    s_inj_kbd_count++;
     icc_record_t r = { .tag = ICC_TAG_INJECT_KEYBOARD };
     r.b[0] = modifier;
     for (int i = 0; i < 6; i++) r.b[1 + i] = keys[i];
@@ -85,3 +90,6 @@ void kmbox_cmd_set_human_level(uint8_t level)
     (void)icc_send_to_v5f(&r);   // doorbell is rung by icc_pump_to_v5f() once the
                                  // record reaches the coherent mailbox (see icc.c)
 }
+
+uint32_t kmbox_cmd_inj_mouse_count(void) { return s_inj_mouse_count; }
+uint32_t kmbox_cmd_inj_kbd_count(void)   { return s_inj_kbd_count; }

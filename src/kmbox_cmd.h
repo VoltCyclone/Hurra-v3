@@ -14,3 +14,7 @@ void kmbox_cmd_schedule_click_release(uint8_t button_mask, uint32_t delay_ms);
 void kmbox_cmd_schedule_kb_release(uint8_t key, uint32_t delay_ms);
 void kmbox_cmd_set_baud(uint32_t baud);
 void kmbox_cmd_set_human_level(uint8_t level);
+
+// V3F-local accessors for status display (no telemetry).
+uint32_t kmbox_cmd_inj_mouse_count(void);
+uint32_t kmbox_cmd_inj_kbd_count(void);

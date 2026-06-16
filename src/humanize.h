@@ -8,6 +8,7 @@ void     humanize_init(uint32_t interval_us);   /* seed + level default */
 void     humanize_filter(int16_t *dx, int16_t *dy); /* in-place, per frame */
 uint32_t humanize_timing_next(uint32_t base_ldval);
 void     humanize_set_level(uint8_t level);      /* 0=off..3=strong */
+uint8_t  humanize_get_level(void);               /* current level 0..3 */
 bool     humanize_pending(void);   /* true while owed motion remains to emit */
 /* Return injected motion that the report's delta field could not carry this
  * frame (it was clamped), so the filter redelivers it as headroom opens.

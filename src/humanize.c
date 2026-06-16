@@ -116,6 +116,11 @@ void humanize_set_level(uint8_t level) {
     S.noise_amp = HZ_NOISE[level];
 }
 
+uint8_t humanize_get_level(void)
+{
+    return S.level;
+}
+
 void humanize_init(uint32_t interval_us) {
     memset(&S, 0, sizeof(S));
     uint32_t seed = hw_entropy();
