@@ -175,7 +175,6 @@ static void usbhs_rcc_init(void)
 static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32_t timeout)
 {
     uint8_t  r, trans_retry;
-    uint16_t i;
     uint8_t  endp_number = endp_pid_number & 0xf0;
     uint8_t  endp_pid    = endp_pid_number & 0x0f;
 
@@ -209,12 +208,27 @@ static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32
         /* Launch the transaction. */
         USBHSH->CONTROL = USBHS_UH_HOST_ACTION | pre | endp_pid | endp_tog | endp_number;
 
-        /* Clear the transfer-done flag (W1C), then wait for it to re-assert. */
+        /* Clear the transfer-done flag (W1C), then wait for it to re-assert.
+         * The WCH reference spins Delay_Us(1) x DEF_WAIT_USB_TRANSFER_CNT, re-
+         * checking INT_FLAG only once per µs — up to ~1 µs detection latency on
+         * every interrupt-IN poll (the hottest USB path). Poll INT_FLAG directly
+         * and bound it with a single free-running TIM9 deadline instead: same 1 ms
+         * ceiling, but completion is seen the instant the flag sets. timebase_v5f_us()
+         * is a race-free V5F-private CNT_32 read (wrap-safe via unsigned subtract).
+         * guard is the frozen-TIM9 backstop the old for(i) form had implicitly: if
+         * CNT_32 never advances, bound the loop by instruction count so a dead timer
+         * can't hang the relay (cf. timebase_v5f_delay_us). */
         USBHSH->INT_FLAG = USBHS_UHIF_TRANSFER;
-        for (i = DEF_WAIT_USB_TRANSFER_CNT;
-             (i != 0) && ((USBHSH->INT_FLAG & USBHS_UHIF_TRANSFER) == 0);
-             i--) {
-            Delay_Us(1);
+        {
+            uint32_t t0 = timebase_v5f_us();
+            uint32_t guard = 0;
+            const uint32_t guard_max = DEF_WAIT_USB_TRANSFER_CNT * 8000u + 8000u;
+            while ((USBHSH->INT_FLAG & USBHS_UHIF_TRANSFER) == 0) {
+                if ((uint32_t)(timebase_v5f_us() - t0) >= DEF_WAIT_USB_TRANSFER_CNT)
+                    break;   /* 1 ms budget elapsed: flag never asserted */
+                if (++guard >= guard_max)
+                    break;   /* TIM9 frozen: bound by instruction count */
+            }
         }
 
         /* Retire the token from CONTROL. */
