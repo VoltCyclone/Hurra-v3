@@ -209,5 +209,7 @@ test:
 	/tmp/humanize_test
 	cc -std=c11 -O2 -Isrc -o /tmp/motion_test test/motion_test.c src/actions.c -lm
 	/tmp/motion_test
+	cc -std=c11 -O2 -Isrc -o /tmp/display_test test/display_test.c src/display.c
+	/tmp/display_test
 
 .PHONY: v3f v5f all merge flash flash-v3f flash-v5f erase clean test build
