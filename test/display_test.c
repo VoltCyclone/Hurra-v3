@@ -26,10 +26,10 @@ int main(void) {
     row_should_contain(rows[ROW_IDS], "1A2C");
     row_should_contain(rows[ROW_IDS], "0094");
     row_should_contain(rows[ROW_RPS], "980");
-    row_should_contain(rows[ROW_HEALTH], "3");      // drops 3
+    row_should_contain(rows[ROW_HEALTH], "drops 3"); // drops 3
     row_should_contain(rows[ROW_PATH], "GOT");      // probe bit3
     row_should_contain(rows[ROW_PATH], "FWD");      // probe bit2
-    row_should_contain(rows[ROW_SLOTS], "3");       // gotmask 0x3
+    row_should_contain(rows[ROW_SLOTS], "0x3");      // gotmask 0x3
 
     // 3. Bottom block: uptime, cmd rx/err, human, inj.
     row_should_contain(rows[ROW_UPTIME], "4:12");   // 252s
@@ -72,6 +72,15 @@ int main(void) {
     assert(acc.reports_per_sec == 980);
     // seq is the high 2 bits.
     assert(icc_status_unpack(icc_status_pack(ICC_ST_SEL_STATE, 2, &src), &acc) == 2);
+
+    // 7. Transition WAITING->RELAYING: ROW_IDS goes blank->populated (dirty).
+    //    `w` is the WAITING status from case 6; `rows` currently holds its render.
+    memcpy(prev, rows, sizeof rows);   // prev = WAITING rows (ROW_IDS blank)
+    w.state = DISP_STATE_RELAYING; w.vid = 0x046D; w.pid = 0xC08B;
+    dirty = display_format_lines(&w, rows, (const char (*)[DISP_COLS+1])prev);
+    assert(dirty & (1u << ROW_IDS));
+    row_should_contain(rows[ROW_IDS], "046D");
+    row_should_contain(rows[ROW_IDS], "C08B");
 
     printf("display_test OK\n");
     return 0;

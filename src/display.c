@@ -66,7 +66,7 @@ static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COL
              (unsigned)(st->gotmask & 0x0F));
 
     // ROW_DIV (6): divider
-    snprintf(rows[ROW_DIV], DISP_COLS + 1, "%s", "--------------------");
+    snprintf(rows[ROW_DIV], DISP_COLS + 1, "%s", "--------------------------");
 
     // ROW_UPTIME (7): uptime in M:SS
     {
