@@ -13,10 +13,10 @@ device stream. The work is split across the two RISC-V cores: the slow **V3F**
 core owns boot, clocks, and the command link; the fast **V5F** core runs the
 latency-critical USB relay.
 
-This is a port of [Hurra-v2](../Hurra-v2) (which targeted the NXP i.MX RT1062 /
-Teensy MicroMod). The command protocols and host tooling are unchanged; the
-hardware abstraction layer (USB stack, UART, clocks, startup, inter-core
-channel) was rewritten for the CH32H417.
+This is a port of Hurra-v2 (which targeted the NXP i.MX RT1062 / Teensy
+MicroMod). The command protocols and host tooling are unchanged; the hardware
+abstraction layer (USB stack, UART, clocks, startup, inter-core channel) was
+rewritten for the CH32H417.
 
 Two command protocols are supported:
 
@@ -42,6 +42,19 @@ Notes for other hardware: pin assignments (LED, command USART) are board
 specific — see [`src/board.h`](src/board.h). A boot-subclass HID device must be
 sent `SET_PROTOCOL(Report)` to leave Boot Protocol and stream report-protocol
 data; the host bring-up does this for boot-subclass interfaces (`main_v5f.c`).
+
+## Requirements
+
+- A **WCH CH32H417** board with both USB ports broken out (this was developed on
+  a CH32H417QEU6 dev board). The on-board WCH-LinkE carries flash, debug, and the
+  command link over one USB-C cable.
+- A **RISC-V GCC toolchain**: `riscv-none-elf-gcc` (MounRiver / xPack, default)
+  or `riscv64-unknown-elf-gcc` via `make TOOLCHAIN=riscv64-unknown-elf`.
+- A **CH32-aware flasher**: [`wlink`](https://github.com/ch32-rs/wlink)
+  (recommended) or the [WCH-OpenOCD fork](https://github.com/openwch/openocd_wch).
+  Mainline OpenOCD does **not** support the WCH-LinkE adapter.
+- **Python 3 + `pyserial`** for the `tools/` harnesses (optional: `pynput` for
+  the aim test).
 
 ## How it works
 
@@ -243,8 +256,8 @@ without any hardware (these pass today):
 make test
 ```
 
-> The aim/load/smoke tools and `make flash` are part of **on-device** bring-up,
-> which is the remaining validation step (see **Status** above).
+> The aim/load/smoke tools and `make flash` run against a flashed board; the
+> host-native `make test` suite needs no hardware.
 
 ## Layout
 
@@ -283,3 +296,20 @@ tools/ferrum_aim_test.py      closed-loop aim test against on-screen dots
 tools/ferrum_load_test.py     command-channel latency/throughput/integrity load test
 tools/humanization_analyze.py kinematic trace analyzer vs. a human baseline
 ```
+
+## Disclaimer
+
+Hurra is published for research, education, and legitimate input-automation and
+accessibility work. Injecting synthetic input into software or services you do
+not own or operate may violate their terms of service or local law — including
+the anti-cheat policies of online games. You are responsible for how you use it.
+The software is provided "as is", without warranty of any kind (see
+[LICENSE](LICENSE)); the authors accept no liability for misuse or damage.
+
+## License
+
+[MIT](LICENSE) © 2026 Ramsey McGrath.
+
+Third-party components keep their own licenses: the vendored WCH CH32H417 EVT SDK
+under `vendor/wch/` and the TinyFrame framing library under
+`src/third_party/TinyFrame/`.
