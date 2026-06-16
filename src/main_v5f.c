@@ -400,6 +400,7 @@ int main(void)
 	uint8_t s_probe_phase = 0;   // alternate the two probe codes each emit
 	uint32_t hb_led_ms  = millis();   // last PC3 liveness-blink toggle time
 	static uint32_t s_rep_count, s_rep_tick;
+	static uint32_t s_drop_count;
 
 	// V5F->V3F relay telemetry uses ONLY the coherent IPC status-bit channel
 	// (icc_telem_stage_v5f). It must never write V3F-side SRAM (0x2017xxxx) from
@@ -485,7 +486,7 @@ int main(void)
 				bool fwd_ok = usb_device_send_report(
 					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret);
 				if (fwd_ok) { s_probe_fwd  = 1u; s_rep_count++; }
-				else        s_probe_drop = 1u;
+				else        { s_probe_drop = 1u; s_drop_count++; }
 			}
 		}
 		ITRC(TLM_RLY_OUT);
@@ -558,6 +559,11 @@ int main(void)
 			s_rep_tick = now_ms;
 			s_disp.reports_per_sec = (s_rep_count > 1023u) ? 1023u : (uint16_t)s_rep_count;
 			s_rep_count = 0;
+			// relay-health snapshot for the status display (published via pump)
+			s_disp.probe   = (uint8_t)((s_probe_got << 3) | (s_probe_fwd << 2)
+			                         | (s_probe_drop << 1) | s_probe_zerolen);
+			s_disp.gotmask = (uint8_t)(s_probe_gotmask & 0x0F);
+			s_disp.drops   = (uint16_t)(s_drop_count > 1023u ? 1023u : s_drop_count);
 		}
 		icc_status_pump_v5f(&s_disp);   // rotate-publish one field; cheap IPC MMIO
 

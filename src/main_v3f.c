@@ -13,6 +13,7 @@
 #include "timebase.h"
 #include "debug.h"
 #include "display.h"
+#include "humanize.h"
 
 // ── V5F stage diagnostic (bench bring-up) ───────────────────────────────────
 // The running V5F disables SWJ (PB8/PB9) during USB init, so SWD/SDI debug NAKs
@@ -227,6 +228,16 @@ int main(void)
         if ((dnow - disp_render_tick) >= 250) {
             disp_render_tick = dnow;
             g_disp.uptime_s = dnow / 1000u;
+            // V3F-local stats: fill every render (even during NOSIGNAL) so the
+            // bottom display block stays live if the relay core wedges.
+            g_disp.cmd_rx    = uart_rx_byte_count();
+            uint32_t cerr    = uart_overrun() + uart_framing() + uart_noise();
+            g_disp.cmd_err   = (uint16_t)(cerr > 0xFFFFu ? 0xFFFFu : cerr);
+            g_disp.human_lvl = humanize_get_level();
+            uint32_t im      = kmbox_cmd_inj_mouse_count();
+            uint32_t ik      = kmbox_cmd_inj_kbd_count();
+            g_disp.inj_m     = (uint16_t)(im > 0xFFFFu ? 0xFFFFu : im);
+            g_disp.inj_k     = (uint16_t)(ik > 0xFFFFu ? 0xFFFFu : ik);
             if (!s_seen_advance && g_disp.state != DISP_STATE_BOOT)
                 g_disp.state = DISP_STATE_NOSIGNAL;
             s_seen_advance = false;
