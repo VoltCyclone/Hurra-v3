@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "display.h"
+#include "icc.h"
 
 static void row_should_contain(const char *row, const char *needle) {
     if (!strstr(row, needle)) { printf("FAIL: '%s' lacks '%s'\n", row, needle); assert(0); }
@@ -48,6 +49,21 @@ int main(void) {
     assert(dirty & (1u << 1));
     row_should_contain(rows[1], "046D");
     row_should_contain(rows[1], "C08B");
+
+    // --- icc_status pack/unpack round-trip ---
+    display_status_t src = { .state = DISP_STATE_RELAYING, .vid = 0x1A2C,
+                             .pid = 0x0094, .reports_per_sec = 980 };
+    display_status_t acc = {0};
+    for (uint8_t sel = 0; sel < ICC_ST_SEL__COUNT; sel++) {
+        uint16_t w = icc_status_pack(sel, sel & 3, &src);
+        icc_status_unpack(w, &acc);
+    }
+    assert(acc.state == DISP_STATE_RELAYING);
+    assert(acc.vid == 0x1A2C);
+    assert(acc.pid == 0x0094);
+    assert(acc.reports_per_sec == 980);
+    // seq is the high 2 bits.
+    assert(icc_status_unpack(icc_status_pack(ICC_ST_SEL_STATE, 2, &src), &acc) == 2);
 
     printf("display_test OK\n");
     return 0;

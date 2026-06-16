@@ -36,7 +36,7 @@ LIBSRC = $(wildcard vendor/wch/Peripheral/src/*.c) \
          vendor/wch/Core/core_riscv.c \
          vendor/wch/Debug/debug.c
 
-V3F_SRC = src/main_v3f.c src/icc.c src/led.c src/uart.c src/kmbox_cmd.c \
+V3F_SRC = src/main_v3f.c src/icc.c src/icc_status.c src/led.c src/uart.c src/kmbox_cmd.c \
           src/actions.c src/humanize.c src/st7789.c core/timebase.c $(PROTO_SRC) \
           core/system_ch32h417.c $(LIBSRC)
 V3F_ASM = core/startup_v3f.S
@@ -55,7 +55,7 @@ v3f: build
 # physical-mask state (g_phys_mask / act_phys_*) the merge references; its
 # kmbox_inject_* path (-> kmbox_cmd_*) is never exercised on V5F, so
 # src/kmbox_cmd_v5f_stub.c provides the otherwise-undefined kmbox_cmd_* sinks.
-V5F_SRC = src/main_v5f.c src/icc.c src/usb_host.c src/usb_device.c \
+V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c src/usb_device.c \
           src/usb_merge.c src/desc_capture.c src/actions.c src/humanize.c \
           src/kmbox_cmd_v5f_stub.c src/led.c core/timebase_v5f.c \
           core/system_ch32h417.c $(LIBSRC)
@@ -209,7 +209,7 @@ test:
 	/tmp/humanize_test
 	cc -std=c11 -O2 -Isrc -o /tmp/motion_test test/motion_test.c src/actions.c -lm
 	/tmp/motion_test
-	cc -std=c11 -O2 -Isrc -o /tmp/display_test test/display_test.c src/display.c
+	cc -std=c11 -O2 -Isrc -o /tmp/display_test test/display_test.c src/display.c src/icc_status.c
 	/tmp/display_test
 
 .PHONY: v3f v5f all merge flash flash-v3f flash-v5f erase clean test build

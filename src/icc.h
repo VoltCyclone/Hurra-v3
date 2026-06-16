@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "display.h"
 
 // Inter-core channel. ONE single-producer/single-consumer FIFO (V3F->V5F
 // injection commands), drained into the coherent IPC MSG mailbox by
@@ -98,6 +99,32 @@ enum {
     TLM_RLY_PENDING = 0x08,   // after usb_merge_send_pending
     TLM_RLY_BOTTOM  = 0x09,   // end of iteration (pre-wfi)
 };
+
+// --- V5F->V3F reverse status channel (IPC status bits [16:31], CH2+CH3) -------
+// Single-writer (V5F) coherent MMIO status, time-multiplexed. Distinct from the
+// CH1 [8:15] stage telemetry above. 16-bit word: [15:14]=seq, [13:10]=field
+// selector, [9:0]=payload. V3F polls and reassembles into a display_status_t.
+enum {                          // field selectors
+    ICC_ST_SEL_STATE = 0,       // payload[2:0] = disp_state_t
+    ICC_ST_SEL_VID_HI,          // payload[7:0] = vid >> 8
+    ICC_ST_SEL_VID_LO,          // payload[7:0] = vid & 0xFF
+    ICC_ST_SEL_PID_HI,          // payload[7:0] = pid >> 8
+    ICC_ST_SEL_PID_LO,          // payload[7:0] = pid & 0xFF
+    ICC_ST_SEL_RPS,             // payload[9:0] = reports_per_sec (clamped 0..1023)
+    ICC_ST_SEL__COUNT
+};
+
+// PURE (host-testable): pack one field of `st` into a 16-bit word with seq.
+uint16_t icc_status_pack(uint8_t sel, uint8_t seq, const display_status_t *st);
+// PURE: decode `word`, merging the carried field into `acc`. Returns the 2-bit seq.
+uint8_t  icc_status_unpack(uint16_t word, display_status_t *acc);
+
+// V5F: publish the next field in rotation (call on a throttle); publishes STATE
+// immediately when `st->state` differs from the last published state.
+void icc_status_pump_v5f(const display_status_t *st);
+// V3F: read the current reverse word and merge into `acc`. Returns true if the
+// heartbeat seq advanced since the last call (i.e. V5F is alive & publishing).
+bool icc_status_poll_v3f(display_status_t *acc);
 
 // --- Bench debug: V5F boot-stage marker -------------------------------------
 // A single volatile word at a FIXED shared-SRAM address (well past g_icc, which

@@ -224,3 +224,37 @@ void IPC_CH0_Handler(void)
         IPC_ClearFlagStatus(IPC_CH0, IPC_CH_Sta_Bit0);
     }
 }
+
+// --- V5F->V3F reverse status channel (IPC status bits [16:31], CH2+CH3) ------
+// Distinct from the CH1 [8:15] stage telemetry above. Single-writer (V5F);
+// V3F only reads. Coherent peripheral MMIO — never shared SRAM.
+#define ICC_ST_SHIFT   16u
+#define ICC_ST_MASK    (0xFFFFu << ICC_ST_SHIFT)
+
+void icc_status_pump_v5f(const display_status_t *st)
+{
+    static uint8_t s_sel;            // rotation index
+    static uint8_t s_seq;            // rolling heartbeat
+    static uint8_t s_last_state = 0xFF;
+    uint8_t sel;
+    if (st->state != s_last_state) { // state changes jump the queue
+        s_last_state = st->state;
+        sel = ICC_ST_SEL_STATE;
+    } else {
+        sel = s_sel;
+        s_sel = (uint8_t)((s_sel + 1) % ICC_ST_SEL__COUNT);
+    }
+    uint16_t word = icc_status_pack(sel, ++s_seq, st);
+    IPC->CLR = ICC_ST_MASK;
+    IPC->SET = ((uint32_t)word << ICC_ST_SHIFT);
+}
+
+bool icc_status_poll_v3f(display_status_t *acc)
+{
+    static uint8_t s_last_seq = 0xFF;
+    uint16_t word = (uint16_t)((IPC->STS >> ICC_ST_SHIFT) & 0xFFFFu);
+    uint8_t seq = icc_status_unpack(word, acc);
+    bool advanced = (seq != s_last_seq);
+    s_last_seq = seq;
+    return advanced;
+}
