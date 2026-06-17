@@ -244,25 +244,7 @@ void icc_status_pump_v5f(const display_status_t *st)
         sel = s_sel;
     }
     s_sel = (uint8_t)((s_sel + 1) % ICC_ST_SEL__COUNT);  // always advance the rotation
-
-    uint16_t word;
-    if (sel == ICC_ST_SEL_NAME) {
-        // Stream one (position, char) pair per NAME pump call, cycling through the
-        // name. This fixes the payload-0 gap: without this the pack default emits
-        // payload 0 -> name[0]=' ' on V3F. s_name_pos cycles 0..len-1 forever so
-        // V3F keeps receiving fresh chars and self-heals any missed slot.
-        // seq bumps exactly once here (same as the else branch) — liveness intact.
-        static uint8_t s_name_pos;
-        uint8_t len = 0;
-        while (len < 16 && st->name[len] != '\0') len++;
-        uint8_t pos = (len == 0) ? 0 : (uint8_t)(s_name_pos % len);
-        char ch = (len == 0) ? ' ' : st->name[pos];
-        s_name_pos++;
-        uint16_t payload = (uint16_t)(((pos & 0xFu) << 6) | (icc_name_to6(ch) & 0x3Fu));
-        word = (uint16_t)(((++s_seq & 0x3u) << 14) | ((sel & 0xFu) << 10) | (payload & 0x3FFu));
-    } else {
-        word = icc_status_pack(sel, ++s_seq, st);
-    }
+    uint16_t word = icc_status_pack(sel, ++s_seq, st);
     IPC->CLR = ICC_ST_MASK;
     IPC->SET = ((uint32_t)word << ICC_ST_SHIFT);
 }

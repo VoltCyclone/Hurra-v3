@@ -30,35 +30,32 @@ typedef struct {
     uint8_t  human_lvl;        // humanize level 0..3
     uint16_t inj_m;            // mouse injection count
     uint16_t inj_k;            // keyboard injection count
-    // --- product name (streamed from V5F, ASCII, <=16 chars) ---
-    char     name[17];         // NUL-terminated, uppercased 6-bit charset
     // --- board temperature (V3F-local ADC) ---
     int8_t   temp_c;           // degrees Celsius (signed)
 } display_status_t;
 
 // Text grid. Scale 2 => 12px glyphs; 240px / 12px = 20 cols.
-// 14 rows * 16px = 224px; fits the 240px display height.
+// 13 rows * 16px = 208px; fits the 240px display height.
 #define DISP_COLS   20
-#define DISP_ROWS   14
+#define DISP_ROWS   13
 #define DISP_SCALE   2
 
-// Row indices. Top block (0..6) = V5F relay telemetry; row 7 divider;
-// bottom block (8..13) = V3F-local stats. Blank rows render as empty bands.
+// Row indices. Top block (0..5) = V5F relay telemetry; row 6 divider;
+// bottom block (7..12) = V3F-local stats. Blank rows render as empty bands.
 enum {
     ROW_STATE  = 0,   // relay state name
     ROW_IDS    = 1,   // dev VID:PID (blank if no device)
-    ROW_NAME   = 2,   // product name (streamed from V5F)
-    ROW_RPS    = 3,   // reports/s (blank if no device)
-    ROW_HEALTH = 4,   // drops N  zlen N
-    ROW_PATH   = 5,   // decoded probe: GOT/FWD/DROP/ZLEN flags
-    ROW_SLOTS  = 6,   // which host IN slots delivered (gotmask)
-    ROW_DIV    = 7,   // divider
-    ROW_UPTIME = 8,   // uptime M:SS  (V3F-local)
-    ROW_CMDRX  = 9,   // cmd rx N B   (V3F-local)
-    ROW_CMDERR = 10,  // cmd err N    (V3F-local)
-    ROW_HUMAN  = 11,  // human lvl N  (V3F-local)
-    ROW_INJ    = 12,  // inj m N  k N (V3F-local)
-    ROW_TEMP   = 13,  // board temp (V3F-local ADC)
+    ROW_RPS    = 2,   // reports/s (blank if no device)
+    ROW_HEALTH = 3,   // drops N  zlen N
+    ROW_PATH   = 4,   // decoded probe: GOT/FWD/DROP/ZLEN flags
+    ROW_SLOTS  = 5,   // which host IN slots delivered (gotmask)
+    ROW_DIV    = 6,   // divider
+    ROW_UPTIME = 7,   // uptime M:SS  (V3F-local)
+    ROW_CMDRX  = 8,   // cmd rx N B   (V3F-local)
+    ROW_CMDERR = 9,   // cmd err N    (V3F-local)
+    ROW_HUMAN  = 10,  // human lvl N  (V3F-local)
+    ROW_INJ    = 11,  // inj m N  k N (V3F-local)
+    ROW_TEMP   = 12,  // board temp (V3F-local ADC)
 };
 
 // PURE: render `st` into `rows` (DISP_ROWS NUL-terminated strings, each <=DISP_COLS

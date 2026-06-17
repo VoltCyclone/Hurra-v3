@@ -34,13 +34,7 @@ static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COL
     else
         memset(rows[ROW_IDS], 0, DISP_COLS + 1);
 
-    // ROW_NAME (2): product name (streamed from V5F), blank if no device or no name
-    if (have_dev && st->name[0])
-        snprintf(rows[ROW_NAME], DISP_COLS + 1, "%s", st->name);
-    else
-        memset(rows[ROW_NAME], 0, DISP_COLS + 1);
-
-    // ROW_RPS (3): reports/s, blank if no device
+    // ROW_RPS (2): reports/s, blank if no device
     if (have_dev)
         snprintf(rows[ROW_RPS], DISP_COLS + 1, "reports/s %u",
                  (unsigned)st->reports_per_sec);

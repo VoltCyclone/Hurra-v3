@@ -113,7 +113,6 @@ enum {                          // field selectors
     ICC_ST_SEL_RPS,             // payload[9:0] = reports_per_sec (clamped 0..1023)
     ICC_ST_SEL_DROPS,           // payload[9:0] = drops (clamped 0..1023)
     ICC_ST_SEL_PROBE,           // payload[7:4] = probe[3:0], payload[3:0] = gotmask[3:0]
-    ICC_ST_SEL_NAME,            // payload[9:6]=char position (0..15), [5:0]=6-bit char
     ICC_ST_SEL__COUNT
 };
 
@@ -121,11 +120,6 @@ enum {                          // field selectors
 uint16_t icc_status_pack(uint8_t sel, uint8_t seq, const display_status_t *st);
 // PURE: decode `word`, merging the carried field into `acc`. Returns the 2-bit seq.
 uint8_t  icc_status_unpack(uint16_t word, display_status_t *acc);
-
-// 6-bit name charset codec (pure, host-testable). 0=space, 1..26=A..Z,
-// 27..36=0..9, 37='-',38='.',39='+',40=':',41='/', 42..63=space.
-uint8_t icc_name_to6(char c);      // ASCII -> 6-bit (lowercase upcased; unmapped -> 0/space)
-char    icc_name_from6(uint8_t v); // 6-bit -> ASCII
 
 // V5F: publish the next field in rotation (call on a throttle); publishes STATE
 // immediately when `st->state` differs from the last published state.
