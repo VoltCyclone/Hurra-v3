@@ -68,7 +68,9 @@ bool icc_recv_from_v3f(icc_record_t *out);     // call from V5F
 
 // Doorbell: V3F rings V5F after enqueue so V5F can wfi when idle.
 void icc_ring_doorbell_v5f(void);              // V3F side
-// V5F's IPC_CH0_Handler clears the doorbell; defined in icc.c.
+// V5F's IPC_CH0_Handler clears the doorbell AND disables its own IT bit (storm-proof
+// under AutoEN); the V5F foreground re-arms it after draining the mailbox.
+void icc_ipc_rearm_v5f(void);                  // V5F side, call after draining
 
 // --- V5F->V3F coherent stage telemetry (IPC CH1 status bits) -----------------
 // Replaces the dead shared-SRAM dbg_stage marker for the relay. V5F writing

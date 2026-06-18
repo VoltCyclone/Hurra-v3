@@ -42,6 +42,8 @@
 #include "timebase_v5f.h"
 #include "led.h"
 #include "debug.h"
+#include "spi_link_selftest.h"
+#include "two_board.h"
 
 // delay() shim for the V5F image. desc_capture.c (host-side enumeration) and
 // the init sequence below call `extern void delay(uint32_t msec)`. Route through
@@ -196,6 +198,13 @@ int main(void)
 	led_init();
 	dbg_stage(DBG_V5F_LED_INIT);
 
+#ifdef SPI_LINK_SELFTEST
+	// Bench harness (Makefile SELFTEST=master|slave): run the board-to-board SPI
+	// link echo test and never return. Diverts BEFORE any USB/ICC bring-up so the
+	// test firmware exercises only the SPI link + LED, nothing else.
+	spi_link_selftest_run();
+#endif
+
 	// --- ICC rendezvous with the V3F command core ------------------------
 	// V3F sets the shared-block magic; we wait for it, then complete the HSEM
 	// handshake and enable the V3F->V5F doorbell so injection records wake us.
@@ -215,6 +224,32 @@ int main(void)
 	// host-wait loop below, so "PC3 dark" vs "PC3 2 Hz" vs "trap blink" are the
 	// only three PC3 states now.
 	led_off();
+
+#if defined(BOARD_ROLE_HOST)
+	// Board B = SPI master. It captures the REAL device on its USBHS HOST port
+	// (PB8/9), which needs SWJ released exactly like the device path — UNLESS built
+	// with TWO_BOARD_HOST_SYNTH (synthetic source, no USB host), where SWD stays
+	// alive. Never returns. See two_board.c.
+#  if !defined(TWO_BOARD_HOST_SYNTH)
+	dbg_stage(DBG_V5F_PRE_AFIO);    // 0x66: about to enable AFIO|GPIOB
+	RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOB, ENABLE);
+	dbg_stage(DBG_V5F_PRE_SWJ);     // 0x67: AFIO|GPIOB on; about to disable SWJ
+	GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
+	dbg_stage(DBG_V5F_PRE_HOSTINIT);// 0x68: SWJ disabled; about to bring up USBHS host
+#  endif
+	two_board_host_run();
+#elif defined(BOARD_ROLE_DEVICE)
+	// Step-3 scaffold (Makefile BOARD=device): Board A enumerates a synthetic boot
+	// mouse on the USBHSD device port (PB8/9) and replays SPI-received reports to
+	// the PC. USBHS device needs the SWJ pins released exactly like the host path
+	// does (see the SWJ note below). Never returns.
+	dbg_stage(DBG_V5F_PRE_AFIO);    // 0x66: about to enable AFIO|GPIOB
+	RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOB, ENABLE);
+	dbg_stage(DBG_V5F_PRE_SWJ);     // 0x67: AFIO|GPIOB on; about to disable SWJ
+	GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
+	dbg_stage(DBG_V5F_PRE_HOSTINIT);// 0x68: SWJ disabled; about to bring up USBHSD
+	two_board_device_run();
+#endif
 
 	// --- USBHS host: power port, wait for the real device ----------------
 	// The USBHS D+/D- lines are PB8/PB9, which on this part are ALSO the

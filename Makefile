@@ -25,6 +25,60 @@ VPATH_INC = -Iinclude -Isrc -Icore -Isrc/third_party/TinyFrame \
             -Ivendor/wch/Core -Ivendor/wch/Peripheral/inc -Ivendor/wch/Debug
 
 DEFINES = -DCH32H417 -DCMD_BAUD=$(CMD_BAUD) $(PROTO_DEF)
+
+# ── Build role (V5F image) ───────────────────────────────────────────────────
+# The product is a TWO-BOARD USB MITM: Board B captures the real device on its
+# USBHS host port and ships it over a board-to-board SPI link (SPI1/PA3-PA7) to
+# Board A, which clones it to the PC. Both boards run the SAME V3F image; only the
+# V5F image differs by role. `make` builds both role images (see `all`):
+#   BoardB.bin  (BOARD=host)   — SPI master + real USBHS capture
+#   BoardA.bin  (BOARD=device) — SPI slave + USB clone to the PC
+#
+# BOARD is set per-role by `all`; leave it empty only for the opt-in single-board
+# relay (`make relay`), where one board does host+device itself.
+BOARD ?=
+ifeq ($(BOARD),host)
+  BOARD_DEF = -DBOARD_ROLE_HOST
+else ifeq ($(BOARD),device)
+  BOARD_DEF = -DBOARD_ROLE_DEVICE
+else ifneq ($(BOARD),)
+  $(error BOARD must be 'host' or 'device' (empty = single-board relay))
+endif
+DEFINES += $(BOARD_DEF)
+
+# Opt-in bench/bring-up flags:
+#   HOST_SYNTH=1   (BOARD=host)   drive Board B from a synthetic mouse, no real
+#                                 USB host — isolated SPI link/transport test.
+#   DEVICE_LOCAL=1 (BOARD=device) drive the clone from a local synthetic mouse
+#                                 with NO SPI — isolates the device USB bring-up.
+#   SELFTEST=master|slave         board-to-board SPI echo harness instead of the
+#                                 relay (src/spi_link_selftest.c). Flash one board
+#                                 each way, watch PC3: slow ~1 Hz = link healthy,
+#                                 fast ~8 Hz = errors/no link.
+ifeq ($(HOST_SYNTH),1)
+  DEFINES += -DTWO_BOARD_HOST_SYNTH
+endif
+ifeq ($(DEVICE_LOCAL),1)
+  DEFINES += -DTWO_BOARD_DEVICE_LOCAL
+endif
+SELFTEST ?=
+ifeq ($(SELFTEST),master)
+  DEFINES += -DSPI_LINK_SELFTEST -DSPI_LINK_ROLE_MASTER
+else ifeq ($(SELFTEST),slave)
+  DEFINES += -DSPI_LINK_SELFTEST
+else ifneq ($(SELFTEST),)
+  $(error SELFTEST must be 'master' or 'slave')
+endif
+
+# Merged-image name, derived from the role so `all` can build both side by side.
+ifeq ($(BOARD),host)
+  IMAGE ?= BoardB
+else ifeq ($(BOARD),device)
+  IMAGE ?= BoardA
+else
+  IMAGE ?= Merge
+endif
+
 EXTRADEF ?=
 CFLAGS  = $(ARCH) $(DEFINES) $(EXTRADEF) $(VPATH_INC) -Os -Wall -Wno-unused-variable \
           -ffunction-sections -fdata-sections -fsingle-precision-constant $(FP_CFLAGS)
@@ -55,9 +109,13 @@ v3f: build
 # physical-mask state (g_phys_mask / act_phys_*) the merge references; its
 # kmbox_inject_* path (-> kmbox_cmd_*) is never exercised on V5F, so
 # src/kmbox_cmd_v5f_stub.c provides the otherwise-undefined kmbox_cmd_* sinks.
-V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c src/usb_device.c \
+V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c \
+          src/usb_device.c src/usb_device_hs.c src/usb_device_fs.c \
           src/usb_merge.c src/desc_capture.c src/actions.c src/humanize.c \
-          src/kmbox_cmd_v5f_stub.c src/led.c core/timebase_v5f.c \
+          src/kmbox_cmd_v5f_stub.c src/led.c src/spi_link.c src/spi_frame.c \
+          src/spi_frame_stream.c \
+          src/usb_hs_desc.c src/synth_mouse.c src/desc_xfer.c src/two_board.c \
+          src/spi_link_selftest.c core/timebase_v5f.c \
           core/system_ch32h417.c $(LIBSRC)
 V5F_ASM = core/startup_v5f.S
 V5F_DEF = -DCore_V5F -Dsystick2
@@ -94,12 +152,24 @@ v5f: build
 build:
 	mkdir -p build
 
-all: build v3f v5f merge
+# Default product: build BOTH two-board role images.
+#   build/BoardB.bin = host (SPI master + real USBHS capture)
+#   build/BoardA.bin = device (SPI slave + USB clone to the PC)
+# Each is a full merged dual-core image; flash one per board (see flash-boardb /
+# flash-boarda). Recurses so each role gets its own BOARD= define cleanly.
+all:
+	$(MAKE) merge BOARD=host
+	$(MAKE) merge BOARD=device
 
+# Opt-in single-board relay (one board does host+device itself) -> build/Merge.bin.
+relay:
+	$(MAKE) merge BOARD=
+
+# Merge the two core images into build/$(IMAGE).bin (IMAGE derives from BOARD).
 merge: v3f v5f
 	$(OBJCOPY) -I ihex -O binary build/v3f.hex build/v3f.bin
 	$(OBJCOPY) -I ihex -O binary build/v5f.hex build/v5f.bin
-	python3 scripts/merge_images.py build/v3f.bin build/v5f.bin 0x10000 build/Merge.bin
+	python3 scripts/merge_images.py build/v3f.bin build/v5f.bin 0x10000 build/$(IMAGE).bin
 
 # ── Flashing via the on-board WCH-LinkE ──────────────────────────────────────
 # The CH32H417's flash is one physical region exposed at two aliases: the WCH
@@ -174,8 +244,20 @@ define _FLASH_IMG
 	fi
 endef
 
-# Flash the full dual-core image (default). Depends on merge so the bits are fresh.
-flash: merge
+# Flash the two-board role images. Plug ONE WCH-LinkE at a time (or pass
+# WLINK_DEV='-d <index>' via WLINK to pick a probe). Build fresh, then program.
+# Board B = host (SPI master + USBHS capture).
+flash-boardb:
+	$(MAKE) merge BOARD=host
+	$(call _FLASH_IMG,build/BoardB.bin,$(FLASH_ADDR))
+
+# Board A = device (SPI slave + USB clone to the PC).
+flash-boarda:
+	$(MAKE) merge BOARD=device
+	$(call _FLASH_IMG,build/BoardA.bin,$(FLASH_ADDR))
+
+# Flash the single-board relay image (opt-in; pairs with `make relay`).
+flash: relay
 	$(call _FLASH_IMG,build/Merge.bin,$(FLASH_ADDR))
 
 # Flash a single core image (debug aid). These program the same flash region at
@@ -211,5 +293,13 @@ test:
 	/tmp/motion_test
 	cc -std=c11 -O2 -Isrc -o /tmp/display_test test/display_test.c src/display.c src/icc_status.c
 	/tmp/display_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_test test/spi_frame_test.c src/spi_frame.c
+	/tmp/spi_frame_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/usb_hs_desc_test test/usb_hs_desc_test.c src/usb_hs_desc.c
+	/tmp/usb_hs_desc_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/desc_xfer_test test/desc_xfer_test.c src/desc_xfer.c
+	/tmp/desc_xfer_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_stream_test test/spi_frame_stream_test.c src/spi_frame_stream.c src/spi_frame.c
+	/tmp/spi_frame_stream_test
 
-.PHONY: v3f v5f all merge flash flash-v3f flash-v5f erase clean test build
+.PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test build

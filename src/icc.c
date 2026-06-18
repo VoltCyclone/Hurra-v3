@@ -217,12 +217,28 @@ uint8_t icc_telem_read_v3f(void)
     return (uint8_t)((IPC->STS >> ICC_TLM_CH1_SHIFT) & 0xFFu);
 }
 
+// IPC_CH0 doorbell ISR. The ONLY job here is to wake the core from wfi; the actual
+// mailbox read happens in the foreground (usb_merge_drain_icc -> icc_recv_from_v3f).
+//
+// STORM FIX (2026-06-18): the channel runs AutoEN=ENABLE, so the Bit0 interrupt
+// re-asserts from the MSG-mailbox-pending condition. Clearing the flag alone does
+// NOT deassert it — the IRQ immediately re-fires (~3 MHz) and starves the
+// foreground whenever the foreground is slow to drain (e.g. the ~80 ms two-board
+// descriptor send). So the ISR DISABLES its own IT bit after clearing; the
+// foreground re-arms it (icc_ipc_rearm_v5f) once it has drained the mailbox. One
+// ISR entry per doorbell, storm-proof regardless of how long the foreground takes.
 void IPC_CH0_Handler(void) WCH_IRQ;
 void IPC_CH0_Handler(void)
 {
-    if (IPC_GetITStatus(IPC_CH0, IPC_CH_Sta_Bit0)) {
-        IPC_ClearFlagStatus(IPC_CH0, IPC_CH_Sta_Bit0);
-    }
+    IPC_ClearFlagStatus(IPC_CH0, IPC_CH_Sta_Bit0);
+    IPC_ITConfig(IPC_CH0, IPC_CH_Sta_Bit0, DISABLE);  // re-armed by the foreground
+}
+
+// Re-arm the IPC_CH0 doorbell after the foreground has drained the mailbox. Safe to
+// call unconditionally each foreground pass (idempotent ENABLE).
+void icc_ipc_rearm_v5f(void)
+{
+    IPC_ITConfig(IPC_CH0, IPC_CH_Sta_Bit0, ENABLE);
 }
 
 // --- V5F->V3F reverse status channel (IPC status bits [16:31], CH2+CH3) ------
