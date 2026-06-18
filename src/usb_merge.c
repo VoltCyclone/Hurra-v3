@@ -822,6 +822,11 @@ void usb_merge_drain_icc(void)
 		}
 	}
 
+	// Mailbox is drained (every pending record consumed + acked). Re-arm the IPC
+	// doorbell IT, which the ISR disables on each fire to stay storm-proof under
+	// AutoEN (see IPC_CH0_Handler). Idempotent — safe to call every pass.
+	icc_ipc_rearm_v5f();
+
 	// Release-deadline bookkeeping (v2 ran this in kmbox_poll_fast each tick).
 	merge_run_releases();
 }

@@ -108,3 +108,59 @@
 
 #define LCD_WIDTH               240
 #define LCD_HEIGHT              240
+
+// ── Board-to-board SPI link (two-board end-to-end USB High-Speed) ────────────
+// Carries HID descriptors + reports between the two boards: USB-host board (SPI
+// master) -> USB-device board (SPI slave) on MOSI; reverse path on MISO. See
+// two_board.c / AGENTS.md.
+//
+// Peripheral = **SPI1** on **GPIOA**, uniform **AF5**, with **hardware NSS**.
+//
+// *** PINS ARE CONSTRAINED BY WHAT THE nanoCH32H417 ACTUALLY BREAKS OUT ***
+// (verified against the board photo + datasheet Table 2-2-8, 2026-06-17). The
+// board silkscreen labels pins by GPIO name minus the "P" (so "A4" = PA4). An
+// earlier SPI4/GPIOE choice was WRONG: SPI4's pins (PE2-6 / PE11-14) are NOT
+// usefully broken out — only E0/E12-E15 are, and SPI4_NSS (PE11) is absent, which
+// would have forced software-NSS and lost per-frame hardware re-sync.
+//
+// SPI1's full four-wire group lands on FOUR ADJACENT bottom-right header pins,
+// all AF5, INCLUDING hardware NSS — the cleanest option on this board:
+//   SPI1_NSS = PA4 (A4)   SPI1_SCK = PA5 (A5)
+//   SPI1_MISO = PA6 (A6)  SPI1_MOSI = PA7 (A7)
+// DATA_READY (slave->master doorbell) goes on **PA3** (A3) — adjacent, and the
+// GND pad sits right next to it on the same header.
+// No firmware conflict: the temp sensor uses the INTERNAL ADC_Channel_TempSensor
+// (no external pin); USART1=PA9/10, USBFS device=PA11/12, none touch PA3-7.
+// SPI1 is on the HB2 bus (RCC_HB2Periph_SPI1), same bus as GPIOA.
+//
+//   NSS = PA4 (A4)   SCK = PA5 (A5)   MISO = PA6 (A6)   MOSI = PA7 (A7)
+//   DATA_READY = PA3 (A3)   + GND   [ALL on the bottom-right header, adjacent]
+// Wire each silkscreen label straight across to the SAME label on the other
+// board: A4<->A4, A5<->A5, A6<->A6, A7<->A7, A3<->A3, GND<->GND.
+#define LINK_SPI                 SPI1
+#define LINK_SPI_RCC_HB2         RCC_HB2Periph_SPI1
+#define LINK_GPIO_RCC_HB2        (RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOA)
+#define LINK_SPI_AF              GPIO_AF5
+
+#define LINK_SCK_PORT            GPIOA
+#define LINK_SCK_PIN             GPIO_Pin_5
+#define LINK_SCK_PINSRC          GPIO_PinSource5
+#define LINK_MISO_PORT           GPIOA
+#define LINK_MISO_PIN            GPIO_Pin_6
+#define LINK_MISO_PINSRC         GPIO_PinSource6
+#define LINK_MOSI_PORT           GPIOA
+#define LINK_MOSI_PIN            GPIO_Pin_7
+#define LINK_MOSI_PINSRC         GPIO_PinSource7
+// NSS on PA4 (AF5): real SPI1 HARDWARE NSS. Master can drive it as HW-NSS output
+// (or a GPIO); slave uses it as the HW-NSS input so the master's CS edge gives
+// automatic per-frame select/deselect and bit re-alignment.
+#define LINK_NSS_PORT            GPIOA
+#define LINK_NSS_PIN             GPIO_Pin_4
+#define LINK_NSS_PINSRC          GPIO_PinSource4
+
+// Slave->master "I have reverse-path data" doorbell (GPIO; EXTI line 3 on the
+// master). PA3 = silkscreen "A3", adjacent to the SPI group on the bottom-right
+// header.
+#define LINK_DRDY_PORT           GPIOA
+#define LINK_DRDY_PIN            GPIO_Pin_3
+#define LINK_DRDY_PINSRC         GPIO_PinSource3

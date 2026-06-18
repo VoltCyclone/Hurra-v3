@@ -2,16 +2,20 @@
 
 Bare-metal firmware for the **WCH CH32H417** dual-core RISC-V MCU that sits
 between a USB HID device and your computer. It enumerates a real HID device
-(mouse, keyboard) on its USB **High-Speed host** port, replays that device to
-the host PC on its USB **Full-Speed device** port, forwards every real report
-through unchanged, and lets you **inject your own mouse and keyboard input** on
-top of the live HID stream over a serial command link.
+(mouse, keyboard) on a **USB High-Speed host** port, replays that device to the
+PC on a **USB device** port, forwards every real report through unchanged, and
+lets you **inject your own mouse and keyboard input** on top of the live HID
+stream over a serial command link.
 
-Injected motion is passed through an always-on humanization filter (sub-pixel
-jitter, micro-correction, and dwell) so synthetic input blends with the real
-device stream. The work is split across the two RISC-V cores: the slow **V3F**
-core owns boot, clocks, and the command link; the fast **V5F** core runs the
-latency-critical USB relay.
+The default build is a **two-board** man-in-the-middle: one board (B) captures
+the real device on its USBHS host port and ships the descriptors and reports over
+a board-to-board SPI link to a second board (A), which clones the device to the
+PC. A **single-board** relay (one board doing both halves) is also available
+(`make relay`). Either way, injected motion is passed through an always-on
+humanization filter (sub-pixel jitter, micro-correction, and dwell) so synthetic
+input blends with the real device stream. The work is split across the two RISC-V
+cores: the slow **V3F** core owns boot, clocks, and the command link; the fast
+**V5F** core runs the latency-critical USB path.
 
 This is a port of Hurra-v2 (which targeted the NXP i.MX RT1062 / Teensy
 MicroMod). The command protocols and host tooling are unchanged; the hardware
@@ -27,21 +31,6 @@ The host-side companion app is [`hurra-app`](https://github.com/VoltCyclone/hurr
 (`hurra-bridge`), which talks the Hurra protocol and also exposes a
 Ferrum-compatible virtual COM port for older tooling.
 
-## Status
-
-**Hardware-verified end-to-end.** The firmware builds clean (both
-`PROTOCOL=hurra` and `PROTOCOL=ferrum`, both core images, merged flash binary)
-and the relay has been validated on a real CH32H417 board: a Razer Basilisk V3
-(4-interface composite HID) enumerates on the High-Speed host port, is cloned to
-Windows on the Full-Speed device port, and its reports forward through unchanged
-— the mouse cursor moves on the PC through the man-in-the-middle. USB host
-capture, device replay, HID merge, humanization, both protocol parsers, and the
-inter-core channel are all exercised on-device.
-
-Notes for other hardware: pin assignments (LED, command USART) are board
-specific — see [`src/board.h`](src/board.h). A boot-subclass HID device must be
-sent `SET_PROTOCOL(Report)` to leave Boot Protocol and stream report-protocol
-data; the host bring-up does this for boot-subclass interfaces (`main_v5f.c`).
 
 ## Requirements
 
@@ -58,23 +47,33 @@ data; the host bring-up does this for boot-subclass interfaces (`main_v5f.c`).
 
 ## How it works
 
+Two-board (default):
+
+```
+   USB HID device ──→ Board B USBHS host ──→ SPI link ──→ Board A USB device ──→ PC
+                      (capture + forward)    (PA3–PA7)    (clone + merge)
+```
+
+Single-board (`make relay`):
+
 ```
    USB HID device ──→ CH32H417 USBHS host ──┐
                                             │  (V5F: proxy + merge + humanize)
-   Host PC USB ←── CH32H417 USBFS device ───┘
+   PC USB ←──────── CH32H417 USB device ────┘
                           ↑ ICC (shared SRAM @0x20178000 + IPC doorbell)
-   Host PC USB ──→ WCH-Link VCP ──→ CH32H417 USART1 (V3F: parse + command)
+   PC USB ──→ WCH-Link VCP ──→ CH32H417 USART1 (V3F: parse + command)
 ```
 
 The real device is captured on the **USBHS** controller (480 Mbps High-Speed
-host) and cloned to the PC on the **USBFS** controller (12 Mbps Full-Speed
-device); the two controllers run simultaneously. The fast **V5F** core polls the
-host endpoints, merges in any injected input, and forwards the combined report
-to the PC. Injected input arrives from the **V3F** core: the PC sends commands
-over the WCH-Link VCP into `USART1`, where V3F parses them (Hurra or Ferrum),
-applies humanization control, and pushes injection records to V5F across the
-inter-core channel (ICC). Injection rides real reports when the mouse is moving
-(merge) or is emitted as standalone synthetic reports when the mouse is idle.
+host) and cloned to the PC on a USB device controller (USBFS USB-C for Full/Low
+speed, or USBHSD Type-A for High-Speed). In the two-board build, capture and
+clone live on separate boards joined by a board-to-board SPI link; in the
+single-board build both run on one chip simultaneously. Either way the fast
+**V5F** core handles the report path, merging in injected input, while the
+**V3F** core takes commands from the PC over the WCH-Link VCP into `USART1`,
+parses them (Hurra or Ferrum), applies humanization, and pushes injection records
+to V5F across the inter-core channel (ICC). Injection rides real reports when the
+mouse is moving (merge) or is emitted as standalone synthetic reports when idle.
 
 ## Hardware
 
@@ -160,23 +159,30 @@ The protocol is selected at compile time — [`src/proto.h`](src/proto.h) aliase
 
 ## Build & flash
 
-The build produces **two images** — one per core (V3F master + V5F slave) —
-which are converted to raw binaries and merged into a single flash image
-(`build/Merge.bin`) by [`scripts/merge_images.py`](scripts/merge_images.py)
-(V3F at offset 0, V5F at `0x10000`).
+Each flash image is two core images (V3F + V5F) merged by
+[`scripts/merge_images.py`](scripts/merge_images.py) (V3F at offset 0, V5F at
+`0x10000`). The default build produces **both two-board role images**.
 
 ```sh
-make all              # build both cores + merge -> build/Merge.bin (Hurra, default)
-make v3f              # build only the V3F (master/command) image
-make v5f              # build only the V5F (relay) image
+make all              # build both role images -> build/BoardA.bin + build/BoardB.bin
+make relay            # single-board build -> build/Merge.bin
 make PROTOCOL=ferrum all   # build with the Ferrum ASCII protocol instead
-make flash            # merge + program the board over the on-board WCH-LinkE
-make flash-v3f        # flash only the V3F image (bring-up aid)
-make flash-v5f        # flash only the V5F image (bring-up aid)
+
+# Two-board: flash one board at a time over its WCH-LinkE.
+make flash-boardb     # Board B (host: capture + SPI master)
+make flash-boarda     # Board A (device: SPI slave + clone to PC)
+
+# Single-board:
+make flash            # build relay + program over the on-board WCH-LinkE
+
 make erase            # full-chip erase
 make clean            # remove the build/ tree
 make test             # host-native unit tests (no hardware) — see Test below
 ```
+
+For the two-board build, wire the **A3–A7 header pins** (SPI1: NSS/SCK/MISO/MOSI
++ DATA_READY) and a common ground across the boards, plug the real device into
+Board B's USBHS host port, and plug Board A into the PC.
 
 Toolchain:
 
@@ -187,24 +193,24 @@ Toolchain:
   make TOOLCHAIN=riscv64-unknown-elf all
   ```
 
-- Both cores compile with **`-march=rv32imac_zicsr -mabi=ilp32`** (soft-float
-  ABI — the humanize float math lives on V3F and works fine soft-float).
-Flashing (over the **on-board WCH-LinkE** — same USB-C cable as the command
+- V3F compiles with **`-march=rv32imac_zicsr -mabi=ilp32`** (soft-float); V5F
+  uses the hardware FPU (`rv32imafc` / `ilp32f`).
+
+Flashing goes over the **on-board WCH-LinkE** (same USB-C cable as the command
 link):
 
-- **`make flash`** merges and programs `build/Merge.bin`. It auto-detects a CLI
-  flasher — preferring [`wlink`](https://github.com/ch32-rs/wlink) (Rust; lists
-  CH32H417 support) and falling back to the
-  [WCH-OpenOCD fork](https://github.com/openwch/openocd_wch) (`wch-openocd`). If
-  neither is installed it prints install hints and stops. **Mainline `openocd`
-  does not work** — it has no `wlinke` adapter driver.
+- The `flash*` targets auto-detect a CLI flasher — preferring
+  [`wlink`](https://github.com/ch32-rs/wlink) (Rust; lists CH32H417 support) and
+  falling back to the [WCH-OpenOCD fork](https://github.com/openwch/openocd_wch)
+  (`wch-openocd`). If neither is installed they print install hints and stop.
+  **Mainline `openocd` does not work** — it has no `wlinke` adapter driver.
 - Install the recommended tool: `brew install libusb && cargo install --git
   https://github.com/ch32-rs/wlink`. Ensure the WCH-LinkE is in **RV mode**
   (`wlink mode-switch --rv`).
+- A running target NAKs `wlink` (it disables SWJ during USB init); the flash
+  targets do a power-off erase first, so flashing always works without
+  button-tapping.
 - Overrides: `FLASH_TOOL=wlink|openocd`, `WLINK=`, `WCH_OPENOCD=`, `WCH_CFG=`.
-  The merged image programs at the `0x08000000` alias under `wlink` and the
-  `0x00000000` flash-bank base under WCH-OpenOCD ([`scripts/wch-riscv.cfg`](scripts/wch-riscv.cfg))
-  — the same physical flash, matching the V3F\@0 / V5F\@`0x10000` layout.
 
 ## Test
 
@@ -262,8 +268,8 @@ make test
 ## Layout
 
 ```
-Makefile                      two-image RISC-V build (V3F + V5F) + merge
-scripts/merge_images.py       merges the two core binaries into build/Merge.bin
+Makefile                      two-image RISC-V build (V3F + V5F) + merge per role
+scripts/merge_images.py       merges the two core binaries into one flash image
 core/startup_v3f.S            V3F reset vector / vector table (master)
 core/startup_v5f.S            V5F reset vector / vector table (relay)
 core/link_v3f.ld              V3F linker script (code in RAM_CODE)
@@ -272,10 +278,15 @@ core/system_ch32h417.c        clock tree: HSE 25 MHz → 400 MHz, USB PLLs
 core/timebase.c               V3F millis() (TIM3)
 core/timebase_v5f.c           V5F millis() (TIM4) + 1 MHz µs counter (TIM9)
 src/main_v3f.c                V3F entry: clocks → release V5F → command loop
-src/main_v5f.c                V5F entry: USBHS host → merge → USBFS device relay
+src/main_v5f.c                V5F entry: single-board relay; diverts to two_board on BOARD=
+src/two_board.c/.h            two-board role loops (host = capture+SPI; device = SPI+clone)
+src/spi_link.c/.h             board-to-board SPI1 link (PA3–PA7) driver
+src/spi_frame.c / spi_frame_stream.c  SPI slot framing + SOF-scanning reassembly
+src/desc_xfer.c/.h            descriptor-blob chunk/reassemble codec over SPI
+src/synth_mouse.c/.h          synthetic mouse source (isolated-link bench builds)
 src/icc.c/.h                  inter-core channel (SPSC rings + HSEM + IPC doorbell)
 src/usb_host.c/.h             USBHS host driver (capture the real device)
-src/usb_device.c/.h           USBFS device driver (clone presented to the PC)
+src/usb_device.c/.h           device clone dispatch (USBHSD for HS / USBFS for FS-LS)
 src/usb_merge.c/.h            HID-aware report merge (real report + injection)
 src/desc_capture.c/.h         descriptor + HID report-layout capture (cloning)
 src/uart.c/.h                 USART1 PA9/PA10 IRQ-driven RX/TX rings (cmd link, V3F)
