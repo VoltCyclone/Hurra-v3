@@ -199,8 +199,7 @@ void two_board_host_run(void)
     desc.speed = usb_host_device_speed();
 
     /* Host TFT telemetry: fill our own display_status_t and pump it to V3F over
-     * the IPC reverse channel (the two-board loop previously never did this, so the
-     * host display sat at NO SIGNAL). */
+     * the IPC reverse status channel (same path as the single-board relay loop). */
     display_status_t disp = { .state = DISP_STATE_RELAYING };
     disp.vid = (uint16_t)(desc.device_desc[8]  | (desc.device_desc[9]  << 8));
     disp.pid = (uint16_t)(desc.device_desc[10] | (desc.device_desc[11] << 8));

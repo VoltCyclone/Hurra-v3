@@ -104,8 +104,9 @@ The two cores divide the work along the latency boundary:
 - **V3F (master / command core)** — boots from flash, runs `SystemInit()`
   (clocks), releases V5F via `NVIC_WakeUp_V5F`, then runs the command loop:
   `USART RX (DMA) → proto_feed (hurra/ferrum) → act_* → ICC inject-command ring`.
-  It also drives the LED status ladder from telemetry it consumes back over the
-  ICC.
+  It also drives the LED status ladder and, on the **host board only**, the
+  ST7789 status TFT (see [Status display](#status-display)) from telemetry it
+  consumes back over the ICC.
 - **V5F (relay / hot path)** — the centerpiece of the man-in-the-middle:
   `USBHS host poll (real device) → merge (drain ICC injection + humanize) →
   USBFS device send (to PC)`. It also emits standalone synthetic reports when
@@ -127,6 +128,26 @@ The cores talk over a small shared-SRAM mailbox at a fixed address
   V5F, and the two cores hand-shake via HSEM ID 0.
 - An **IPC doorbell** (IPC channel 0) lets V3F wake V5F from `wfi` when it
   queues injection, so the hot path can sleep when there is no work.
+
+### Status display
+
+The **host board (Board B) carries the only ST7789 status TFT**; the device
+board (Board A) has none (its panel driver is compile-gated out by
+`DISPLAY_PRESENT`, so it dead-strips from the device image). The host V3F renders
+two blocks at ~4 Hz from telemetry it polls over the ICC reverse channel:
+
+- **Top / host (B)** — relay state, captured device `VID:PID` and its USB speed
+  (`FS`/`HS`), reports/s, SPI link health (`wedge` count), and host board
+  temperature (value colored green/amber/red).
+- **DEVICE (A)** — clone-on-PC enumeration status and the clone→PC speed (the
+  "which port" hint), plus the device board temperature. These come from Board A
+  over the SPI **return slot** (MISO): the device V5F stages a CRC-framed
+  telemetry slot that the host SOF-scans and folds into the display. If that
+  stream goes stale the block shows `LINK DOWN`.
+
+The host clocks a periodic poll frame during idle so a still mouse doesn't false-
+trip `LINK DOWN`. The display is non-essential — it only consumes V3F idle time
+and never gates the relay or the command link.
 
 ## Command protocols
 

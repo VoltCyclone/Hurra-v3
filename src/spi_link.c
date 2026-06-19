@@ -273,16 +273,15 @@ void spi_link_slave_set_drdy(int asserted)
 }
 
 // --- Slave -> master telemetry return slot (staged onto MISO by the RXNE ISR) --
-// Double-buffered: the foreground writes s_telem[next] then flips s_telem_cur.
-// The ISR only ever reads s_telem[s_telem_cur], so it never sees a torn slot.
+// Double-buffered: the publisher fills s_telem[next] then flips s_telem_cur; the
+// ISR only reads s_telem[s_telem_cur], so it never sees a torn slot. The flip is a
+// single-byte store, atomic w.r.t. the ISR because both run on the V5F core — this
+// would not hold if the publisher moved to another core.
 static volatile uint8_t s_telem[2][SPI_LINK_SLOT];
 static volatile uint8_t s_telem_cur;     // which buffer the ISR reads
 static volatile uint8_t s_telem_idx;     // next byte to send from the current slot
 static volatile uint8_t s_telem_armed;   // 0 until the first publish
 
-// Torn-free safety here relies on the publisher and the RXNE ISR both running on
-// the V5F core: the s_telem_cur flip is a single-byte store, atomic w.r.t. the
-// only reader (the ISR). This would NOT hold if the publisher moved to another core.
 void spi_link_slave_set_telem(const uint8_t slot[SPI_LINK_SLOT])
 {
     uint8_t next = (uint8_t)(s_telem_cur ^ 1u);
