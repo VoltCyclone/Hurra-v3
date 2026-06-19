@@ -361,7 +361,10 @@ def main(argv=None, runner=None):
         except WlinkMissingError as e:
             sys.stderr.write("error: %s\n" % e)
             return EXIT_NO_TOOL
-        sys.stdout.write(render_list(probes) + "\n")
+        if args.json:
+            sys.stdout.write(json.dumps([p._asdict() for p in probes]) + "\n")
+        else:
+            sys.stdout.write(render_list(probes) + "\n")
         return EXIT_OK
 
     result = run_flash(runner, args)

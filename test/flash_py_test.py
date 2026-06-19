@@ -398,6 +398,21 @@ class TestMain(unittest.TestCase):
             sys.stderr = old_err
         self.assertEqual(rc, flash.EXIT_USAGE)
 
+    def test_list_json_emits_probe_array(self):
+        runner = FakeRunner([("wlink list",
+                              flash.RunResult(0, "0: WCH-LinkE serial=ABC123\n"))])
+        out = io.StringIO()
+        old = sys.stdout
+        sys.stdout = out
+        try:
+            rc = flash.main(["--list", "--json"], runner=runner)
+        finally:
+            sys.stdout = old
+        self.assertEqual(rc, flash.EXIT_OK)
+        parsed = json.loads(out.getvalue())          # stdout is a pure JSON array
+        self.assertEqual(parsed[0]["serial"], "ABC123")
+        self.assertEqual(parsed[0]["index"], 0)
+
     def test_list_with_wlink_missing_returns_exit_6(self):
         def wlink_missing(cmd, timeout):
             return flash.RunResult(127, "wlink not found")
