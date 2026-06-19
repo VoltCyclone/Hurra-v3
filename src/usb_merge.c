@@ -765,6 +765,11 @@ void usb_merge_drain_icc(void)
 
 	icc_record_t r;
 	while (icc_recv_from_v3f(&r)) {
+		if (r.tag == ICC_TAG_DEV_TEMP) {
+			extern volatile int8_t g_tb_dev_temp_c;  // defined in two_board.c
+			g_tb_dev_temp_c = (int8_t)r.b[0];
+			continue;
+		}
 		switch (r.tag) {
 		case ICC_TAG_INJECT_MOUSE: {
 			// kmbox_cmd.c wire: b0..1=dx LE int16, b2..3=dy LE int16,

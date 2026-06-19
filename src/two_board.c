@@ -20,6 +20,8 @@
 #include "timebase_v5f.h"
 #include <string.h>
 
+volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
+
 /* Per-EP poll mapping for the real host capture (Board B). Mirrors main_v5f.c's
  * ep_mapping_t: each interrupt-IN endpoint is paced by its descriptor bInterval so
  * we don't flood the bus with NAKs. */
@@ -384,6 +386,25 @@ void two_board_device_run(void)
         }
         usb_merge_drain_icc();
         usb_device_poll();
+
+        /* Publish device->host telemetry on the SPI return slot (~every 100 ms).
+         * The IRQ slave cycles this slot onto MISO; the host SOF-scans it. */
+        static uint32_t tlm_ms;
+        static uint8_t  tlm_seq;
+        if ((millis() - tlm_ms) >= 100u) {
+            tlm_ms = millis();
+            uint8_t pay[3] = {
+                (uint8_t)(usb_device_is_configured() ? 1u : 0u),
+                usb_device_active_speed(),
+                (uint8_t)g_tb_dev_temp_c,
+            };
+            uint8_t slot[SPI_LINK_SLOT];
+            if (spi_frame_pack(slot, TWO_BOARD_TYPE_TELEM, tlm_seq++, pay, 3)
+                == SPI_FRAME_OK) {
+                spi_link_slave_set_telem(slot);
+            }
+        }
+
         if ((millis() - hb_ms) >= 250u) {
             hb_ms = millis();
             led_toggle();

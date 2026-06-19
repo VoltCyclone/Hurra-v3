@@ -31,6 +31,8 @@ static inline bool active_is_hs(void) { return s_active == USB_SPEED_HIGH; }
 static inline bool active_is_fs(void) { return s_active == USB_SPEED_FULL ||
                                                s_active == USB_SPEED_LOW; }
 
+uint8_t usb_device_active_speed(void) { return s_active; }
+
 bool usb_device_init(const captured_descriptors_t *desc)
 {
     if (desc == NULL || !desc->valid) return false;

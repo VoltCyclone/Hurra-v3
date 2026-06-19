@@ -27,6 +27,9 @@ void usb_device_poll(void);
 bool usb_device_send_report(uint8_t ep_num, const uint8_t *data, uint16_t len);
 bool usb_device_is_configured(void);
 
+// Active clone speed (USB_SPEED_HIGH if the HS backend is live, else USB_SPEED_FULL).
+uint8_t usb_device_active_speed(void);
+
 // Drain a completed RX from the given device OUT EP. Returns:
 //   > 0  : bytes received, *data points into DMA buffer (valid until next call)
 //   = 0  : no completion yet
