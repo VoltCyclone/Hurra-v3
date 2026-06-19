@@ -257,6 +257,9 @@ endef
 
 # Flash the two-board role images. Plug ONE WCH-LinkE at a time (or pass
 # WLINK_DEV='-d <index>' via WLINK to pick a probe). Build fresh, then program.
+# Preferred two-board flow: scripts/flash.py --host-serial <S> --device-serial <S>
+# (serial-addressed, retries, --json for CI/AI). These make targets remain for
+# single-probe / single-core use.
 # Board B = host (SPI master + USBHS capture).
 flash-boardb:
 	$(MAKE) merge BOARD=host
@@ -322,5 +325,6 @@ test:
 	/tmp/hid_iface_index_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/display_rowpick_test test/display_rowpick_test.c
 	/tmp/display_rowpick_test
+	python3 -m unittest test.flash_py_test
 
 .PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test build
