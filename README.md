@@ -207,8 +207,12 @@ Board B's USBHS host port, and plug Board A into the PC.
 
 Toolchain:
 
-- **`riscv-none-elf-gcc`** (MounRiver / xPack) is the default. If you use the
-  Homebrew RISC-V toolchain instead, override the prefix:
+- **`riscv-none-elf-gcc`** (MounRiver / xPack) is the default. The build uses it
+  from `PATH` when present, otherwise auto-detects the newest xPack install under
+  `~/Library/xPacks/@xpack-dev-tools/riscv-none-elf-gcc/` — so `make` and
+  `scripts/flash.py` work without manually adding the xPack `bin/` to `PATH`.
+  Point at a specific bin dir with `make TOOLCHAIN_BIN=/path/to/bin`, or use the
+  Homebrew RISC-V toolchain by overriding the prefix:
 
   ```sh
   make TOOLCHAIN=riscv64-unknown-elf all
