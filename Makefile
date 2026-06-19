@@ -81,8 +81,17 @@ else
   IMAGE ?= Merge
 endif
 
+# EXTRADEF: extra flags appended to CFLAGS for BOTH cores (intended for -D
+# defines, e.g. EXTRADEF=-DV5F_STAGE_DIAG_OFF). NOTE: the v5f target additionally
+# appends -funroll-loops (see the `v5f: EXTRADEF +=` line below), so a conflicting
+# optimization flag passed here is overridden on V5F.
 EXTRADEF ?=
-CFLAGS  = $(ARCH) $(DEFINES) $(EXTRADEF) $(VPATH_INC) -Os -Wall -Wno-unused-variable \
+# Warning policy. -Werror is deliberately NOT applied globally: the vendored WCH
+# StdPeriph sources (vendor/wch/) emit warnings we do not control, and a global
+# -Werror would break the build on toolchain drift. Treat firmware-source
+# warnings as errors case-by-case instead.
+WARNINGS = -Wall -Wno-unused-variable
+CFLAGS  = $(ARCH) $(DEFINES) $(EXTRADEF) $(VPATH_INC) -Os $(WARNINGS) \
           -ffunction-sections -fdata-sections -fsingle-precision-constant $(FP_CFLAGS)
 # Per-core FP codegen flags (empty for V3F soft-float; set on the v5f target).
 FP_CFLAGS ?=

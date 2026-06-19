@@ -56,6 +56,12 @@ SECTIONS
 		KEEP(*(SORT_NONE(.vector_handler)))
 		*(.text)
 		*(.text.*)
+		/* HZ_FASTRUN hot-path functions. humanize.c is compiled into BOTH images,
+		 * so .fastrun is emitted into the V3F object too; collect it here (as
+		 * link_v5f.ld does) so it is relocated to ITCM and copied by the
+		 * _highcode startup loop rather than left as an orphan at a flash VMA. */
+		*(.fastrun)
+		*(.fastrun.*)
 		*(.rodata)
 		*(.rodata*)
         *(.sdata2.*)

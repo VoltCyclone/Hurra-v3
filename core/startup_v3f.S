@@ -16,7 +16,7 @@
 _start:
 	j	handle_reset
     .section    .vector,"ax",@progbits
-    .align  1
+    .align  2
 _vector_base:
     .option norvc;
     .word   _start

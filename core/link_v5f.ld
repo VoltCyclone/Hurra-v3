@@ -190,9 +190,12 @@ SECTIONS
 		PROVIDE( _edata = .);
 	} >RAM AT>FLASH
 
-	.usbdma (NOLOAD) :
+	/* ALIGN(512) on the section header forces the section's VMA base (and thus
+	 * _usbdma_start, the first thing in it) to a 512-byte boundary, which the
+	 * USBHS DMA engine requires. An interior `. = ALIGN(512)` only advances the
+	 * location counter within the section and does not constrain a NOLOAD base. */
+	.usbdma (NOLOAD) : ALIGN(512)
 	{
-		. = ALIGN(512);
 		PROVIDE(_usbdma_start = .);
 		*(.usbdma)
 		*(.usbdma.*)
