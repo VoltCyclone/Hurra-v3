@@ -24,6 +24,7 @@ enum {
     ICC_TAG_SET_BAUD,
     ICC_TAG_SET_HUMAN_LEVEL,
     ICC_TAG_PHYS_MASK,
+    ICC_TAG_DEV_TEMP,     // device V3F -> V5F: device-board temp in b[0] (int8)
     // (V5F->V3F telemetry tags removed — that direction is not carried; V5F
     //  liveness rides the IPC CH1 stage telemetry, see icc_telem_* below.)
 };

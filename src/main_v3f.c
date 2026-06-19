@@ -244,6 +244,15 @@ int main(void)
             g_disp.inj_m     = (uint16_t)(im > 0xFFFFu ? 0xFFFFu : im);
             g_disp.inj_k     = (uint16_t)(ik > 0xFFFFu ? 0xFFFFu : ik);
             g_disp.temp_c    = temp_read_c();   // single ADC conversion, ~µs, V3F-local
+#ifndef DISPLAY_PRESENT
+            // Device board: no TFT — ship our local temp to the device V5F so it can
+            // fold it into the SPI return telemetry the host TFT renders.
+            {
+                icc_record_t tr = { .tag = ICC_TAG_DEV_TEMP };
+                tr.b[0] = (uint8_t)g_disp.temp_c;
+                (void)icc_send_to_v5f(&tr);
+            }
+#endif
             if (!s_seen_advance && g_disp.state != DISP_STATE_BOOT)
                 g_disp.state = DISP_STATE_NOSIGNAL;
             s_seen_advance = false;
