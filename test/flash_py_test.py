@@ -290,5 +290,45 @@ class TestRunFlash(unittest.TestCase):
         self.assertEqual(res["exit_code"], flash.EXIT_FLASH)
 
 
+class TestRendering(unittest.TestCase):
+    def _result(self):
+        return {"ok": False, "tool": "wlink",
+                "probes": [{"serial": "ABC", "index": 0, "id": "ABC"}],
+                "roles": {
+                    "host": {"serial": "ABC", "index": 0, "image": "build/BoardB.bin",
+                             "built": False, "flashed": True, "attempts": 1,
+                             "duration_s": 4.1, "error": None},
+                    "device": {"serial": "DEF", "index": 1, "image": "build/BoardA.bin",
+                               "built": False, "flashed": False, "attempts": 3,
+                               "duration_s": 12.7, "error": "protocol error: 0x55"}},
+                "exit_code": 5}
+
+    def test_human_mentions_ok_and_fail(self):
+        text = flash.render_human(self._result())
+        self.assertIn("host", text)
+        self.assertIn("OK", text)
+        self.assertIn("device", text)
+        self.assertIn("0x55", text)
+
+    def test_list_shows_serial_and_index(self):
+        probes = [flash.Probe("ABC123", 0, "ABC123")]
+        text = flash.render_list(probes)
+        self.assertIn("ABC123", text)
+        self.assertIn("0", text)
+
+    def test_emit_json_to_stdout_only(self):
+        out, err = io.StringIO(), io.StringIO()
+        flash.emit(self._result(), as_json=True, stream_out=out, stream_err=err)
+        parsed = json.loads(out.getvalue())          # stdout is pure JSON
+        self.assertEqual(parsed["exit_code"], 5)
+        self.assertEqual(err.getvalue(), "")
+
+    def test_emit_human_to_stderr_only(self):
+        out, err = io.StringIO(), io.StringIO()
+        flash.emit(self._result(), as_json=False, stream_out=out, stream_err=err)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("device", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

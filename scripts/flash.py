@@ -239,3 +239,36 @@ def run_flash(runner, args):
     result["exit_code"] = exit_code
     result["ok"] = exit_code == EXIT_OK
     return result
+
+
+def render_human(result):
+    """Per-role summary suitable for stderr."""
+    lines = []
+    for role, r in result["roles"].items():
+        if r["flashed"]:
+            lines.append("%-6s OK   (idx %s, serial %s, %.1fs)" %
+                        (role + ":", r["index"], r["serial"], r["duration_s"]))
+        else:
+            lines.append("%-6s FAIL (after %d attempt(s)): %s" %
+                        (role + ":", r["attempts"], r["error"]))
+    lines.append("result: %s (exit %d)" %
+                 ("OK" if result["ok"] else "FAILED", result["exit_code"]))
+    return "\n".join(lines)
+
+
+def render_list(probes):
+    """Table of connected probes for --list."""
+    if not probes:
+        return "no probes connected"
+    rows = ["idx  serial / id"]
+    for p in probes:
+        rows.append("%-4d %s" % (p.index, p.serial))
+    return "\n".join(rows)
+
+
+def emit(result, as_json, stream_out, stream_err):
+    """Write JSON to stdout (machine) or human text to stderr."""
+    if as_json:
+        stream_out.write(json.dumps(result) + "\n")
+    else:
+        stream_err.write(render_human(result) + "\n")
