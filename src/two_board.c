@@ -213,8 +213,13 @@ void two_board_host_run(void)
     for (;;) {
         uint32_t now = millis();
 
-        /* Periodic descriptor re-send so a reset/late Board A can (re)enumerate. */
-        if ((now - last_desc_ms) >= desc_period_ms) {
+        /* Periodic descriptor re-send so a reset/late Board A can (re)enumerate,
+         * gated on DRDY (PA3): Board A drives it high once enumerated, low from boot
+         * until then. Only re-send while low — once A is up it ignores DESC frames and
+         * the ~80 ms blocking send would stall the interrupt-IN poll (relative motion
+         * deltas then flush in one jump). Self-healing: if A resets, PA3 falls low and
+         * re-sends resume. */
+        if (!spi_link_master_drdy() && (now - last_desc_ms) >= desc_period_ms) {
             last_desc_ms = now;
             send_descriptor_blob(blob, blob_total, &seq);
         }
@@ -338,6 +343,11 @@ void two_board_device_run(void)
     }
     dbg_stage(DBG_V5F_RELAY);             // 0x58: configured — forwarding
     led_on();
+
+    /* Signal "enumerated" to Board B by asserting DATA_READY (PA3); Board B gates its
+     * periodic descriptor re-send on this so it stops re-blasting the blob once we no
+     * longer need it. Held low from boot through Phase 1/2 by spi_link's slave init. */
+    spi_link_slave_set_drdy(1);
 
     /* ---- Phase 3: relay mouse reports (descriptor re-sends still arrive but the
      * device is already enumerated, so they're ignored) ---- */
