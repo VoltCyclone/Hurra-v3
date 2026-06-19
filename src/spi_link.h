@@ -60,7 +60,7 @@ void spi_link_slave_exchange(const uint8_t tx[SPI_LINK_SLOT],
 void spi_link_slave_set_drdy(int asserted);
 
 // Publish a 32-byte telemetry slot for the IRQ slave to stage on MISO. The RXNE ISR
-// cycles these bytes onto the data register (one per clocked byte, repeating the
+// cycles these bytes onto the data register (two per clocked word, repeating the
 // slot), so the master sees a continuous stream on the return path. Double-buffered:
 // the copy is atomic w.r.t. the ISR. Pass a slot built with spi_frame_pack.
 void spi_link_slave_set_telem(const uint8_t slot[SPI_LINK_SLOT]);

@@ -8,8 +8,8 @@
 //    uses TXE/RXNE polling; a DMA path can replace it once the IDs are confirmed.
 //  - Integrity is the software CRC in spi_frame.c (host-tested, KAT 0x29B1), not the
 //    SPI hardware CRC engine. The link layer moves bytes; the frame codec validates.
-//  - Mode 3 (CPOL=1, CPHA=2edge), MSB-first, 8-bit, matching the ST7789 SPI2 setup
-//    so both SPI blocks share one clocking convention. Master and slave must agree.
+//  - Mode 3 (CPOL=1, CPHA=2edge), MSB-first, 16-bit frames, matching the ST7789 SPI2
+//    clocking convention. Master and slave must agree on all four.
 //  - CS: the master drives PA4 as a plain GPIO (one pulse per slot) so a bit-slip
 //    cannot propagate past one frame. The slave uses PA4 as the hardware NSS input
 //    for automatic per-frame re-sync.
@@ -31,12 +31,14 @@
 // 0 on a healthy link. extern-visible for the oracle/LED.
 volatile uint32_t spi_link_master_wedges;
 
-// Wait for `flag` to reach `want` on the master SPI, bounded by LINK_MASTER_WAIT_US.
-// Returns 1 if the flag arrived, 0 on timeout (caller aborts + recovers). Wrap-safe.
-static int link_master_wait(uint16_t flag, FlagStatus want)
+// Wait for STATR `bit` to reach `want_set` (1 = set, 0 = clear) on the master SPI,
+// bounded by LINK_MASTER_WAIT_US. Returns 1 if it arrived, 0 on timeout (caller
+// aborts + recovers). Wrap-safe. Reads STATR directly rather than via the HAL so the
+// per-word hot loop stays inlinable.
+static int link_master_wait_bit(uint16_t bit, int want_set)
 {
     uint32_t t0 = timebase_v5f_us();
-    while (SPI_I2S_GetFlagStatus(LINK_SPI, flag) != want) {
+    while (!!(LINK_SPI->STATR & bit) != !!want_set) {
         if ((timebase_v5f_us() - t0) >= LINK_MASTER_WAIT_US) {
             spi_link_master_wedges++;
             return 0;
@@ -45,10 +47,11 @@ static int link_master_wait(uint16_t flag, FlagStatus want)
     return 1;
 }
 
-// SPI1 baud is f_PCLK/prescaler. Mode4 = /32. The SPI1 PB clock is ~100 MHz under
-// the V5F profile, so /32 lands in the low-MHz range — a deliberately slow,
-// signal-integrity-safe rate for bring-up. Raise once the wire is proven clean.
-#define LINK_SPI_PRESCALER  SPI_BaudRatePrescaler_Mode4
+// SPI1 baud is f_PCLK/prescaler. Mode1 = /4; the SPI1 PB clock is ~100 MHz under the
+// V5F profile, so this is ~25 MHz SCK. That is the upper end of the signal-integrity
+// headroom for a board-to-board jumper: if spi_link_rx_overflows or
+// spi_link_master_wedges rise off zero, drop to Mode2 (/8) or Mode3 (/16).
+#define LINK_SPI_PRESCALER  SPI_BaudRatePrescaler_Mode1
 
 // ── shared pin/clock bring-up ───────────────────────────────────────────────
 static void link_clocks_on(void)
@@ -82,7 +85,7 @@ static void link_spi_configure(uint16_t mode, uint16_t nss)
     SPI_InitTypeDef spi = {0};
     spi.SPI_Direction         = SPI_Direction_2Lines_FullDuplex;
     spi.SPI_Mode              = mode;
-    spi.SPI_DataSize          = SPI_DataSize_8b;
+    spi.SPI_DataSize          = SPI_DataSize_16b;  // 2 bytes/transfer; see link_xfer_slot_master
     spi.SPI_CPOL              = SPI_CPOL_High;   // Mode 3, matches ST7789 SPI2
     spi.SPI_CPHA              = SPI_CPHA_2Edge;
     spi.SPI_NSS               = nss;
@@ -93,53 +96,49 @@ static void link_spi_configure(uint16_t mode, uint16_t nss)
     SPI_Cmd(LINK_SPI, ENABLE);
 }
 
-// Blocking one-byte full-duplex shift for the slave side (unbounded: the slave
-// blocks until the master clocks it, so no local timeout applies). Returns the byte
-// clocked in.
-static uint8_t link_xfer_byte(uint8_t out)
-{
-    while (SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_TXE) == RESET) { }
-    SPI_I2S_SendData(LINK_SPI, out);
-    while (SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_RXNE) == RESET) { }
-    return (uint8_t)SPI_I2S_ReceiveData(LINK_SPI);
-}
-
 // Master slot transfer: the master controls the clock, so load-then-receive per
-// byte is correct (SendData starts the clock; RXNE completes it). Bounded: on
+// word is correct (writing DATAR starts the clock; RXNE completes it). Bounded: on
 // timeout it aborts the slot and returns 0 so the caller can recover.
+//
+// Each transfer moves one 16-bit word, so a 32-byte slot is 16 words (16 TXE/RXNE
+// waits). Bytes pack MSB-first into the word (tx[2i] -> bits 15:8, tx[2i+1] ->
+// bits 7:0), keeping the on-wire byte order MSB-first as the SOF-scanner expects.
+// SPI_LINK_SLOT is fixed at 32 (even), so there is no odd trailing byte.
 static int link_xfer_slot_master(const uint8_t *tx, uint8_t *rx)
 {
-    for (uint32_t i = 0; i < SPI_LINK_SLOT; i++) {
-        if (!link_master_wait(SPI_I2S_FLAG_TXE, SET)) return 0;
-        SPI_I2S_SendData(LINK_SPI, tx ? tx[i] : 0x00u);
-        if (!link_master_wait(SPI_I2S_FLAG_RXNE, SET)) return 0;
-        uint8_t in = (uint8_t)SPI_I2S_ReceiveData(LINK_SPI);
-        if (rx) rx[i] = in;
+    for (uint32_t i = 0; i < SPI_LINK_SLOT; i += 2) {
+        uint16_t out = tx ? (uint16_t)((tx[i] << 8) | tx[i + 1]) : 0x0000u;
+        if (!link_master_wait_bit(SPI_STATR_TXE, 1)) return 0;
+        LINK_SPI->DATAR = out;                              /* starts the clock */
+        if (!link_master_wait_bit(SPI_STATR_RXNE, 1)) return 0;
+        uint16_t in = LINK_SPI->DATAR;                      /* clears RXNE */
+        if (rx) { rx[i] = (uint8_t)(in >> 8); rx[i + 1] = (uint8_t)in; }
     }
     return 1;
 }
 
-// Slave slot transfer: the slave does not control the clock, so its TX byte must be
+// Slave slot transfer: the slave does not control the clock, so its TX word must be
 // in the data register before the master clocks it out on MISO. Loading after the
 // clock starts (master-style) ships stale DR contents and the master sees a garbage
-// echo. Pre-load byte 0, then per byte wait RXNE (read) and refill the next TX byte
-// ahead of its clock.
+// echo. Pre-load word 0, then per word wait RXNE (read) and refill the next TX word
+// ahead of its clock. 16-bit words, MSB-first packing (see link_xfer_slot_master);
+// waits are unbounded since the master drives the clock.
 static void link_xfer_slot_slave(const uint8_t *tx, uint8_t *rx)
 {
-    // Prime MISO with byte 0 before the master's first clock edge.
-    while (SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_TXE) == RESET) { }
-    SPI_I2S_SendData(LINK_SPI, tx ? tx[0] : 0x00u);
+    // Prime MISO with word 0 before the master's first clock edge.
+    while (!(LINK_SPI->STATR & SPI_STATR_TXE)) { }
+    LINK_SPI->DATAR = tx ? (uint16_t)((tx[0] << 8) | tx[1]) : 0x0000u;
 
-    for (uint32_t i = 0; i < SPI_LINK_SLOT; i++) {
-        // Refill the next outgoing byte once the shift register frees up, before
-        // blocking on this byte's RXNE (TXE for byte i+1 comes up as byte i finishes).
-        if (i + 1 < SPI_LINK_SLOT) {
-            while (SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_TXE) == RESET) { }
-            SPI_I2S_SendData(LINK_SPI, tx ? tx[i + 1] : 0x00u);
+    for (uint32_t i = 0; i < SPI_LINK_SLOT; i += 2) {
+        // Refill the next outgoing word once the shift register frees up, before
+        // blocking on this word's RXNE (TXE for word i+2 comes up as word i finishes).
+        if (i + 2 < SPI_LINK_SLOT) {
+            while (!(LINK_SPI->STATR & SPI_STATR_TXE)) { }
+            LINK_SPI->DATAR = tx ? (uint16_t)((tx[i + 2] << 8) | tx[i + 3]) : 0x0000u;
         }
-        while (SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_RXNE) == RESET) { }
-        uint8_t in = (uint8_t)SPI_I2S_ReceiveData(LINK_SPI);
-        if (rx) rx[i] = in;
+        while (!(LINK_SPI->STATR & SPI_STATR_RXNE)) { }
+        uint16_t in = LINK_SPI->DATAR;
+        if (rx) { rx[i] = (uint8_t)(in >> 8); rx[i + 1] = (uint8_t)in; }
     }
 }
 
@@ -200,7 +199,7 @@ void spi_link_master_exchange(const uint8_t tx[SPI_LINK_SLOT],
     }
     // Wait for the shift register to empty before raising CS so the last bit fully
     // clocks out. Bounded: if BSY never clears, recover rather than hang.
-    if (!link_master_wait(SPI_I2S_FLAG_BSY, RESET)) {
+    if (!link_master_wait_bit(SPI_STATR_BSY, 0)) {
         spi_link_master_recover();
         return;
     }
@@ -301,7 +300,7 @@ void spi_link_slave_init_irq(void)
     s_rx_tail = 0;
     spi_link_rx_overflows = 0;
 
-    // Per-byte RX interrupt. IRQn>31 are core-allocated; route SPI1_IRQn to V5F
+    // Per-word RX interrupt. IRQn>31 are core-allocated; route SPI1_IRQn to V5F
     // before enabling (same as the USB ISRs).
     SPI_I2S_ITConfig(LINK_SPI, SPI_I2S_IT_RXNE, ENABLE);
     NVIC_SetAllocateIRQ(SPI1_IRQn, Core_ID_V5F);
@@ -313,23 +312,30 @@ volatile uint32_t spi_link_isr_entries;  // diag: ISR entry count
 void SPI1_IRQHandler(void)
 {
     spi_link_isr_entries++;
-    // RXNE: a byte was clocked in. Read DR (clears RXNE) and push to the ring.
-    if (SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_RXNE) != RESET) {
-        uint8_t b = (uint8_t)SPI_I2S_ReceiveData(LINK_SPI);
-        uint16_t nh = (uint16_t)((s_rx_head + 1u) & LINK_RX_RING_MASK);
-        if (nh != s_rx_tail) {
-            s_rx_ring[s_rx_head] = b;
-            s_rx_head = nh;
-        } else {
-            spi_link_rx_overflows++;     // ring full, drop (SOF-scan recovers)
+    // RXNE: a 16-bit word was clocked in. Read DR (clears RXNE) and push both bytes
+    // to the ring MSB-first, matching the master's word packing so the SOF-scanner
+    // sees an MSB-first byte stream.
+    if (LINK_SPI->STATR & SPI_STATR_RXNE) {
+        uint16_t w = LINK_SPI->DATAR;
+        uint8_t pair[2] = { (uint8_t)(w >> 8), (uint8_t)w };
+        for (uint32_t k = 0; k < 2; k++) {
+            uint16_t nh = (uint16_t)((s_rx_head + 1u) & LINK_RX_RING_MASK);
+            if (nh != s_rx_tail) {
+                s_rx_ring[s_rx_head] = pair[k];
+                s_rx_head = nh;
+            } else {
+                spi_link_rx_overflows++; // ring full, drop (SOF-scan recovers)
+            }
         }
     }
-    // Stage the next telemetry byte onto MISO for the return slot, wrapping so the
-    // slot repeats continuously.
-    if (s_telem_armed &&
-        SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_TXE) != RESET) {
-        SPI_I2S_SendData(LINK_SPI, s_telem[s_telem_cur][s_telem_idx]);
-        s_telem_idx = (uint8_t)((s_telem_idx + 1u) % SPI_LINK_SLOT);
+    // Stage the next telemetry word onto MISO for the return slot, wrapping so the
+    // slot repeats continuously. Two bytes per word, MSB-first; s_telem_idx tracks
+    // the byte position and advances by 2 (SPI_LINK_SLOT is even).
+    if (s_telem_armed && (LINK_SPI->STATR & SPI_STATR_TXE)) {
+        uint8_t hi = s_telem[s_telem_cur][s_telem_idx];
+        uint8_t lo = s_telem[s_telem_cur][s_telem_idx + 1u];
+        LINK_SPI->DATAR = (uint16_t)((hi << 8) | lo);
+        s_telem_idx = (uint8_t)((s_telem_idx + 2u) % SPI_LINK_SLOT);
     }
 }
 
