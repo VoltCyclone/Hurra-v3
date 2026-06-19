@@ -364,9 +364,18 @@ uint8_t usb_host_device_speed(void)
         spd = USB_SPEED_FULL;
     }
 
-    /* Cache for the transact PRE-PID decision (low-speed only). NOTE: do NOT
-     * touch CFG.FORCE_FS here — toggling the PHY signaling mode on every speed
-     * query regressed full/high-speed enumeration. */
+    /* A low-speed device on this HS-capable root port needs the PHY in
+     * full-speed signaling (CFG.FORCE_FS) in addition to per-token PRE-PID
+     * prefixing (handled in usbhs_transact via s_dev_speed). Write FORCE_FS only
+     * when the detected speed CHANGES — toggling the PHY mode on every speed
+     * query regressed FS/HS enumeration; gating on the cached speed avoids that
+     * thrash while still setting it for LS and clearing it for FS/HS. */
+    if (spd != s_dev_speed) {
+        if (spd == USB_SPEED_LOW)
+            USBHSH->CFG |=  USBHS_UH_FORCE_FS;
+        else
+            USBHSH->CFG &= ~USBHS_UH_FORCE_FS;
+    }
     s_dev_speed = spd;
     return spd;
 }
