@@ -60,6 +60,10 @@ class ResolveError(Exception):
     """Raised when a requested serial cannot be uniquely resolved to a probe."""
 
 
+class WlinkMissingError(Exception):
+    """Raised when wlink is not present in PATH (exit code 127)."""
+
+
 def resolve_serial(probes, requested, allow_any=False):
     """Resolve a requested serial (or prefix) to exactly one live Probe."""
     if requested is None:
@@ -91,7 +95,7 @@ class RunResult:
         self.timed_out = timed_out
 
 
-_TRANSIENT_MARKERS = ("0x55", "protocol error", "resource busy",
+_TRANSIENT_MARKERS = ("0x55", "resource busy",
                       "device busy", "timeout", "timed out")
 
 
@@ -120,7 +124,10 @@ def subprocess_runner(cmd, timeout):
 
 def discover_probes(runner):
     """Enumerate connected probes via `wlink list` (+ `-v` for device ids)."""
-    plain = runner(["wlink", "list"], timeout=15).output
+    list_result = runner(["wlink", "list"], timeout=15)
+    if list_result.returncode == 127:
+        raise WlinkMissingError("wlink not found in PATH")
+    plain = list_result.output
     verbose = ""
     if "serial" not in plain.lower():
         verbose = runner(["wlink", "-v", "list"], timeout=15).output
@@ -215,26 +222,37 @@ def run_flash(runner, args):
 
     try:
         result["probes"] = [p._asdict() for p in discover_probes(runner)]
+    except WlinkMissingError as e:
+        result["exit_code"] = EXIT_NO_TOOL
+        result["ok"] = False
+        result["error"] = str(e)
+        return result
     except Exception:
         result["probes"] = []
 
     exit_code = EXIT_OK
-    for role, serial in roles:
-        rr = flash_role(runner, role, serial, do_build=not args.no_build,
-                        retries=args.retries, timeout=args.timeout,
-                        allow_any=args.allow_any, backoff=1.0)
-        result["roles"][role] = rr
-        if not rr["flashed"]:
-            # classify: build failure vs resolution vs flash
-            if not rr["built"] and not args.no_build:
-                code = EXIT_BUILD
-            elif rr["index"] is None:
-                code = EXIT_PROBE
-            else:
-                code = EXIT_FLASH
-            exit_code = code
-            if args.fail_fast:
-                break
+    try:
+        for role, serial in roles:
+            rr = flash_role(runner, role, serial, do_build=not args.no_build,
+                            retries=args.retries, timeout=args.timeout,
+                            allow_any=args.allow_any, backoff=1.0)
+            result["roles"][role] = rr
+            if not rr["flashed"]:
+                # classify: build failure vs resolution vs flash
+                if not rr["built"] and not args.no_build:
+                    code = EXIT_BUILD
+                elif rr["index"] is None:
+                    code = EXIT_PROBE
+                else:
+                    code = EXIT_FLASH
+                exit_code = code
+                if args.fail_fast:
+                    break
+    except WlinkMissingError as e:
+        result["exit_code"] = EXIT_NO_TOOL
+        result["ok"] = False
+        result["error"] = str(e)
+        return result
 
     result["exit_code"] = exit_code
     result["ok"] = exit_code == EXIT_OK

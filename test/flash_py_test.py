@@ -163,10 +163,11 @@ class TestFlashRole(unittest.TestCase):
 
     def test_retry_then_success(self):
         # flash fails transiently once, then succeeds.
-        seq = {"n": 0}
+        seq = {"n": 0, "list_calls": 0}
         def runner(cmd, timeout):
             j = " ".join(cmd)
             if "wlink list" in j:
+                seq["list_calls"] += 1
                 return flash.RunResult(0, self._probes("ABC"))
             if "erase" in j:
                 return flash.RunResult(0, "")
@@ -180,6 +181,7 @@ class TestFlashRole(unittest.TestCase):
                              retries=2, timeout=60, allow_any=False, backoff=0.0)
         self.assertTrue(r["flashed"])
         self.assertEqual(r["attempts"], 2)
+        self.assertEqual(seq["list_calls"], 2)  # re-resolution per attempt
 
     def test_fatal_error_no_retry(self):
         seq = {"n": 0}
@@ -288,6 +290,14 @@ class TestRunFlash(unittest.TestCase):
                                            fail_fast=True))
         self.assertIsNone(res["roles"].get("device"))
         self.assertEqual(res["exit_code"], flash.EXIT_FLASH)
+        self.assertEqual(calls["device"], 0)  # device build/flash must be skipped
+
+    def test_wlink_missing_exit_code(self):
+        def wlink_missing(cmd, timeout):
+            return flash.RunResult(127, "wlink not found")
+        res = flash.run_flash(wlink_missing, Args(host_serial="ABC"))
+        self.assertEqual(res["exit_code"], flash.EXIT_NO_TOOL)
+        self.assertFalse(res["ok"])
 
 
 class TestRendering(unittest.TestCase):
@@ -314,7 +324,7 @@ class TestRendering(unittest.TestCase):
         probes = [flash.Probe("ABC123", 0, "ABC123")]
         text = flash.render_list(probes)
         self.assertIn("ABC123", text)
-        self.assertIn("0", text)
+        self.assertIn("0   ", text)  # "%-4d %s" left-pads index to 4 chars
 
     def test_emit_json_to_stdout_only(self):
         out, err = io.StringIO(), io.StringIO()
@@ -346,7 +356,12 @@ class TestMain(unittest.TestCase):
 
     def test_no_args_is_usage_error(self):
         runner = FakeRunner([("wlink list", flash.RunResult(0, ""))])
-        rc = flash.main([], runner=runner)
+        old_err = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            rc = flash.main([], runner=runner)
+        finally:
+            sys.stderr = old_err
         self.assertEqual(rc, flash.EXIT_USAGE)
 
     def test_json_flag_emits_json(self):
