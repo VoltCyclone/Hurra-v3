@@ -133,7 +133,6 @@ class TestIsTransient(unittest.TestCase):
 class FakeRunner:
     """Records commands; returns queued RunResults (by cmd-substring match)."""
     def __init__(self, rules):
-        # rules: list of (substring, RunResult). First match wins per call.
         self.rules = rules
         self.calls = []
 
@@ -163,7 +162,6 @@ class TestFlashAttempt(unittest.TestCase):
         ok, err = flash.flash_attempt(runner, probe, "build/BoardB.bin", timeout=60)
         self.assertTrue(ok)
         self.assertIsNone(err)
-        # both commands target -d 2
         self.assertTrue(all("-d" in c and "2" in c for c in runner.calls))
         # flash command carries the image + address
         flash_cmd = [c for c in runner.calls if "flash" in c][0]
@@ -409,7 +407,7 @@ class TestMain(unittest.TestCase):
         finally:
             sys.stdout = old
         self.assertEqual(rc, flash.EXIT_OK)
-        parsed = json.loads(out.getvalue())          # stdout is a pure JSON array
+        parsed = json.loads(out.getvalue())
         self.assertEqual(parsed[0]["serial"], "ABC123")
         self.assertEqual(parsed[0]["index"], 0)
 

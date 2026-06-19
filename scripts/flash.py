@@ -16,7 +16,6 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def strip_ansi(s):
-    """Remove ANSI SGR color codes from a string."""
     return _ANSI_RE.sub("", s)
 
 
@@ -41,7 +40,6 @@ _DEVID_RE = re.compile(r"Probing device\s+(\S+)")
 
 
 def _extract_index(line):
-    """Return an explicit probe index from a line, or None if none is present."""
     for rx in _INDEX_RES:
         m = rx.search(line)
         if m:
@@ -222,7 +220,6 @@ def flash_role(runner, role, requested, *, do_build, retries, timeout,
             out["duration_s"] = round(clock() - start, 2)
             return out
         last_err = err
-        # decide retry: only on transient failure with attempts remaining
         if not is_transient(RunResult(1, err or "")) or attempt == retries + 1:
             break
         if backoff:
@@ -233,7 +230,8 @@ def flash_role(runner, role, requested, *, do_build, retries, timeout,
 
 
 def run_flash(runner, args):
-    """Top-level orchestration. Returns the full result dict incl. exit_code."""
+    # Flash each requested role in turn; a per-role failure sets exit_code but
+    # does not stop the others unless --fail-fast. Returns the JSON result dict.
     roles = []
     if args.host_serial is not None:
         roles.append(("host", args.host_serial))
