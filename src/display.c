@@ -94,6 +94,12 @@ uint32_t display_format_lines(const display_status_t *st,
 }
 
 #ifdef __riscv
+static uint16_t temp_color(int t) {
+    if (t > 65) return ST_RED;
+    if (t >= 50) return ST_YELLOW;
+    return ST_GREEN;
+}
+
 void display_init(void)
 {
     st7789_init();   // includes a black clear
@@ -114,6 +120,8 @@ void display_render(const display_status_t *st)
         uint16_t fg = (st->state == DISP_STATE_RELAYING) ? ST_GREEN :
                       (st->state == DISP_STATE_ERROR ||
                        st->state == DISP_STATE_NOSIGNAL) ? ST_RED : ST_WHITE;
+        if (r == ROW_HTEMP) fg = temp_color((int)st->temp_c);
+        else if (r == ROW_DTEMP) fg = st->dev_link ? temp_color((int)st->dev_temp_c) : ST_WHITE;
         st7789_draw_string(0, y, rows[r], fg, ST_BLACK, DISP_SCALE);
     }
     memcpy(prev, rows, sizeof rows);
