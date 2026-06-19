@@ -821,8 +821,9 @@ void usb_merge_drain_icc(void)
 			// for the merge to do on V5F. Drained so the ring stays clear.
 			break;
 		default:
-			// PING/PONG and telemetry tags are not the merge's concern; the
-			// relay loop handles its own protocol records before draining here.
+			// ICC_TAG_DEV_TEMP is intercepted above this switch; any other
+			// unrecognized tag is not the merge's concern (the relay loop handles
+			// its own protocol records before draining here).
 			break;
 		}
 	}

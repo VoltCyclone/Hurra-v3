@@ -280,6 +280,9 @@ static volatile uint8_t s_telem_cur;     // which buffer the ISR reads
 static volatile uint8_t s_telem_idx;     // next byte to send from the current slot
 static volatile uint8_t s_telem_armed;   // 0 until the first publish
 
+// Torn-free safety here relies on the publisher and the RXNE ISR both running on
+// the V5F core: the s_telem_cur flip is a single-byte store, atomic w.r.t. the
+// only reader (the ISR). This would NOT hold if the publisher moved to another core.
 void spi_link_slave_set_telem(const uint8_t slot[SPI_LINK_SLOT])
 {
     uint8_t next = (uint8_t)(s_telem_cur ^ 1u);

@@ -53,7 +53,7 @@ uint8_t icc_status_unpack(uint16_t word, display_status_t *acc)
         case ICC_ST_SEL_DEV:
             acc->dev_link  = (uint8_t)((payload >> 9) & 0x1u);
             acc->dev_enum  = (uint8_t)((payload >> 8) & 0x1u);
-            acc->dev_temp_c = (int8_t)(payload & 0xFFu);
+            acc->dev_temp_c = (int8_t)(int16_t)(payload & 0xFFu);
             break;
         default: break;
     }
