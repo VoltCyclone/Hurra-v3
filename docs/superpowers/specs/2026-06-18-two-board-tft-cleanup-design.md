@@ -57,12 +57,30 @@ There are **two** speeds, intentionally shown in two places:
   "which plug to use" hint, shown next to the enumeration status. Sent back
   from Board A.
 
-## Approach (chosen: return-slot piggyback)
+## Approach (chosen: return-slot piggyback via the RXNE ISR)
 
-Device→host data rides the **wasted SPI return slot**. No new wires, no added
-bus traffic. Rejected alternatives: a dedicated CRC'd telemetry frame (more code
-and bus slots for non-critical status) and extra GPIO status lines (can't carry
-temp/speed).
+Device→host data rides the SPI **return slot** (MISO), which is full-duplex with
+the forward MOSI stream — no new wires. Rejected alternatives: extra GPIO status
+lines (can't carry temp/speed) and a polled mode-switch handshake (mode-switch
+complexity + stream gaps).
+
+**Reality check from implementation review:** the return slot is NOT free as the
+first draft assumed. In Phase 3 (relay), Board A runs the *interrupt-driven*
+slave (`spi_link_slave_init_irq`), whose `SPI1_IRQHandler` only handles **RXNE**
+— it reads MOSI bytes and never stages anything on MISO (`spi_link.c:321-333`).
+So the chosen approach is to **extend that ISR** to also write the next byte of a
+small framed telemetry blob to the SPI data register after each read (~5 lines,
+one store per byte, no new interrupt source). The host SOF-scans the return
+stream with the existing `spi_frame_stream` codec — symmetric to the forward
+path. This touches the hard-won SPI1-on-V5F ISR, but minimally.
+
+**Idle-clocking consequence:** in relay mode the master only calls
+`spi_link_master_exchange()` when an interrupt-IN poll returns a report, so a
+still mouse means no clocking and no return telemetry. To keep device telemetry
+fresh (and avoid a false `LINK DOWN` when the mouse is merely idle), the host
+loop clocks a **periodic poll frame** (~250 ms, a new `TWO_BOARD_TYPE_TELEM_REQ`
+with empty payload) whenever it hasn't clocked anything recently. Each poll
+returns one telemetry slot; its `seq` advance is also the freshness heartbeat.
 
 ## Data flow
 
@@ -76,20 +94,24 @@ already filled in `main_v3f.c`).
 
 ### Flow B — Device → Host over SPI return slot (new)
 ```
-device V3F --(IPC tag)--> device V5F --(SPI MISO slot)--> host V5F --(display pump)--> host V3F TFT
-  temp ADC               builds telem blob              reads rx[] it             renders DEVICE block
-                         into slave TX buf              already clocks
+device V3F --(IPC tag)--> device V5F --(SPI MISO, RXNE ISR)--> host V5F --(display pump)--> host V3F TFT
+  temp ADC               stages telem blob bytes            SOF-scans return    renders DEVICE block
+                         onto MISO in the ISR               stream, unpacks
 ```
-- Device V5F maintains a small fixed telem blob written as the slave TX buffer,
-  so **every** frame Board B clocks returns current device status. Blob carries:
-  `enum_flag` (1 bit), `clone_speed` (1 bit), `device_temp` (int8), `seq`
-  (rolling, for freshness).
-- Host V5F unpacks `rx[]` (currently discarded), folds the values into its
+- Device V5F holds a small framed telemetry slot (built with `spi_frame_pack`,
+  `TWO_BOARD_TYPE_TELEM` type) in a static buffer. The RXNE ISR, after reading
+  each MOSI byte, writes the next byte of that slot to the SPI data register so
+  the return stream carries repeated telemetry slots. Payload: `enum_flag`
+  (1 byte 0/1), `clone_speed` (1 byte, `USB_SPEED_*`), `device_temp` (1 byte,
+  int8). The frame's own `SEQ` is the freshness heartbeat.
+- Host V5F clocks the return stream (on each report frame, plus the periodic
+  poll frame) and feeds `rx[]` bytes into a `spi_frame_stream_t` SOF-scanner;
+  completed `TWO_BOARD_TYPE_TELEM` slots are unpacked and folded into its
   `display_status_t` device fields, which ride the **existing** display IPC
   channel to host V3F.
-- **Freshness / `LINK DOWN`:** host V5F tracks whether the blob `seq` advanced
-  within a window (same heartbeat trick as `icc_status_poll_v3f`). Stale → device
-  block renders `LINK DOWN`.
+- **Freshness / `LINK DOWN`:** host V5F tracks whether the telem frame `SEQ`
+  advanced within a window. Stale → `dev_link = 0` → device block renders
+  `LINK DOWN`.
 
 ### Flow C — Device temp hop (new, small)
 Device temp ADC is on device V3F; SPI is driven by device V5F. Device V3F
@@ -97,10 +119,9 @@ publishes temp to device V5F via a new `ICC_TAG_DEV_TEMP` record over the
 existing (coherent) V3F→V5F IPC mailbox. Device V5F caches the latest value and
 folds it into its telem blob. (`enum_flag` is V5F-native — no hop.)
 
-**Robustness note:** the return blob is intentionally **not CRC-protected**
-(Approach 1). A garbled byte shows one wrong temp/speed for ~250 ms and
-self-corrects. Acceptable for non-critical status; the mouse-report path keeps
-its CRC.
+**Robustness note:** the return telemetry reuses the `spi_frame` slot format, so
+it is CRC-protected and SOF-framed for free (same codec as the forward path). A
+glitched slot is dropped by the SOF-scanner and the next slot self-corrects.
 
 ## Display layout & encoding
 
@@ -146,7 +167,9 @@ temps are signed 8-bit (fit the 10-bit payload), wedge clamps to 10-bit like
 |---|---|
 | `Makefile` | New `-DDISPLAY_PRESENT` define gated on `BOARD=host`; device V3F builds without it. (`st7789.c`/`display.c` stay in `V3F_SRC`; the no-op path dead-strips via existing `-ffunction/-fdata-sections`.) |
 | `src/main_v3f.c` | Guard `display_init()`, `display_render()`, and the status-poll/render block behind `#ifdef DISPLAY_PRESENT`. Device V3F skips all display work. |
-| `src/two_board.c` | Host loop: add throttled `icc_status_pump_v5f()`; read + unpack Board A return-slot telemetry into the host display fields. Device loop: build the telem blob into the SPI slave TX buffer; consume cached device temp from device V3F. |
+| `src/two_board.c` | Host loop: add throttled `icc_status_pump_v5f()`; SOF-scan the return stream, unpack `TWO_BOARD_TYPE_TELEM` slots into host display fields, derive `dev_link` freshness, clock the periodic poll frame. Device loop: pack the telem slot (enum/speed/temp), hand it to the slave for the ISR to stage on MISO; consume cached device temp from device V3F. |
+| `src/two_board.h` | New frame types `TWO_BOARD_TYPE_TELEM`, `TWO_BOARD_TYPE_TELEM_REQ`. |
+| `src/spi_link.c`, `src/spi_link.h` | Extend the RXNE ISR to stage a caller-supplied telemetry slot on MISO; new `spi_link_slave_set_telem(const uint8_t slot[SPI_LINK_SLOT])` to publish it (double-buffered so the ISR never reads a half-written slot). |
 | `src/icc.h`, `src/icc_status.c` | New status selectors (wedge, cap_speed, dev_enum, dev_speed, dev_temp, dev_link) + new `ICC_TAG_DEV_TEMP` for device V3F→V5F. |
 | `src/display.h`, `src/display.c` | New `display_status_t` fields; new HOST/DEVICE row layout; temp-row color thresholds. |
 | `test/display_test.c` | Extend pure-layout tests for the new rows/fields/colors. |
