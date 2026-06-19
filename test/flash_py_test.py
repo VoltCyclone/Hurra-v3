@@ -48,5 +48,33 @@ class TestParseProbeList(unittest.TestCase):
         self.assertEqual(flash.parse_probe_list("", ""), [])
 
 
+class TestResolveSerial(unittest.TestCase):
+    def setUp(self):
+        self.probes = [flash.Probe("ABC123", 0, "ABC123"),
+                       flash.Probe("ABD999", 1, "ABD999")]
+
+    def test_exact_match(self):
+        self.assertEqual(flash.resolve_serial(self.probes, "ABD999").index, 1)
+
+    def test_unique_prefix(self):
+        self.assertEqual(flash.resolve_serial(self.probes, "ABC").index, 0)
+
+    def test_ambiguous_prefix_raises(self):
+        with self.assertRaises(flash.ResolveError):
+            flash.resolve_serial(self.probes, "AB")
+
+    def test_not_found_raises(self):
+        with self.assertRaises(flash.ResolveError):
+            flash.resolve_serial(self.probes, "ZZZ")
+
+    def test_allow_any_single_probe_no_serial(self):
+        one = [flash.Probe("ABC123", 0, "ABC123")]
+        self.assertEqual(flash.resolve_serial(one, None, allow_any=True).index, 0)
+
+    def test_no_serial_without_allow_any_raises(self):
+        with self.assertRaises(flash.ResolveError):
+            flash.resolve_serial(self.probes, None)
+
+
 if __name__ == "__main__":
     unittest.main()

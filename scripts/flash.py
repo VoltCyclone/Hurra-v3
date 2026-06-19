@@ -54,3 +54,30 @@ def parse_probe_list(plain, verbose):
         probes.append(Probe(serial=serial, index=index, id=dev_id))
         n += 1
     return probes
+
+
+class ResolveError(Exception):
+    """Raised when a requested serial cannot be uniquely resolved to a probe."""
+
+
+def resolve_serial(probes, requested, allow_any=False):
+    """Resolve a requested serial (or prefix) to exactly one live Probe."""
+    if requested is None:
+        if allow_any and len(probes) == 1:
+            return probes[0]
+        if not probes:
+            raise ResolveError("no probes connected")
+        raise ResolveError(
+            "no serial given; pass --host-serial/--device-serial "
+            "(or --allow-any with exactly one probe connected)")
+    exact = [p for p in probes if p.serial == requested]
+    if len(exact) == 1:
+        return exact[0]
+    pref = [p for p in probes if p.serial.startswith(requested)]
+    if len(pref) == 1:
+        return pref[0]
+    if len(pref) > 1:
+        cands = ", ".join(p.serial for p in pref)
+        raise ResolveError("serial %r is ambiguous; matches: %s" % (requested, cands))
+    avail = ", ".join(p.serial for p in probes) or "(none)"
+    raise ResolveError("serial %r not found; connected: %s" % (requested, avail))
