@@ -96,5 +96,54 @@ class TestIsTransient(unittest.TestCase):
         self.assertFalse(flash.is_transient(self._r(rc=1, out="chip id mismatch")))
 
 
+class FakeRunner:
+    """Records commands; returns queued RunResults (by cmd-substring match)."""
+    def __init__(self, rules):
+        # rules: list of (substring, RunResult). First match wins per call.
+        self.rules = rules
+        self.calls = []
+
+    def __call__(self, cmd, timeout):
+        self.calls.append(list(cmd))
+        joined = " ".join(cmd)
+        for sub, res in self.rules:
+            if sub in joined:
+                return res
+        return flash.RunResult(0, "")
+
+
+class TestDiscoverProbes(unittest.TestCase):
+    def test_calls_wlink_list_and_parses(self):
+        runner = FakeRunner([("wlink list",
+                              flash.RunResult(0, "0: WCH-LinkE serial=ABC123\n"))])
+        probes = flash.discover_probes(runner)
+        self.assertEqual(probes[0].serial, "ABC123")
+        self.assertIn(["wlink", "list"], runner.calls)
+
+
+class TestFlashAttempt(unittest.TestCase):
+    def test_erase_then_flash_uses_index(self):
+        probe = flash.Probe("ABC123", 2, "ABC123")
+        runner = FakeRunner([("erase", flash.RunResult(0, "")),
+                             ("flash", flash.RunResult(0, "done"))])
+        ok, err = flash.flash_attempt(runner, probe, "build/BoardB.bin", timeout=60)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        # both commands target -d 2
+        self.assertTrue(all("-d" in c and "2" in c for c in runner.calls))
+        # flash command carries the image + address
+        flash_cmd = [c for c in runner.calls if "flash" in c][0]
+        self.assertIn("build/BoardB.bin", flash_cmd)
+        self.assertIn(flash.FLASH_ADDR, flash_cmd)
+
+    def test_flash_failure_returns_error(self):
+        probe = flash.Probe("ABC123", 0, "ABC123")
+        runner = FakeRunner([("erase", flash.RunResult(0, "")),
+                             ("flash", flash.RunResult(1, "protocol error: 0x55"))])
+        ok, err = flash.flash_attempt(runner, probe, "build/BoardB.bin", timeout=60)
+        self.assertFalse(ok)
+        self.assertIn("0x55", err)
+
+
 if __name__ == "__main__":
     unittest.main()

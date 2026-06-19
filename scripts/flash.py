@@ -103,3 +103,40 @@ def is_transient(result):
         return True
     low = result.output.lower()
     return any(m in low for m in _TRANSIENT_MARKERS)
+
+
+def subprocess_runner(cmd, timeout):
+    """Real runner: run cmd, capture combined output, honor a timeout."""
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=timeout)
+        return RunResult(proc.returncode, proc.stdout.decode("utf-8", "replace"))
+    except subprocess.TimeoutExpired as e:
+        out = e.output.decode("utf-8", "replace") if e.output else ""
+        return RunResult(1, out + "\n[timed out]", timed_out=True)
+    except FileNotFoundError:
+        return RunResult(127, "wlink not found", timed_out=False)
+
+
+def discover_probes(runner):
+    """Enumerate connected probes via `wlink list` (+ `-v` for device ids)."""
+    plain = runner(["wlink", "list"], timeout=15).output
+    verbose = ""
+    if "serial" not in plain.lower():
+        verbose = runner(["wlink", "-v", "list"], timeout=15).output
+    return parse_probe_list(plain, verbose)
+
+
+def flash_attempt(runner, probe, image, timeout):
+    """One erase(power-off)+flash cycle against probe.index. Returns (ok, error)."""
+    d = str(probe.index)
+    erase = runner(["wlink", "-d", d, "--chip", CHIP,
+                   "erase", "--method", "power-off"], timeout=timeout)
+    if erase.returncode != 0 and "0x55" not in erase.output:
+        # erase itself failed for a non-NAK reason; surface it
+        return False, erase.output.strip() or "erase failed"
+    res = runner(["wlink", "-d", d, "--chip", CHIP, "flash",
+                 "-e", "--address", FLASH_ADDR, image], timeout=timeout)
+    if res.returncode == 0:
+        return True, None
+    return False, res.output.strip() or ("timed out" if res.timed_out else "flash failed")
