@@ -140,3 +140,57 @@ def flash_attempt(runner, probe, image, timeout):
     if res.returncode == 0:
         return True, None
     return False, res.output.strip() or ("timed out" if res.timed_out else "flash failed")
+
+
+def build_image(runner, role, timeout):
+    """Build the merged image for a role via `make merge BOARD=<role>`."""
+    res = runner(["make", "merge", "BOARD=" + ROLE_BOARD[role]], timeout=timeout)
+    if res.returncode == 0:
+        return True, None
+    return False, res.output.strip() or "build failed"
+
+
+def flash_role(runner, role, requested, *, do_build, retries, timeout,
+               allow_any, backoff=0.0, clock=time.monotonic):
+    """Build (optional) + flash one role with retries. Returns a role dict."""
+    image = ROLE_IMAGE[role]
+    out = {"serial": requested, "index": None, "image": image,
+           "built": False, "flashed": False, "attempts": 0,
+           "duration_s": 0.0, "error": None}
+    start = clock()
+
+    if do_build:
+        ok, err = build_image(runner, role, timeout)
+        out["built"] = ok
+        if not ok:
+            out["error"] = err
+            out["duration_s"] = round(clock() - start, 2)
+            return out
+
+    last_err = None
+    for attempt in range(1, retries + 2):          # retries=2 -> up to 3 tries
+        try:
+            probes = discover_probes(runner)
+            probe = resolve_serial(probes, requested, allow_any=allow_any)
+        except ResolveError as e:
+            out["error"] = str(e)
+            out["duration_s"] = round(clock() - start, 2)
+            return out                              # resolution is fatal, no retry
+        out["index"] = probe.index
+        out["serial"] = probe.serial
+        out["attempts"] = attempt
+        ok, err = flash_attempt(runner, probe, image, timeout)
+        if ok:
+            out["flashed"] = True
+            out["error"] = None
+            out["duration_s"] = round(clock() - start, 2)
+            return out
+        last_err = err
+        # decide retry: only on transient failure with attempts remaining
+        if not is_transient(RunResult(1, err or "")) or attempt == retries + 1:
+            break
+        if backoff:
+            time.sleep(backoff)
+    out["error"] = last_err
+    out["duration_s"] = round(clock() - start, 2)
+    return out

@@ -145,5 +145,75 @@ class TestFlashAttempt(unittest.TestCase):
         self.assertIn("0x55", err)
 
 
+class TestFlashRole(unittest.TestCase):
+    def _probes(self, *serials):
+        return "".join("%d: WCH-LinkE serial=%s\n" % (i, s)
+                       for i, s in enumerate(serials))
+
+    def test_success_no_build(self):
+        runner = FakeRunner([("wlink list", flash.RunResult(0, self._probes("ABC"))),
+                             ("erase", flash.RunResult(0, "")),
+                             ("flash", flash.RunResult(0, "ok"))])
+        r = flash.flash_role(runner, "host", "ABC", do_build=False,
+                             retries=2, timeout=60, allow_any=False)
+        self.assertTrue(r["flashed"])
+        self.assertEqual(r["attempts"], 1)
+        self.assertEqual(r["image"], "build/BoardB.bin")
+        self.assertFalse(r["built"])
+
+    def test_retry_then_success(self):
+        # flash fails transiently once, then succeeds.
+        seq = {"n": 0}
+        def runner(cmd, timeout):
+            j = " ".join(cmd)
+            if "wlink list" in j:
+                return flash.RunResult(0, self._probes("ABC"))
+            if "erase" in j:
+                return flash.RunResult(0, "")
+            if "flash" in j:
+                seq["n"] += 1
+                if seq["n"] == 1:
+                    return flash.RunResult(1, "protocol error: 0x55")
+                return flash.RunResult(0, "ok")
+            return flash.RunResult(0, "")
+        r = flash.flash_role(runner, "host", "ABC", do_build=False,
+                             retries=2, timeout=60, allow_any=False, backoff=0.0)
+        self.assertTrue(r["flashed"])
+        self.assertEqual(r["attempts"], 2)
+
+    def test_fatal_error_no_retry(self):
+        seq = {"n": 0}
+        def runner(cmd, timeout):
+            j = " ".join(cmd)
+            if "wlink list" in j:
+                return flash.RunResult(0, self._probes("ABC"))
+            if "erase" in j:
+                return flash.RunResult(0, "")
+            if "flash" in j:
+                seq["n"] += 1
+                return flash.RunResult(1, "chip id mismatch")
+            return flash.RunResult(0, "")
+        r = flash.flash_role(runner, "host", "ABC", do_build=False,
+                             retries=2, timeout=60, allow_any=False, backoff=0.0)
+        self.assertFalse(r["flashed"])
+        self.assertEqual(r["attempts"], 1)       # fatal -> no retry
+        self.assertEqual(seq["n"], 1)
+
+    def test_build_failure_skips_flash(self):
+        runner = FakeRunner([("make merge", flash.RunResult(1, "compile error"))])
+        r = flash.flash_role(runner, "device", "ABC", do_build=True,
+                             retries=2, timeout=60, allow_any=False)
+        self.assertFalse(r["built"])
+        self.assertFalse(r["flashed"])
+        self.assertIn("compile error", r["error"])
+
+    def test_serial_not_found(self):
+        runner = FakeRunner([("wlink list", flash.RunResult(0, self._probes("XYZ")))])
+        r = flash.flash_role(runner, "host", "ABC", do_build=False,
+                             retries=2, timeout=60, allow_any=False)
+        self.assertFalse(r["flashed"])
+        self.assertIn("not found", r["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
