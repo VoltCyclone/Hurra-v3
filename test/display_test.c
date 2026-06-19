@@ -13,32 +13,31 @@ int main(void) {
 
     // 1. NULL prev => all rows dirty.
     display_status_t st = {
-        .state = DISP_STATE_RELAYING, .vid = 0x1A2C, .pid = 0x0094,
-        .reports_per_sec = 980, .uptime_s = 252,
-        .drops = 3, .zerolen = 1, .probe = 0x0C /*got|fwd*/, .gotmask = 0x3,
-        .cmd_rx = 1240, .cmd_err = 0, .human_lvl = 3, .inj_m = 58, .inj_k = 0,
-        .temp_c = 42,
+        .state = DISP_STATE_RELAYING, .vid = 0x046D, .pid = 0xC08B,
+        .reports_per_sec = 980, .cap_speed = 2 /*HS*/, .temp_c = 41, .wedge = 0,
+        .dev_enum = 1, .dev_speed = 2 /*HS*/, .dev_temp_c = 39, .dev_link = 1,
     };
     uint32_t dirty = display_format_lines(&st, rows, NULL);
     assert(dirty == ((1u << DISP_ROWS) - 1));
 
-    // 2. Top block: state, dev IDs, rps, health, path, slots.
+    // 2. Top block: state, dev IDs + captured speed, rps.
     row_should_contain(rows[ROW_STATE], "RELAY");
-    row_should_contain(rows[ROW_IDS], "1A2C");
-    row_should_contain(rows[ROW_IDS], "0094");
+    row_should_contain(rows[ROW_IDS], "046D");
+    row_should_contain(rows[ROW_IDS], "C08B");
+    row_should_contain(rows[ROW_IDS], "HS");      // cap_speed = HIGH
     row_should_contain(rows[ROW_RPS], "980");
-    row_should_contain(rows[ROW_HEALTH], "drops 3"); // drops 3
-    row_should_contain(rows[ROW_PATH], "GOT");      // probe bit3
-    row_should_contain(rows[ROW_PATH], "FWD");      // probe bit2
-    row_should_contain(rows[ROW_SLOTS], "0x3");      // gotmask 0x3
 
-    // 3. Bottom block: uptime, cmd rx/err, human, inj, temp.
-    row_should_contain(rows[ROW_UPTIME], "4:12");   // 252s
-    row_should_contain(rows[ROW_CMDRX], "1240");
-    row_should_contain(rows[ROW_CMDERR], "0");
-    row_should_contain(rows[ROW_HUMAN], "3");
-    row_should_contain(rows[ROW_INJ], "58");
-    row_should_contain(rows[ROW_TEMP], "42");
+    // 3. Host block: header, link+wedge, host temp.
+    row_should_contain(rows[ROW_HDR_HOST], "HOST");
+    row_should_contain(rows[ROW_LINK], "wedge 0");
+    row_should_contain(rows[ROW_HTEMP], "41");
+
+    // 3b. Device block: header, PC enum + clone speed, device temp, no LINK DOWN.
+    row_should_contain(rows[ROW_HDR_DEV], "DEVICE");
+    row_should_contain(rows[ROW_PCENUM], "ENUM");
+    row_should_contain(rows[ROW_PCENUM], "HS");   // dev_speed = HIGH
+    row_should_contain(rows[ROW_DTEMP], "39");
+    assert(rows[ROW_DLINK][0] == '\0');           // link fresh => banner blank
 
     // 4. No change => zero dirty.
     char prev[DISP_ROWS][DISP_COLS + 1];
@@ -52,13 +51,14 @@ int main(void) {
     dirty = display_format_lines(&st, rows, (const char (*)[DISP_COLS+1])prev);
     assert(dirty == (1u << ROW_RPS));
 
-    // 6. WAITING (no device) => IDs and rps rows blank; bottom block still shows.
-    display_status_t w = { .state = DISP_STATE_WAITING, .cmd_rx = 5, .human_lvl = 1 };
-    display_format_lines(&w, rows, NULL);
-    row_should_contain(rows[ROW_STATE], "WAIT");
-    assert(rows[ROW_IDS][0] == '\0');
-    assert(rows[ROW_RPS][0] == '\0');
-    row_should_contain(rows[ROW_HUMAN], "1");
+    // 6. Device link stale => ROW_DLINK shows LINK DOWN; PC/temp show "--".
+    display_status_t down = { .state = DISP_STATE_RELAYING, .vid = 0x046D,
+                              .pid = 0xC08B, .cap_speed = 2, .temp_c = 40,
+                              .dev_link = 0 };
+    display_format_lines(&down, rows, NULL);
+    row_should_contain(rows[ROW_DLINK], "LINK DOWN");
+    row_should_contain(rows[ROW_PCENUM], "--");
+    row_should_contain(rows[ROW_DTEMP], "--");
 
     // --- icc_status pack/unpack round-trip ---
     display_status_t src = { .state = DISP_STATE_RELAYING, .vid = 0x1A2C,
@@ -88,14 +88,20 @@ int main(void) {
     assert(za.gotmask == 0x1);
     assert(za.zerolen == 1);   // probe bit0 = 1
 
-    // 7. Transition WAITING->RELAYING: ROW_IDS goes blank->populated (dirty).
-    //    `w` is the WAITING status from case 6; `rows` currently holds its render.
-    memcpy(prev, rows, sizeof rows);   // prev = WAITING rows (ROW_IDS blank)
-    w.state = DISP_STATE_RELAYING; w.vid = 0x046D; w.pid = 0xC08B;
-    dirty = display_format_lines(&w, rows, (const char (*)[DISP_COLS+1])prev);
-    assert(dirty & (1u << ROW_IDS));
-    row_should_contain(rows[ROW_IDS], "046D");
-    row_should_contain(rows[ROW_IDS], "C08B");
+    // --- new two-board selectors round-trip ---
+    display_status_t nsrc = { .wedge = 500, .cap_speed = 2 /*HS*/,
+                              .dev_enum = 1, .dev_speed = 0 /*FS*/,
+                              .dev_temp_c = -5, .dev_link = 1 };
+    display_status_t nacc = {0};
+    icc_status_unpack(icc_status_pack(ICC_ST_SEL_WEDGE,  0, &nsrc), &nacc);
+    icc_status_unpack(icc_status_pack(ICC_ST_SEL_SPEEDS, 1, &nsrc), &nacc);
+    icc_status_unpack(icc_status_pack(ICC_ST_SEL_DEV,    2, &nsrc), &nacc);
+    assert(nacc.wedge == 500);
+    assert(nacc.cap_speed == 2);
+    assert(nacc.dev_speed == 0);
+    assert(nacc.dev_enum == 1);
+    assert(nacc.dev_link == 1);
+    assert(nacc.dev_temp_c == -5);
 
     printf("display_test OK\n");
     return 0;

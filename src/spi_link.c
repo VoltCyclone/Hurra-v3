@@ -272,6 +272,24 @@ void spi_link_slave_set_drdy(int asserted)
     else          GPIO_ResetBits(LINK_DRDY_PORT, LINK_DRDY_PIN);
 }
 
+// --- Slave -> master telemetry return slot (staged onto MISO by the RXNE ISR) --
+// Double-buffered: the publisher fills s_telem[next] then flips s_telem_cur; the
+// ISR only reads s_telem[s_telem_cur], so it never sees a torn slot. The flip is a
+// single-byte store, atomic w.r.t. the ISR because both run on the V5F core — this
+// would not hold if the publisher moved to another core.
+static volatile uint8_t s_telem[2][SPI_LINK_SLOT];
+static volatile uint8_t s_telem_cur;     // which buffer the ISR reads
+static volatile uint8_t s_telem_idx;     // next byte to send from the current slot
+static volatile uint8_t s_telem_armed;   // 0 until the first publish
+
+void spi_link_slave_set_telem(const uint8_t slot[SPI_LINK_SLOT])
+{
+    uint8_t next = (uint8_t)(s_telem_cur ^ 1u);
+    for (uint32_t i = 0; i < SPI_LINK_SLOT; i++) s_telem[next][i] = slot[i];
+    s_telem_cur = next;
+    s_telem_armed = 1;
+}
+
 // ── Slave RX, interrupt-driven (stream-capable) ─────────────────────────────
 // Lock-free SPSC ring: the SPI1 RXNE ISR (single writer) pushes each clocked byte;
 // the foreground spi_link_slave_rx_byte (single reader) pops. Power-of-two size for
@@ -331,6 +349,14 @@ void SPI1_IRQHandler(void)
         } else {
             spi_link_rx_overflows++;     // ring full — drop (SOF-scan recovers)
         }
+    }
+    // Stage the next telemetry byte onto MISO for the master's return slot. TXE is
+    // up whenever the shift register can accept a byte; we feed the current slot,
+    // wrapping so the slot repeats continuously. Cheap: one store per clocked byte.
+    if (s_telem_armed &&
+        SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_TXE) != RESET) {
+        SPI_I2S_SendData(LINK_SPI, s_telem[s_telem_cur][s_telem_idx]);
+        s_telem_idx = (uint8_t)((s_telem_idx + 1u) % SPI_LINK_SLOT);
     }
 }
 

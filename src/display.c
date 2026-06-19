@@ -20,79 +20,65 @@ static const char *state_name(uint8_t s) {
     }
 }
 
-// Build all 14 rows. Each buffer is clamped to DISP_COLS by snprintf/memset.
-static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COLS + 1]) {
-    // ROW_STATE (0): state name
-    snprintf(rows[ROW_STATE], DISP_COLS + 1, "%s", state_name(st->state));
+static const char *speed_name(uint8_t s) {
+    return (s == 2 /*USB_SPEED_HIGH*/) ? "HS" : "FS";
+}
 
+static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COLS + 1]) {
     bool have_dev = (st->state == DISP_STATE_RELAYING ||
                      st->state == DISP_STATE_CAPTURING);
 
-    // ROW_IDS (1): dev VID:PID, blank if no device
+    // ROW_STATE (0): state name
+    snprintf(rows[ROW_STATE], DISP_COLS + 1, "%s", state_name(st->state));
+
+    // ROW_IDS (1): dev VID:PID + captured-device speed, blank if no device
     if (have_dev)
-        snprintf(rows[ROW_IDS], DISP_COLS + 1, "dev %04X:%04X", st->vid, st->pid);
+        snprintf(rows[ROW_IDS], DISP_COLS + 1, "dev %04X:%04X %s",
+                 st->vid, st->pid, speed_name(st->cap_speed));
     else
         memset(rows[ROW_IDS], 0, DISP_COLS + 1);
 
     // ROW_RPS (2): reports/s, blank if no device
     if (have_dev)
-        snprintf(rows[ROW_RPS], DISP_COLS + 1, "reports/s %u",
+        snprintf(rows[ROW_RPS], DISP_COLS + 1, "rps %u",
                  (unsigned)st->reports_per_sec);
     else
         memset(rows[ROW_RPS], 0, DISP_COLS + 1);
 
-    // ROW_HEALTH (4): drops and zero-length count
-    snprintf(rows[ROW_HEALTH], DISP_COLS + 1, "drops %u  zlen %u",
-             (unsigned)st->drops, (unsigned)st->zerolen);
+    // ROW_HDR_HOST (3)
+    snprintf(rows[ROW_HDR_HOST], DISP_COLS + 1, "%s", "--- HOST (B) ---");
 
-    // ROW_PATH (5): decode probe bits into flag string
-    {
-        char tmp[DISP_COLS + 1];
-        int pos = 0;
-        pos += snprintf(tmp + pos, sizeof(tmp) - (size_t)pos, "path");
-        if ((st->probe & 0x8) && pos < DISP_COLS)
-            pos += snprintf(tmp + pos, sizeof(tmp) - (size_t)pos, " GOT");
-        if ((st->probe & 0x4) && pos < DISP_COLS)
-            pos += snprintf(tmp + pos, sizeof(tmp) - (size_t)pos, " FWD");
-        if ((st->probe & 0x2) && pos < DISP_COLS)
-            pos += snprintf(tmp + pos, sizeof(tmp) - (size_t)pos, " DROP");
-        if ((st->probe & 0x1) && pos < DISP_COLS)
-            pos += snprintf(tmp + pos, sizeof(tmp) - (size_t)pos, " ZLEN");
-        snprintf(rows[ROW_PATH], DISP_COLS + 1, "%s", tmp);
-    }
+    // ROW_LINK (4): SPI master health
+    snprintf(rows[ROW_LINK], DISP_COLS + 1, "link %s wedge %u",
+             st->wedge ? "WARN" : "OK", (unsigned)st->wedge);
 
-    // ROW_SLOTS (6): which host IN slots delivered
-    snprintf(rows[ROW_SLOTS], DISP_COLS + 1, "slots 0x%X",
-             (unsigned)(st->gotmask & 0x0F));
+    // ROW_HTEMP (5): host board temp
+    snprintf(rows[ROW_HTEMP], DISP_COLS + 1, "temp %d C", (int)st->temp_c);
 
-    // ROW_DIV (7): divider — 20 dashes (DISP_COLS=20)
-    snprintf(rows[ROW_DIV], DISP_COLS + 1, "%s", "--------------------");
+    // ROW_HDR_DEV (6)
+    snprintf(rows[ROW_HDR_DEV], DISP_COLS + 1, "%s", "-- DEVICE (A) --");
 
-    // ROW_UPTIME (8): uptime in M:SS
-    {
-        unsigned m = (unsigned)(st->uptime_s / 60);
-        unsigned s = (unsigned)(st->uptime_s % 60);
-        snprintf(rows[ROW_UPTIME], DISP_COLS + 1, "uptime %u:%02u", m, s);
-    }
+    // ROW_PCENUM (7): clone enumerated on PC + clone speed; "--" when link stale
+    if (!st->dev_link)
+        snprintf(rows[ROW_PCENUM], DISP_COLS + 1, "PC: --");
+    else
+        snprintf(rows[ROW_PCENUM], DISP_COLS + 1, "PC: %s %s",
+                 st->dev_enum ? "ENUM" : "no", speed_name(st->dev_speed));
 
-    // ROW_CMDRX (9): USART rx byte count
-    snprintf(rows[ROW_CMDRX], DISP_COLS + 1, "cmd rx %u B",
-             (unsigned)st->cmd_rx);
+    // ROW_DTEMP (8): device temp; "--" when link stale
+    if (!st->dev_link)
+        snprintf(rows[ROW_DTEMP], DISP_COLS + 1, "temp -- C");
+    else
+        snprintf(rows[ROW_DTEMP], DISP_COLS + 1, "temp %d C", (int)st->dev_temp_c);
 
-    // ROW_CMDERR (10): USART error count
-    snprintf(rows[ROW_CMDERR], DISP_COLS + 1, "cmd err %u",
-             (unsigned)st->cmd_err);
+    // ROW_DLINK (9): banner only when device telemetry is stale
+    if (!st->dev_link)
+        snprintf(rows[ROW_DLINK], DISP_COLS + 1, "%s", "LINK DOWN");
+    else
+        memset(rows[ROW_DLINK], 0, DISP_COLS + 1);
 
-    // ROW_HUMAN (11): humanize level
-    snprintf(rows[ROW_HUMAN], DISP_COLS + 1, "human lvl %u",
-             (unsigned)st->human_lvl);
-
-    // ROW_INJ (12): injection counts
-    snprintf(rows[ROW_INJ], DISP_COLS + 1, "inj m %u  k %u",
-             (unsigned)st->inj_m, (unsigned)st->inj_k);
-
-    // ROW_TEMP (13): board temperature (V3F-local ADC)
-    snprintf(rows[ROW_TEMP], DISP_COLS + 1, "temp %d C", (int)st->temp_c);
+    // Rows 10..12 render blank.
+    for (int r = 10; r < DISP_ROWS; r++) memset(rows[r], 0, DISP_COLS + 1);
 }
 
 uint32_t display_format_lines(const display_status_t *st,
@@ -108,6 +94,12 @@ uint32_t display_format_lines(const display_status_t *st,
 }
 
 #ifdef __riscv
+static uint16_t temp_color(int t) {
+    if (t > 65) return ST_RED;
+    if (t >= 50) return ST_YELLOW;
+    return ST_GREEN;
+}
+
 void display_init(void)
 {
     st7789_init();   // includes a black clear
@@ -128,6 +120,8 @@ void display_render(const display_status_t *st)
         uint16_t fg = (st->state == DISP_STATE_RELAYING) ? ST_GREEN :
                       (st->state == DISP_STATE_ERROR ||
                        st->state == DISP_STATE_NOSIGNAL) ? ST_RED : ST_WHITE;
+        if (r == ROW_HTEMP) fg = temp_color((int)st->temp_c);
+        else if (r == ROW_DTEMP) fg = st->dev_link ? temp_color((int)st->dev_temp_c) : ST_WHITE;
         st7789_draw_string(0, y, rows[r], fg, ST_BLACK, DISP_SCALE);
     }
     memcpy(prev, rows, sizeof rows);

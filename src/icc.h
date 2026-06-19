@@ -24,6 +24,7 @@ enum {
     ICC_TAG_SET_BAUD,
     ICC_TAG_SET_HUMAN_LEVEL,
     ICC_TAG_PHYS_MASK,
+    ICC_TAG_DEV_TEMP,     // device V3F -> V5F: device-board temp in b[0] (int8)
     // (V5F->V3F telemetry tags removed — that direction is not carried; V5F
     //  liveness rides the IPC CH1 stage telemetry, see icc_telem_* below.)
 };
@@ -115,6 +116,9 @@ enum {                          // field selectors
     ICC_ST_SEL_RPS,             // payload[9:0] = reports_per_sec (clamped 0..1023)
     ICC_ST_SEL_DROPS,           // payload[9:0] = drops (clamped 0..1023)
     ICC_ST_SEL_PROBE,           // payload[7:4] = probe[3:0], payload[3:0] = gotmask[3:0]
+    ICC_ST_SEL_WEDGE,           // payload[9:0] = wedge (clamped 0..1023)
+    ICC_ST_SEL_SPEEDS,          // payload[3:2]=cap_speed, payload[1:0]=dev_speed
+    ICC_ST_SEL_DEV,             // payload[9]=dev_link, payload[8]=dev_enum, payload[7:0]=dev_temp_c
     ICC_ST_SEL__COUNT
 };
 

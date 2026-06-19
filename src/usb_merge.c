@@ -765,6 +765,11 @@ void usb_merge_drain_icc(void)
 
 	icc_record_t r;
 	while (icc_recv_from_v3f(&r)) {
+		if (r.tag == ICC_TAG_DEV_TEMP) {
+			extern volatile int8_t g_tb_dev_temp_c;  // defined in two_board.c
+			g_tb_dev_temp_c = (int8_t)r.b[0];
+			continue;
+		}
 		switch (r.tag) {
 		case ICC_TAG_INJECT_MOUSE: {
 			// kmbox_cmd.c wire: b0..1=dx LE int16, b2..3=dy LE int16,
@@ -816,8 +821,9 @@ void usb_merge_drain_icc(void)
 			// for the merge to do on V5F. Drained so the ring stays clear.
 			break;
 		default:
-			// PING/PONG and telemetry tags are not the merge's concern; the
-			// relay loop handles its own protocol records before draining here.
+			// ICC_TAG_DEV_TEMP is intercepted above this switch; any other
+			// unrecognized tag is not the merge's concern (the relay loop handles
+			// its own protocol records before draining here).
 			break;
 		}
 	}

@@ -32,6 +32,14 @@ typedef struct {
     uint16_t inj_k;            // keyboard injection count
     // --- board temperature (V3F-local ADC) ---
     int8_t   temp_c;           // degrees Celsius (signed)
+    // --- two-board: host-side relay link health (host-local) ---
+    uint16_t wedge;            // SPI master wedge/recovery count
+    uint8_t  cap_speed;        // captured-device speed (USB_SPEED_*)
+    // --- two-board: device-board (Board A) status, via SPI return slot ---
+    uint8_t  dev_enum;         // 1 = clone configured on the PC
+    uint8_t  dev_speed;        // clone->PC speed (USB_SPEED_*)
+    int8_t   dev_temp_c;       // device board temperature (deg C)
+    uint8_t  dev_link;         // 1 = device telemetry fresh, 0 = stale
 } display_status_t;
 
 // Text grid. Scale 2 => 12px glyphs; 240px / 12px = 20 cols.
@@ -40,22 +48,21 @@ typedef struct {
 #define DISP_ROWS   13
 #define DISP_SCALE   2
 
-// Row indices. Top block (0..5) = V5F relay telemetry; row 6 divider;
-// bottom block (7..12) = V3F-local stats. Blank rows render as empty bands.
+// Row indices. Top block (0..2) = relay state/device-ids/rps (host-local).
+// Row 3 = HOST header; 4..5 = host link health + host temp.
+// Row 6 = DEVICE header; 7..9 = clone enum/speed, device temp, link-down banner.
+// Rows 10..12 render blank.
 enum {
-    ROW_STATE  = 0,   // relay state name
-    ROW_IDS    = 1,   // dev VID:PID (blank if no device)
-    ROW_RPS    = 2,   // reports/s (blank if no device)
-    ROW_HEALTH = 3,   // drops N  zlen N
-    ROW_PATH   = 4,   // decoded probe: GOT/FWD/DROP/ZLEN flags
-    ROW_SLOTS  = 5,   // which host IN slots delivered (gotmask)
-    ROW_DIV    = 6,   // divider
-    ROW_UPTIME = 7,   // uptime M:SS  (V3F-local)
-    ROW_CMDRX  = 8,   // cmd rx N B   (V3F-local)
-    ROW_CMDERR = 9,   // cmd err N    (V3F-local)
-    ROW_HUMAN  = 10,  // human lvl N  (V3F-local)
-    ROW_INJ    = 11,  // inj m N  k N (V3F-local)
-    ROW_TEMP   = 12,  // board temp (V3F-local ADC)
+    ROW_STATE    = 0,   // relay state name (colored)
+    ROW_IDS      = 1,   // dev VID:PID + captured-device speed
+    ROW_RPS      = 2,   // reports/s
+    ROW_HDR_HOST = 3,   // "--- HOST (B) ---"
+    ROW_LINK     = 4,   // "link OK  wedge N"
+    ROW_HTEMP    = 5,   // host board temp (colored by value)
+    ROW_HDR_DEV  = 6,   // "--- DEVICE (A) ---"
+    ROW_PCENUM   = 7,   // "PC: ENUM  HS" / "PC: --"
+    ROW_DTEMP    = 8,   // device temp (colored) / "--"
+    ROW_DLINK    = 9,   // "LINK DOWN" only when stale, else blank
 };
 
 // PURE: render `st` into `rows` (DISP_ROWS NUL-terminated strings, each <=DISP_COLS

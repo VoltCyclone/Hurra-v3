@@ -25,6 +25,15 @@
 // reassembles them (desc_xfer) and then enumerates the clone.
 #define TWO_BOARD_TYPE_DESC   0x03u
 
+// SPI frame TYPE for device->host telemetry returned on the MISO slot (step: TFT
+// pass-through). Payload: [enum(0/1), clone_speed(USB_SPEED_*), dev_temp(int8)].
+#define TWO_BOARD_TYPE_TELEM      0x04u
+
+// SPI frame TYPE for the host's periodic telemetry poll (empty payload). The host
+// clocks this when no report has been sent recently so the device's MISO slot keeps
+// flowing and the host's freshness heartbeat keeps advancing during idle mouse.
+#define TWO_BOARD_TYPE_TELEM_REQ  0x05u
+
 // Board B (USB host stand-in) main loop: never returns.
 void two_board_host_run(void);
 

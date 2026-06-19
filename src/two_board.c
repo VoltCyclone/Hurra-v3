@@ -7,6 +7,7 @@
 #include "two_board.h"
 
 #include "icc.h"            // dbg_stage() / DBG_V5F_* — UART-readable stage oracle
+#include "display.h"        // display_status_t, icc_status_pump_v5f
 #include "led.h"
 #include "spi_link.h"
 #include "spi_frame.h"
@@ -19,6 +20,8 @@
 #include "usb_merge.h"
 #include "timebase_v5f.h"
 #include <string.h>
+
+volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
 
 /* Per-EP poll mapping for the real host capture (Board B). Mirrors main_v5f.c's
  * ep_mapping_t: each interrupt-IN endpoint is paced by its descriptor bInterval so
@@ -68,9 +71,12 @@ static void send_descriptor_blob(const uint8_t *blob, uint16_t total, uint8_t *s
 }
 
 /* Forward one captured report over SPI as a TWO_BOARD_TYPE_MOUSE frame. Payload
- * schema (Board A unpacks this exact layout): [dev_ep, iface_protocol, report…]. */
+ * schema (Board A unpacks this exact layout): [dev_ep, iface_protocol, report…].
+ * rx_out receives the return slot clocked by the master so the caller can feed it
+ * to host_absorb_return for device->host telemetry. */
 static void send_report_frame(uint8_t dev_ep, uint8_t protocol,
-                              const uint8_t *report, uint8_t rlen, uint8_t *seq)
+                              const uint8_t *report, uint8_t rlen, uint8_t *seq,
+                              uint8_t rx_out[SPI_LINK_SLOT])
 {
     if (rlen > SPI_FRAME_MAX_PAYLOAD - 2) rlen = SPI_FRAME_MAX_PAYLOAD - 2;
     uint8_t payload[SPI_FRAME_MAX_PAYLOAD];
@@ -78,10 +84,33 @@ static void send_report_frame(uint8_t dev_ep, uint8_t protocol,
     payload[1] = protocol;
     memcpy(&payload[2], report, rlen);
 
-    uint8_t tx[SPI_LINK_SLOT], rx[SPI_LINK_SLOT];
+    uint8_t tx[SPI_LINK_SLOT];
     if (spi_frame_pack(tx, TWO_BOARD_TYPE_MOUSE, (*seq)++, payload,
                        (uint8_t)(2 + rlen)) == SPI_FRAME_OK) {
-        spi_link_master_exchange(tx, rx);
+        spi_link_master_exchange(tx, rx_out);
+    } else if (rx_out) {
+        memset(rx_out, 0, SPI_LINK_SLOT);
+    }
+}
+
+/* Feed one received SPI return slot through the SOF-scanner; if it completes a
+ * TWO_BOARD_TYPE_TELEM frame, fold its fields into *disp and bump *fresh_ms when
+ * the frame seq advances (the device->host liveness heartbeat). */
+static void host_absorb_return(spi_frame_stream_t *rxs, const uint8_t *rx,
+                               display_status_t *disp, uint8_t *last_seq,
+                               bool *have_seq, uint32_t *fresh_ms, uint32_t now)
+{
+    for (uint32_t i = 0; i < SPI_LINK_SLOT; i++) {
+        uint8_t slot[SPI_LINK_SLOT];
+        if (!spi_frame_stream_push(rxs, rx[i], slot)) continue;
+        uint8_t type, seq, len; const uint8_t *pay;
+        if (spi_frame_unpack(slot, &type, &seq, &pay, &len) != SPI_FRAME_OK) continue;
+        if (type != TWO_BOARD_TYPE_TELEM || len < 3) continue;
+        disp->dev_enum   = pay[0] ? 1u : 0u;
+        disp->dev_speed  = pay[1];
+        disp->dev_temp_c = (int8_t)pay[2];
+        if (!*have_seq || seq != *last_seq) { *fresh_ms = now; }
+        *last_seq = seq; *have_seq = true;
     }
 }
 
@@ -126,9 +155,10 @@ void two_board_host_run(void)
         if ((now - last_send_ms) >= send_period_ms) {
             last_send_ms = now;
             uint8_t report[SYNTH_MOUSE_REPORT_LEN];
+            uint8_t rx_scratch[SPI_LINK_SLOT];
             synth_mouse_next_report(tick++, report);
             send_report_frame(SYNTH_MOUSE_IN_EP, SYNTH_MOUSE_IFACE_PROTO,
-                              report, SYNTH_MOUSE_REPORT_LEN, &seq);
+                              report, SYNTH_MOUSE_REPORT_LEN, &seq, rx_scratch);
         }
         /* Oracle: 0x5A = master clocking cleanly; 0xEA = the SPI master had to recover
          * a wedged exchange (bounded-wait timeout). Distinguishes a healthy link from
@@ -167,6 +197,23 @@ void two_board_host_run(void)
 
     /* Stamp the captured device speed so Board A clones at the SAME speed. */
     desc.speed = usb_host_device_speed();
+
+    /* Host TFT telemetry: fill our own display_status_t and pump it to V3F over
+     * the IPC reverse status channel (same path as the single-board relay loop). */
+    display_status_t disp = { .state = DISP_STATE_RELAYING };
+    disp.vid = (uint16_t)(desc.device_desc[8]  | (desc.device_desc[9]  << 8));
+    disp.pid = (uint16_t)(desc.device_desc[10] | (desc.device_desc[11] << 8));
+    disp.cap_speed = desc.speed;
+    uint32_t disp_ms = millis();
+    uint32_t rep_count = 0, rep_ms = millis();
+
+    /* Return-path (device->host) telemetry decode. */
+    static spi_frame_stream_t rxs;
+    spi_frame_stream_init(&rxs);
+    uint8_t  last_telem_seq = 0;
+    bool     have_telem_seq = false;
+    uint32_t telem_fresh_ms = millis();   // last time the telem seq advanced
+    uint32_t poll_ms = millis();          // last periodic poll-frame clock
 
     /* SET_PROTOCOL(Report) for BOOT-subclass HID interfaces only (so a boot mouse
      * streams report-protocol data). Best-effort; a device may legally STALL. */
@@ -233,9 +280,41 @@ void two_board_host_run(void)
             int ret = usb_host_interrupt_poll_zerocopy(ep_map[m].host_slot, &rpt,
                                                        ep_map[m].maxpkt);
             if (ret > 0 && rpt) {
+                uint8_t rx[SPI_LINK_SLOT];
                 send_report_frame(ep_map[m].dev_ep_num, ep_map[m].iface_protocol,
-                                  rpt, (uint8_t)ret, &seq);
+                                  rpt, (uint8_t)ret, &seq, rx);
+                host_absorb_return(&rxs, rx, &disp, &last_telem_seq,
+                                   &have_telem_seq, &telem_fresh_ms, now);
+                rep_count++;
             }
+        }
+
+        /* Idle poll: if we haven't clocked a report recently, send an empty
+         * TELEM_REQ so the device's MISO slot keeps flowing (else a still mouse
+         * would falsely read LINK DOWN). */
+        if ((now - poll_ms) >= 250u) {
+            poll_ms = now;
+            uint8_t tx[SPI_LINK_SLOT], rx[SPI_LINK_SLOT];
+            if (spi_frame_pack(tx, TWO_BOARD_TYPE_TELEM_REQ, seq++, NULL, 0)
+                == SPI_FRAME_OK) {
+                spi_link_master_exchange(tx, rx);
+                host_absorb_return(&rxs, rx, &disp, &last_telem_seq,
+                                   &have_telem_seq, &telem_fresh_ms, now);
+            }
+        }
+
+        /* Fill host-local fields + freshness, then pump one field to V3F. */
+        if ((now - rep_ms) >= 1000u) {
+            rep_ms = now;
+            disp.reports_per_sec = (rep_count > 1023u) ? 1023u : (uint16_t)rep_count;
+            rep_count = 0;
+            disp.wedge = (uint16_t)(spi_link_master_wedges > 1023u
+                                    ? 1023u : spi_link_master_wedges);
+        }
+        disp.dev_link = ((now - telem_fresh_ms) < 1000u) ? 1u : 0u;
+        if ((now - disp_ms) >= 50u) {   // throttle the rotating field pump
+            disp_ms = now;
+            icc_status_pump_v5f(&disp);
         }
 
         if ((now - last_blink_ms) >= 250u) { last_blink_ms = now; led_toggle(); }
@@ -384,6 +463,25 @@ void two_board_device_run(void)
         }
         usb_merge_drain_icc();
         usb_device_poll();
+
+        /* Publish device->host telemetry on the SPI return slot (~every 100 ms).
+         * The IRQ slave cycles this slot onto MISO; the host SOF-scans it. */
+        static uint32_t tlm_ms;
+        static uint8_t  tlm_seq;
+        if ((millis() - tlm_ms) >= 100u) {
+            tlm_ms = millis();
+            uint8_t pay[3] = {
+                (uint8_t)(usb_device_is_configured() ? 1u : 0u),
+                usb_device_active_speed(),
+                (uint8_t)g_tb_dev_temp_c,
+            };
+            uint8_t slot[SPI_LINK_SLOT];
+            if (spi_frame_pack(slot, TWO_BOARD_TYPE_TELEM, tlm_seq++, pay, 3)
+                == SPI_FRAME_OK) {
+                spi_link_slave_set_telem(slot);
+            }
+        }
+
         if ((millis() - hb_ms) >= 250u) {
             hb_ms = millis();
             led_toggle();
