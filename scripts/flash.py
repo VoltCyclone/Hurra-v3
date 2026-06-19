@@ -272,3 +272,51 @@ def emit(result, as_json, stream_out, stream_err):
         stream_out.write(json.dumps(result) + "\n")
     else:
         stream_err.write(render_human(result) + "\n")
+
+
+def _build_parser():
+    p = argparse.ArgumentParser(
+        prog="flash.py",
+        description="Flash the host (Board B) and/or device (Board A) by WCH-LinkE "
+                    "probe serial, with retries and JSON output.",
+        epilog="Examples:\n"
+               "  scripts/flash.py --list\n"
+               "  scripts/flash.py --host-serial ABC123 --device-serial DEF456\n"
+               "  scripts/flash.py --device-serial DEF456 --no-build\n"
+               "  scripts/flash.py --host-serial ABC123 --json\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--host-serial", help="probe serial for the host board (Board B)")
+    p.add_argument("--device-serial", help="probe serial for the device board (Board A)")
+    p.add_argument("--list", action="store_true", help="list connected probes and exit")
+    p.add_argument("--no-build", action="store_true",
+                   help="skip `make merge`; flash existing build/*.bin")
+    p.add_argument("--json", action="store_true",
+                   help="emit one JSON result object to stdout (logs to stderr)")
+    p.add_argument("--retries", type=int, default=2,
+                   help="transient-failure retries per role (default 2)")
+    p.add_argument("--timeout", type=float, default=60,
+                   help="per-wlink-call timeout, seconds (default 60)")
+    p.add_argument("--fail-fast", action="store_true",
+                   help="stop after the first role fails (two-board mode)")
+    p.add_argument("--allow-any", action="store_true",
+                   help="flash the only connected probe when no serial is given")
+    return p
+
+
+def main(argv=None, runner=None):
+    args = _build_parser().parse_args(argv)
+    if runner is None:
+        runner = subprocess_runner
+
+    if args.list:
+        probes = discover_probes(runner)
+        sys.stdout.write(render_list(probes) + "\n")
+        return EXIT_OK
+
+    result = run_flash(runner, args)
+    emit(result, as_json=args.json, stream_out=sys.stdout, stream_err=sys.stderr)
+    return result["exit_code"]
+
+
+if __name__ == "__main__":
+    sys.exit(main())

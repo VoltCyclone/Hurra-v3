@@ -330,5 +330,40 @@ class TestRendering(unittest.TestCase):
         self.assertIn("device", err.getvalue())
 
 
+class TestMain(unittest.TestCase):
+    def test_list_returns_zero_and_prints(self):
+        runner = FakeRunner([("wlink list",
+                              flash.RunResult(0, "0: WCH-LinkE serial=ABC123\n"))])
+        out = io.StringIO()
+        old = sys.stdout
+        sys.stdout = out
+        try:
+            rc = flash.main(["--list"], runner=runner)
+        finally:
+            sys.stdout = old
+        self.assertEqual(rc, flash.EXIT_OK)
+        self.assertIn("ABC123", out.getvalue())
+
+    def test_no_args_is_usage_error(self):
+        runner = FakeRunner([("wlink list", flash.RunResult(0, ""))])
+        rc = flash.main([], runner=runner)
+        self.assertEqual(rc, flash.EXIT_USAGE)
+
+    def test_json_flag_emits_json(self):
+        runner = FakeRunner([("wlink list", flash.RunResult(0, "0: WCH-LinkE serial=ABC\n")),
+                             ("erase", flash.RunResult(0, "")),
+                             ("flash", flash.RunResult(0, "ok"))])
+        out = io.StringIO()
+        old = sys.stdout
+        sys.stdout = out
+        try:
+            rc = flash.main(["--host-serial", "ABC", "--no-build", "--json"],
+                            runner=runner)
+        finally:
+            sys.stdout = old
+        self.assertEqual(rc, flash.EXIT_OK)
+        self.assertEqual(json.loads(out.getvalue())["exit_code"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
