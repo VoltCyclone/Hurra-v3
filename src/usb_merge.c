@@ -363,11 +363,24 @@ void usb_merge_report(uint8_t iface_protocol, uint8_t * restrict report, uint8_t
 		                     mouse_layout.valid, 0))
 			usb_merge_phys_mouse(report, len);
 
-		if (mouse_layout.valid && inject.mouse_dirty) {
+		if (mouse_layout.valid && inject.mouse_dirty && len > mouse_layout.data_off) {
 			uint8_t doff = mouse_layout.data_off;
 			uint8_t rid = doff ? report[0] : 0;
 
-			if (__builtin_expect(mouse_layout.fast_path && rid == mouse_layout.report_id, 1)) {
+			// Highest byte index the fast path will touch; a short/malformed
+			// report that does not cover it is routed to the bounds-checked
+			// slow path rather than indexed out of bounds.
+			uint16_t fp_need = doff;
+			if (mouse_layout.x_byte + (mouse_layout.x_is16 ? 1u : 0u) > fp_need)
+				fp_need = mouse_layout.x_byte + (mouse_layout.x_is16 ? 1u : 0u);
+			if (mouse_layout.y_byte + (mouse_layout.y_is16 ? 1u : 0u) > fp_need)
+				fp_need = mouse_layout.y_byte + (mouse_layout.y_is16 ? 1u : 0u);
+			if (mouse_layout.w_byte != 0xFF &&
+			    (uint16_t)(mouse_layout.w_byte + (mouse_layout.w_is16 ? 1u : 0u)) > fp_need)
+				fp_need = mouse_layout.w_byte + (mouse_layout.w_is16 ? 1u : 0u);
+
+			if (__builtin_expect(mouse_layout.fast_path && fp_need < len &&
+			                     rid == mouse_layout.report_id, 1)) {
 				report[doff] |= inject.mouse_buttons;
 				proto_notify_buttons(report[doff]);
 
@@ -571,6 +584,7 @@ __attribute__((cold, noinline))
 static void usb_merge_phys_mouse(uint8_t *report, uint8_t len)
 {
 	uint8_t doff = mouse_layout.data_off;
+	if (len <= doff) return;          // too short to hold the report-ID/button byte
 	uint8_t rid  = doff ? report[0] : 0;
 
 	bool xy_here    = (rid == mouse_layout.report_id);
@@ -825,7 +839,7 @@ void usb_merge_send_pending(void)
 	if (inject.mouse_dirty && mouse_silent && ms != last_synth_ms &&
 	    cached_mouse_ep && mouse_layout.valid) {
 		last_synth_ms = ms;
-		uint8_t synth[16];
+		uint8_t synth[64];
 		memset(synth, 0, sizeof(synth));
 		uint8_t doff = mouse_layout.data_off;
 		if (doff) synth[0] = mouse_layout.report_id;
@@ -854,6 +868,7 @@ void usb_merge_send_pending(void)
 		}
 		uint8_t rlen = cached_mouse_report_len;
 		if (rlen == 0) rlen = (cached_mouse_maxpkt < 16) ? (uint8_t)cached_mouse_maxpkt : 16;
+		if (rlen > sizeof(synth)) rlen = sizeof(synth);
 		usb_device_send_report(cached_mouse_ep, synth, rlen);
 		inject.mouse_wheel = 0;
 		inject.mouse_dirty = (inject.mouse_buttons != 0 ||
@@ -867,7 +882,7 @@ void usb_merge_send_pending(void)
 __attribute__((cold, noinline))
 static void usb_merge_send_wheel_report(void)
 {
-	uint8_t synth[16];
+	uint8_t synth[64];
 	memset(synth, 0, sizeof(synth));
 	uint8_t doff = mouse_layout.data_off;
 	if (doff) synth[0] = mouse_layout.wheel_report_id;
@@ -878,6 +893,7 @@ static void usb_merge_send_wheel_report(void)
 	                   mouse_layout.wheel_size, doff, w);
 	uint8_t rlen = cached_mouse_report_len;
 	if (rlen == 0) rlen = (cached_mouse_maxpkt < 16) ? (uint8_t)cached_mouse_maxpkt : 16;
+	if (rlen > sizeof(synth)) rlen = sizeof(synth);
 	usb_device_send_report(cached_mouse_ep, synth, rlen);
 	inject.mouse_wheel = 0;
 	inject.mouse_dirty = (inject.mouse_buttons != 0);

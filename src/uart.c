@@ -13,6 +13,7 @@
 #include "ch32h417_port.h"
 #include "board.h"
 #include "uart.h"
+#include "uart_rx_class.h"
 
 #define RX_RING_SZ  1024            /* power of two -> mask 1023 */
 #define TX_RING_SZ  4096            /* power of two -> mask 4095 */
@@ -28,7 +29,10 @@ static volatile uint16_t tx_tail;   /* ISR reads */
 static uint32_t tx_total;
 
 static uint32_t s_baud;
-static volatile uint32_t err_or, err_fe, err_ne;
+/* err_or = hardware overrun (STATR.ORE); err_fe/err_ne = framing/noise.
+ * rx_drop counts bytes lost to a full RX ring — kept distinct so a software
+ * back-pressure drop is never miscounted as a hardware overrun. */
+static volatile uint32_t err_or, err_fe, err_ne, rx_drop;
 
 static void usart_apply(uint32_t baud)
 {
@@ -141,6 +145,7 @@ void uart_tx_flush(void)
 uint32_t uart_overrun(void)       { return err_or; }
 uint32_t uart_framing(void)       { return err_fe; }
 uint32_t uart_noise(void)         { return err_ne; }
+uint32_t uart_rx_drop(void)       { return rx_drop; }
 uint32_t uart_rx_byte_count(void) { return rx_total; }
 uint32_t uart_tx_byte_count(void) { return tx_total; }
 
@@ -148,16 +153,25 @@ uint32_t uart_tx_byte_count(void) { return tx_total; }
 void CMD_USART_IRQHandler(void) WCH_IRQ;
 void CMD_USART_IRQHandler(void)
 {
-    /* RX: drain RXNE into the ring. Reading DATAR clears RXNE. On overrun we
-     * still read DATAR to clear the condition and bump the counter. */
+    /* RX: drain RXNE into the ring. Snapshot STATR BEFORE reading DATAR — on
+     * this part ORE/FE/NE are cleared by the "read STATR then read DATAR"
+     * sequence, so reading DATAR first would lose the error indication. Reading
+     * DATAR always (even on error) clears RXNE/ORE so the link can't wedge. */
     if (USART_GetITStatus(CMD_USART, USART_IT_RXNE) != RESET) {
-        uint8_t b = (uint8_t)USART_ReceiveData(CMD_USART);
-        uint16_t next = (uint16_t)((rx_head + 1) & (RX_RING_SZ - 1));
-        if (next != rx_tail) {                   /* drop on full (don't clobber) */
-            rx_ring[rx_head] = b;
-            rx_head = next;
-        } else {
-            err_or++;                            /* ring full -> lost byte */
+        uint16_t sr = (uint16_t)CMD_USART->STATR;          /* snapshot first */
+        uint8_t  b  = (uint8_t)USART_ReceiveData(CMD_USART); /* clears RXNE/ORE */
+        uart_rx_class_t c = uart_rx_classify(sr);
+        if (c.count_or) err_or++;
+        if (c.count_fe) err_fe++;
+        if (c.count_ne) err_ne++;
+        if (!c.drop) {                           /* FE/NE byte is corrupt -> skip */
+            uint16_t next = (uint16_t)((rx_head + 1) & (RX_RING_SZ - 1));
+            if (next != rx_tail) {               /* drop on full (don't clobber) */
+                rx_ring[rx_head] = b;
+                rx_head = next;
+            } else {
+                rx_drop++;                       /* ring full -> software drop */
+            }
         }
     }
 

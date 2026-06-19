@@ -303,5 +303,11 @@ test:
 	/tmp/desc_xfer_test
 	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_stream_test test/spi_frame_stream_test.c src/spi_frame_stream.c src/spi_frame.c
 	/tmp/spi_frame_stream_test
+	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c
+	/tmp/usb_merge_test
+	cc -std=c11 -O2 -Wall -Isrc -o /tmp/usb_host_time_test test/usb_host_time_test.c
+	/tmp/usb_host_time_test
+	cc -std=c11 -O2 -Wall -Isrc -o /tmp/uart_rx_class_test test/uart_rx_class_test.c
+	/tmp/uart_rx_class_test
 
 .PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test build

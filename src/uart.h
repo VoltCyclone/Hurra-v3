@@ -20,5 +20,6 @@ void     uart_tx_flush(void);    // arm TXE if data is pending
 uint32_t uart_overrun(void);
 uint32_t uart_framing(void);
 uint32_t uart_noise(void);
+uint32_t uart_rx_drop(void);   /* bytes dropped due to a full RX ring (software) */
 uint32_t uart_rx_byte_count(void);
 uint32_t uart_tx_byte_count(void);

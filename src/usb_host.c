@@ -21,6 +21,7 @@
 #include "board.h"              // LED_GPIO_*
 #include "icc.h"                // dbg_stage(), DBG_STAGE_ADDR
 #include "timebase_v5f.h"      // timebase_v5f_delay_us
+#include "usb_host_time.h"     // usbhs_remaining_us — wrap-safe budget arithmetic
 #include <string.h>
 
 #include "usb_host.h"
@@ -55,7 +56,8 @@
 
 #define DEF_BUS_RESET_TIMEOUT       30          // USBHS bus reset timeout
 #define DEF_WAIT_USB_TRANSFER_CNT   1000        // Wait for the USB transfer to complete
-#define DEF_CTRL_TRANS_TIMEOVER_CNT 60000       // Control transmission delay timing (NAK retries)
+#define DEF_CTRL_TRANS_TIMEOUT_US   2000000u    // Control-transfer wall-clock NAK budget (2 s)
+#define DEF_INTR_OUT_TIMEOUT_US     5000u       // Interrupt-OUT NAK budget (5 ms)
 
 /* ------------------------------------------------------------------------ */
 /* DMA buffers — placed in the dedicated .usbdma section (uncached SRAM).    */
@@ -149,11 +151,18 @@ static void usbhs_rcc_init(void)
 /* Returns ERR_SUCCESS, or (PID | ERR_USB_TRANSFER) for NAK/STALL, or a      */
 /* connect/disconnect/unknown error code.                                    */
 /* ------------------------------------------------------------------------ */
-static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32_t timeout)
+static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32_t timeout_us)
 {
     uint8_t  r, trans_retry;
     uint8_t  endp_number = endp_pid_number & 0xf0;
     uint8_t  endp_pid    = endp_pid_number & 0x0f;
+
+    /* Wall-clock NAK budget. A NAKing device legitimately retries flow control
+     * many times; bound the retries by elapsed time (timeout_us) rather than a
+     * count so a persistently-NAKing control or interrupt-OUT transfer cannot
+     * spin the relay for seconds. timeout_us == 0 means "no NAK retry — return
+     * on the first NAK" (used by interrupt-IN polling). */
+    uint32_t t_start = timebase_v5f_us();
 
     /* Normalise the toggle to DATA0/DATA1 for IN/OUT, 0 otherwise — the
      * reference accepts a couple of legacy 0x80/0x40 toggle encodings too. */
@@ -233,11 +242,13 @@ static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32
                 return (r | ERR_USB_TRANSFER);
             }
             if (r == USB_PID_NAK) {
-                if (timeout == 0) {
+                /* timeout_us == 0: return immediately on NAK. Otherwise retry
+                 * until the wall-clock budget is spent. NAK retries do not burn
+                 * the 10-iteration cap (which guards toggle/spurious retries);
+                 * they are bound solely by the deadline. */
+                if (timeout_us == 0 ||
+                    usbhs_remaining_us(timebase_v5f_us(), t_start, timeout_us) == 0) {
                     return (r | ERR_USB_TRANSFER);
-                }
-                if (timeout < 0xFFFF) {
-                    timeout--;
                 }
                 --trans_retry;   /* keep retrying without burning the cap */
             } else switch (endp_pid) {
@@ -380,10 +391,14 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
         maxpkt = 8;   /* default EP0 size */
     }
 
-    /* timeout_ms is applied as a coarse outer guard by bounding each transact()'s
-     * per-stage NAK-retry budget. */
-    uint32_t nak_budget = (timeout_ms == 0) ? DEF_CTRL_TRANS_TIMEOVER_CNT
-                                            : (timeout_ms * 1000u);
+    /* One wall-clock budget shared across SETUP/DATA/STATUS: capture the start
+     * once, and pass each stage the time remaining so the whole control transfer
+     * is bounded by timeout_ms (default 2 s) regardless of how the NAK retries
+     * distribute across stages. */
+    uint32_t budget_us = (timeout_ms == 0) ? DEF_CTRL_TRANS_TIMEOUT_US
+                                           : (timeout_ms * 1000u);
+    uint32_t ctrl_t0   = timebase_v5f_us();
+    #define NAK_REMAINING()  usbhs_remaining_us(timebase_v5f_us(), ctrl_t0, budget_us)
 
     USBHSH->DEV_ADDR = addr;
 
@@ -391,7 +406,7 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
     Delay_Us(100);
     memcpy(USBHS_TX_Buf, setup, sizeof(usb_setup_t));
     USBHSH->TX_LEN = sizeof(usb_setup_t);
-    s = usbhs_transact(USB_PID_SETUP | 0x00, USBHS_UH_T_TOG_DATA0, nak_budget);
+    s = usbhs_transact(USB_PID_SETUP | 0x00, USBHS_UH_T_TOG_DATA0, NAK_REMAINING());
     if (s != ERR_SUCCESS) {
         return -1;
     }
@@ -405,7 +420,7 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
             /* ---- device-to-host (IN) ---- */
             while (rem_len) {
                 Delay_Us(100);
-                s = usbhs_transact(USB_PID_IN, USBHSH->CONTROL, nak_budget);
+                s = usbhs_transact(USB_PID_IN, USBHSH->CONTROL, NAK_REMAINING());
                 if (s != ERR_SUCCESS) {
                     return -2;
                 }
@@ -431,7 +446,7 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
                 for (tx_cnt = 0; tx_cnt != USBHSH->TX_LEN; tx_cnt++) {
                     USBHS_TX_Buf[tx_cnt] = *pbuf++;
                 }
-                s = usbhs_transact(USB_PID_OUT | 0x00, USBHSH->CONTROL, nak_budget);
+                s = usbhs_transact(USB_PID_OUT | 0x00, USBHSH->CONTROL, NAK_REMAINING());
                 if (s != ERR_SUCCESS) {
                     return -3;
                 }
@@ -449,7 +464,7 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
     /* ---- STATUS stage (opposite direction, zero-length, DATA1) ---- */
     Delay_Us(100);
     s = usbhs_transact((USBHSH->TX_LEN) ? (USB_PID_IN | 0x00) : (USB_PID_OUT | 0x00),
-                       USBHS_UH_T_TOG_DATA1, nak_budget);
+                       USBHS_UH_T_TOG_DATA1, NAK_REMAINING());
     if (s != ERR_SUCCESS) {
         return -4;
     }
@@ -464,6 +479,7 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
     /* Status IN returned unexpected data. */
     return -5;
 }
+#undef NAK_REMAINING
 
 /* On this token-based IP a control transfer is naturally synchronous, so the
  * fire-and-forget API runs it to completion here and reports "never busy".
@@ -581,7 +597,7 @@ bool usb_host_interrupt_out_send(uint8_t index, const uint8_t *data, uint16_t le
     USBHSH->TX_LEN = len;
 
     uint8_t s = usbhs_transact(USB_PID_OUT | (out_slots[index].ep << 4),
-                               out_slots[index].tog, DEF_CTRL_TRANS_TIMEOVER_CNT);
+                               out_slots[index].tog, DEF_INTR_OUT_TIMEOUT_US);
     if (s != ERR_SUCCESS) {
         return false;
     }
