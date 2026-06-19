@@ -141,16 +141,9 @@ static void diag_v5f_stage_poll(uint8_t *last_stage, uint32_t *hb_tick)
             diag_puts(":"); diag_put_u32(w & 0xFFFF);
         }
     }
-    // On a V5F trap (stage 0x8x) the handler stamped mcause/mepc in the two words
-    // after the marker; surface them so the fault is self-describing.
-    if ((stage & 0xF0) == DBG_V5F_TRAP_BASE) {
-        uint32_t mcause = *(volatile uint32_t *)(DBG_STAGE_ADDR + 4);
-        uint32_t mepc   = *(volatile uint32_t *)(DBG_STAGE_ADDR + 8);
-        diag_puts(" mcause=");  diag_put_u32(mcause);
-        diag_puts(" mepc=0x");  diag_put_hex8((uint8_t)(mepc >> 24));
-        diag_put_hex8((uint8_t)(mepc >> 16)); diag_put_hex8((uint8_t)(mepc >> 8));
-        diag_put_hex8((uint8_t)mepc);
-    }
+    // (mcause/mepc for a V5F trap are printed above from the 0x2017F0E4/E8
+    // witness words, so the redundant DBG_STAGE_ADDR+4/+8 copy was dropped along
+    // with the matching cross-core writes in the V5F HardFault handler.)
     diag_puts("\r\n");
 }
 #endif /* V5F_STAGE_DIAG */
@@ -166,10 +159,9 @@ int main(void)
     icc_init_v3f();                     // set up shared rings BEFORE releasing V5F
     NVIC_WakeUp_V5F(Core_V5F_StartAddr);
     // Rendezvous is the ICC magic-spin (V3F sets magic in icc_init_v3f before this
-    // wake; V5F spins on it in icc_init_v5f). V3F does not block on HSEM, so do not
-    // enable the HSEM interrupt: there is no HSEM_Handler to clear the flag (only a
-    // weak spin-stub), and V5F's HSEM_ReleaseOneSem would set V3F's HSEM-pending
-    // bit, trapping V3F in the stub. HSEM stays poll-only on the V5F side.
+    // wake; V5F spins on it in icc_init_v5f). HSEM is intentionally unused: do not
+    // enable the HSEM interrupt — there is no HSEM_Handler, only a weak spin-stub,
+    // so any HSEM-pending bit would trap V3F there.
 
     uart_init(CMD_BAUD_DEFAULT);
     kmbox_cmd_init();                   // act_init + proto_init + bind tx

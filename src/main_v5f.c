@@ -123,11 +123,11 @@ void HardFault_Handler(void)
 	*(volatile uint32_t *)0x2017F0E4u = mcause;
 	*(volatile uint32_t *)0x2017F0E8u = mepc;
 	// Stamp the trap into the shared boot-stage marker (0x80 | low mcause nibble)
-	// and the faulting PC into the following word, so V3F surfaces a V5F trap as a
-	// UART line. Also keep a slow PC3 blink as a fallback if the UART path is dead.
+	// so V3F surfaces a V5F trap as a UART line. mcause/mepc are already in the
+	// witness words above (0x2017F0E4/E8); V3F reads them there, so no extra
+	// cross-core writes are needed here. Keep a slow PC3 blink as a UART-dead
+	// fallback.
 	dbg_stage(DBG_V5F_TRAP_BASE | (mcause & 0x0F));
-	*(volatile uint32_t *)(DBG_STAGE_ADDR + 4) = mcause;
-	*(volatile uint32_t *)(DBG_STAGE_ADDR + 8) = mepc;
 	uint8_t nib = (uint8_t)(mcause & 0x0F);
 	if (nib == 0) nib = 16;  // distinguish "cause 0" from "no pulses"
 	for (;;) {
@@ -187,13 +187,12 @@ int main(void)
 #endif
 
 	// --- ICC rendezvous with the V3F command core ------------------------
-	// V3F sets the shared-block magic; wait for it, complete the HSEM handshake, and
-	// enable the V3F->V5F doorbell so injection records wake us.
+	// V3F sets the shared-block magic (waited for in icc_init_v5f); then enable
+	// the V3F->V5F doorbell so injection records wake us. HSEM is intentionally
+	// unused — V3F never takes HSEM_ID0, so a take/release here was a no-op that
+	// only looked like synchronization.
 	icc_init_v5f();
 	dbg_stage(DBG_V5F_ICC_MAGIC);
-	HSEM_FastTake(HSEM_ID0);
-	HSEM_ReleaseOneSem(HSEM_ID0, 0);
-	dbg_stage(DBG_V5F_HSEM_DONE);
 	IPC_ITConfig(IPC_CH0, IPC_CH_Sta_Bit0, ENABLE);
 	NVIC_EnableIRQ(IPC_CH0_IRQn);
 	dbg_stage(DBG_V5F_ICC_READY);

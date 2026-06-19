@@ -45,6 +45,10 @@ static void icc_ipc_config_v3f(void)
     ipc.AutoEN  = ENABLE;
 
     IPC_DeInit();
+    /* Warm-reset safety: IPC_DeInit() only zeroes STS, which may leave sticky
+     * channel-status bits set from a prior boot. Clear all of them before
+     * IPC_Init so the first doorbell/telemetry write starts from a clean slate. */
+    IPC->CLR = 0xFFFFFFFFu;
     IPC_Init(&ipc);
     IPC_CH0_Lock();
 }
