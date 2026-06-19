@@ -364,6 +364,17 @@ class TestMain(unittest.TestCase):
             sys.stderr = old_err
         self.assertEqual(rc, flash.EXIT_USAGE)
 
+    def test_list_with_wlink_missing_returns_exit_6(self):
+        def wlink_missing(cmd, timeout):
+            return flash.RunResult(127, "wlink not found")
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+        try:
+            rc = flash.main(["--list"], runner=wlink_missing)
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+        self.assertEqual(rc, flash.EXIT_NO_TOOL)
+
     def test_json_flag_emits_json(self):
         runner = FakeRunner([("wlink list", flash.RunResult(0, "0: WCH-LinkE serial=ABC\n")),
                              ("erase", flash.RunResult(0, "")),

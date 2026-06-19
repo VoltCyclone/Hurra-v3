@@ -327,7 +327,11 @@ def main(argv=None, runner=None):
         runner = subprocess_runner
 
     if args.list:
-        probes = discover_probes(runner)
+        try:
+            probes = discover_probes(runner)
+        except WlinkMissingError as e:
+            sys.stderr.write("error: %s\n" % e)
+            return EXIT_NO_TOOL
         sys.stdout.write(render_list(probes) + "\n")
         return EXIT_OK
 
