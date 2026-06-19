@@ -239,7 +239,8 @@ int main(void)
 	GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, ENABLE);
 	dbg_stage(DBG_V5F_PRE_HOSTINIT);// 0x68: SWJ disabled; about to call usb_host_init
 
-	usb_host_init();
+	if (!usb_host_init())
+		led_blink_forever(3, 80, 120);  // 3 pulses = USBHS 480M PLL never locked
 	dbg_stage(DBG_V5F_HOST_INIT);
 	led_off();
 	usb_host_power_on();

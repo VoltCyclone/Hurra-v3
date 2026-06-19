@@ -159,7 +159,8 @@ void two_board_host_run(void)
     }
 #else
     /* ---- Real USBHS host capture (SWJ already disabled by main_v5f) ---- */
-    usb_host_init();
+    if (!usb_host_init())
+        led_blink_forever(3, 80, 120);  // 3 pulses = USBHS 480M PLL never locked
     dbg_stage(DBG_V5F_HOST_INIT);
     usb_host_power_on();
 

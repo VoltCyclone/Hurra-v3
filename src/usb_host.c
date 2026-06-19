@@ -76,7 +76,7 @@ __attribute__((section(".usbdma"), aligned(4))) static uint8_t USBHS_TX_Buf[USBH
 typedef struct {
     uint8_t  addr;     /* device address */
     uint8_t  ep;       /* endpoint number (0..15) */
-    uint8_t  maxpkt;   /* max packet size / 1 (capped at 255 here, HID ≤64) */
+    uint16_t maxpkt;   /* max packet size (HS interrupt EPs can be up to 512) */
     uint16_t tog;      /* current data toggle (USBHS_UH_T_TOG_DATA0/DATA1) */
     uint8_t  used;
 } intr_slot_t;
@@ -99,7 +99,7 @@ static uint8_t s_dev_speed = USB_SPEED_FULL;
 /* down, only the UTMI + USBHS peripheral clocks are (re)enabled. Init order   */
 /* between usb_device_init() and usb_host_init() is therefore irrelevant.      */
 /* ------------------------------------------------------------------------ */
-static void usbhs_rcc_init(void)
+static bool usbhs_rcc_init(void)
 {
     dbg_stage(DBG_V5F_HOST_RCC_ENTER);   /* 0x70: entered usbhs_rcc_init */
     // Test the USBHS PLLRDY bit, not SYSPLL_SEL: SYSPLL_SEL selects what feeds
@@ -124,6 +124,11 @@ static void usbhs_rcc_init(void)
                 if (++pll_wait >= 2000000u) break;   /* raw spin cap, ~10s ballpark */
             }
         }
+        /* If the PLL still never locked, the 480M domain is dead — every USBHS
+         * transfer would fail. Report failure so the caller can halt loudly
+         * rather than silently relaying a non-functional host. */
+        if (!(RCC->CTLR & RCC_USBHS_PLLRDY))
+            return false;
     }
     /* PLL up: (re)enable the UTMI + USBHS peripheral clocks. */
     dbg_stage(DBG_V5F_HOST_PLL_RDY);     /* 0x72: PLL phase done, before UTMI/USBHS clk */
@@ -131,6 +136,7 @@ static void usbhs_rcc_init(void)
     dbg_stage(DBG_V5F_HOST_UTMI_ON);     /* 0x73: UTMI clk enabled */
     RCC_HBPeriphClockCmd(RCC_HBPeriph_USBHS, ENABLE);
     dbg_stage(DBG_V5F_HOST_CLK_ON);      /* 0x74: USBHS peripheral clk enabled */
+    return true;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -286,7 +292,8 @@ static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32
 
 bool usb_host_init(void)
 {
-    usbhs_rcc_init();
+    if (!usbhs_rcc_init())
+        return false;                    /* 480M PLL never locked — host is dead */
     dbg_stage(DBG_V5F_HOST_MMIO);        /* 0x75: rcc_init returned, before USBHSH MMIO */
 
     /* Reset link, hold PHY out of suspend. */
@@ -506,7 +513,7 @@ void usb_host_interrupt_init(uint8_t index, uint8_t addr, uint8_t ep,
     }
     in_slots[index].addr   = addr;
     in_slots[index].ep     = ep & 0x0F;
-    in_slots[index].maxpkt = (maxpkt > 255) ? 255 : (uint8_t)maxpkt;
+    in_slots[index].maxpkt = maxpkt;
     in_slots[index].tog    = USBHS_UH_T_TOG_DATA0;   /* IN data starts at DATA0 */
     in_slots[index].used   = 1;
 }
@@ -575,7 +582,7 @@ void usb_host_interrupt_out_init(uint8_t index, uint8_t addr, uint8_t ep,
     }
     out_slots[index].addr   = addr;
     out_slots[index].ep     = ep & 0x0F;
-    out_slots[index].maxpkt = (maxpkt > 255) ? 255 : (uint8_t)maxpkt;
+    out_slots[index].maxpkt = maxpkt;
     out_slots[index].tog    = USBHS_UH_T_TOG_DATA0;
     out_slots[index].used   = 1;
 }

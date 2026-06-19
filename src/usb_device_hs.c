@@ -26,6 +26,7 @@
 #include "icc.h"                // dbg_stage() / DBG_V5F_DEV_INIT
 #include "timebase_v5f.h"
 #include "usb_hs_desc.h"        // usb_hs_synth_qualifier (HS DEVICE_QUALIFIER)
+#include "hid_iface_index.h"    // hid_iface_index() — per-interface wIndex bounds
 #include <string.h>
 
 // TIM9-based delay; the vendor Delay_Us spins on the shared SysTick0 ISR and can
@@ -234,9 +235,10 @@ static uint8_t s_out_ep_mask;
 static volatile uint8_t s_out_rx_len[USB_DEV_NUM_ENDPOINTS];
 static volatile uint8_t s_out_rx_pend[USB_DEV_NUM_ENDPOINTS];
 
-/* HID class state (single interface). */
-static volatile uint8_t  USBHS_HidIdle;
-static volatile uint8_t  USBHS_HidProtocol;
+/* HID class state, per interface — a composite clone has independent idle and
+ * protocol values for each HID interface (selected by the request's wIndex). */
+static volatile uint8_t  USBHS_HidIdle[MAX_INTERFACES];
+static volatile uint8_t  USBHS_HidProtocol[MAX_INTERFACES];
 
 /* Captured EP0 HID SET_REPORT (host->device control write). The ISR latches the
  * SET_REPORT setup and accumulates its EP0 OUT payload here; the V5F relay loop
@@ -650,20 +652,42 @@ void USBHS_IRQHandler(void)
                             s_ep0_rpt_index     = USBHS_SetupReqIndex;
                         }
                         break;
-                    case HID_SET_IDLE:
-                        USBHS_HidIdle = (uint8_t)(USBHS_SetupReqValue >> 8);
+                    case HID_SET_IDLE: {
+                        uint8_t ifc;
+                        if (hid_iface_index(USBHS_SetupReqIndex, MAX_INTERFACES, &ifc))
+                            USBHS_HidIdle[ifc] = (uint8_t)(USBHS_SetupReqValue >> 8);
+                        else
+                            errflag = 0xFF;
                         break;
-                    case HID_SET_PROTOCOL:
-                        USBHS_HidProtocol = (uint8_t)USBHS_SetupReqValue;
+                    }
+                    case HID_SET_PROTOCOL: {
+                        uint8_t ifc;
+                        if (hid_iface_index(USBHS_SetupReqIndex, MAX_INTERFACES, &ifc))
+                            USBHS_HidProtocol[ifc] = (uint8_t)USBHS_SetupReqValue;
+                        else
+                            errflag = 0xFF;
                         break;
-                    case HID_GET_IDLE:
-                        USBHS_EP0_Buf[0] = USBHS_HidIdle;
-                        len = 1;
+                    }
+                    case HID_GET_IDLE: {
+                        uint8_t ifc;
+                        if (hid_iface_index(USBHS_SetupReqIndex, MAX_INTERFACES, &ifc)) {
+                            USBHS_EP0_Buf[0] = USBHS_HidIdle[ifc];
+                            len = 1;
+                        } else {
+                            errflag = 0xFF;
+                        }
                         break;
-                    case HID_GET_PROTOCOL:
-                        USBHS_EP0_Buf[0] = USBHS_HidProtocol;
-                        len = 1;
+                    }
+                    case HID_GET_PROTOCOL: {
+                        uint8_t ifc;
+                        if (hid_iface_index(USBHS_SetupReqIndex, MAX_INTERFACES, &ifc)) {
+                            USBHS_EP0_Buf[0] = USBHS_HidProtocol[ifc];
+                            len = 1;
+                        } else {
+                            errflag = 0xFF;
+                        }
                         break;
+                    }
                     default:
                         errflag = 0xFF;
                         break;
@@ -791,7 +815,16 @@ void USBHS_IRQHandler(void)
 
                 case USB_SET_CONFIGURATION:
                     USBHS_DevConfig = (uint8_t)(USBHS_SetupReqValue & 0xFF);
-                    s_configured = 1;
+                    /* SET_CONFIGURATION(0) de-configures the device: drop the
+                     * interrupt-endpoint map (keep EP0 control armed) so a
+                     * subsequent re-configure starts clean. */
+                    s_configured = (USBHS_DevConfig != 0);
+                    if (!s_configured) {
+                        s_in_ep_mask  = 0;
+                        s_out_ep_mask = 0;
+                        USBHSD->UEP_TX_EN = USBHS_UEP0_T_EN;
+                        USBHSD->UEP_RX_EN = USBHS_UEP0_R_EN;
+                    }
                     break;
 
                 case USB_CLEAR_FEATURE:

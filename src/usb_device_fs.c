@@ -16,6 +16,7 @@
 #include "ch32h417_port.h"      // ch32h417.h (USBFSD struct, RCC), usb bit defs
 #include "debug.h"
 #include "timebase_v5f.h"
+#include "hid_iface_index.h"    // hid_iface_index() — per-interface wIndex bounds
 #include <string.h>
 
 // TIM9-based delay; the vendor Delay_Us spins on the shared SysTick0 ISR and can
@@ -96,9 +97,10 @@ static uint8_t s_out_ep_mask;
 static volatile uint8_t s_out_rx_len[USB_DEV_NUM_ENDPOINTS];
 static volatile uint8_t s_out_rx_pend[USB_DEV_NUM_ENDPOINTS];
 
-/* HID class state (single interface). */
-static volatile uint8_t  USBFS_HidIdle;
-static volatile uint8_t  USBFS_HidProtocol;
+/* HID class state, per interface — a composite clone has independent idle and
+ * protocol values for each HID interface (selected by the request's wIndex). */
+static volatile uint8_t  USBFS_HidIdle[MAX_INTERFACES];
+static volatile uint8_t  USBFS_HidProtocol[MAX_INTERFACES];
 
 /* Captured EP0 HID SET_REPORT (host->device control write). The ISR latches the
  * setup and accumulates its EP0 OUT payload here; the V5F relay loop drains it
@@ -576,20 +578,42 @@ void USBFS_IRQHandler(void)
                             s_ep0_rpt_index     = USBFS_SetupReqIndex;
                         }
                         break;
-                    case HID_SET_IDLE:
-                        USBFS_HidIdle = (uint8_t)(USBFS_SetupReqValue >> 8);
+                    case HID_SET_IDLE: {
+                        uint8_t ifc;
+                        if (hid_iface_index(USBFS_SetupReqIndex, MAX_INTERFACES, &ifc))
+                            USBFS_HidIdle[ifc] = (uint8_t)(USBFS_SetupReqValue >> 8);
+                        else
+                            errflag = 0xFF;
                         break;
-                    case HID_SET_PROTOCOL:
-                        USBFS_HidProtocol = (uint8_t)USBFS_SetupReqValue;
+                    }
+                    case HID_SET_PROTOCOL: {
+                        uint8_t ifc;
+                        if (hid_iface_index(USBFS_SetupReqIndex, MAX_INTERFACES, &ifc))
+                            USBFS_HidProtocol[ifc] = (uint8_t)USBFS_SetupReqValue;
+                        else
+                            errflag = 0xFF;
                         break;
-                    case HID_GET_IDLE:
-                        USBFS_EP0_Buf[0] = USBFS_HidIdle;
-                        len = 1;
+                    }
+                    case HID_GET_IDLE: {
+                        uint8_t ifc;
+                        if (hid_iface_index(USBFS_SetupReqIndex, MAX_INTERFACES, &ifc)) {
+                            USBFS_EP0_Buf[0] = USBFS_HidIdle[ifc];
+                            len = 1;
+                        } else {
+                            errflag = 0xFF;
+                        }
                         break;
-                    case HID_GET_PROTOCOL:
-                        USBFS_EP0_Buf[0] = USBFS_HidProtocol;
-                        len = 1;
+                    }
+                    case HID_GET_PROTOCOL: {
+                        uint8_t ifc;
+                        if (hid_iface_index(USBFS_SetupReqIndex, MAX_INTERFACES, &ifc)) {
+                            USBFS_EP0_Buf[0] = USBFS_HidProtocol[ifc];
+                            len = 1;
+                        } else {
+                            errflag = 0xFF;
+                        }
                         break;
+                    }
                     default:
                         errflag = 0xFF;
                         break;
@@ -708,7 +732,17 @@ void USBFS_IRQHandler(void)
 
                 case USB_SET_CONFIGURATION:
                     USBFS_DevConfig = (uint8_t)(USBFS_SetupReqValue & 0xFF);
-                    s_configured = 1;
+                    /* SET_CONFIGURATION(0) de-configures the device: drop the
+                     * endpoint map so a subsequent re-configure starts clean. */
+                    s_configured = (USBFS_DevConfig != 0);
+                    if (!s_configured) {
+                        s_in_ep_mask  = 0;
+                        s_out_ep_mask = 0;
+                        USBFSD->UEP4_1_MOD = 0;
+                        USBFSD->UEP2_3_MOD = 0;
+                        USBFSD->UEP5_6_MOD = 0;
+                        USBFSD->UEP7_MOD   = 0;
+                    }
                     break;
 
                 case USB_CLEAR_FEATURE:
