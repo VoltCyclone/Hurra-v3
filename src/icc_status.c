@@ -16,6 +16,12 @@ uint16_t icc_status_pack(uint8_t sel, uint8_t seq, const display_status_t *st)
                                           ? 1023u : st->reports_per_sec; break;
         case ICC_ST_SEL_DROPS:  payload = (st->drops > 1023u) ? 1023u : st->drops; break;
         case ICC_ST_SEL_PROBE:  payload = (uint16_t)(((st->probe & 0xFu) << 4) | (st->gotmask & 0xFu)); break;
+        case ICC_ST_SEL_WEDGE:  payload = (st->wedge > 1023u) ? 1023u : st->wedge; break;
+        case ICC_ST_SEL_SPEEDS: payload = (uint16_t)(((st->cap_speed & 0x3u) << 2)
+                                                     | (st->dev_speed & 0x3u)); break;
+        case ICC_ST_SEL_DEV:    payload = (uint16_t)(((st->dev_link & 0x1u) << 9)
+                                                     | ((st->dev_enum & 0x1u) << 8)
+                                                     | ((uint8_t)st->dev_temp_c)); break;
         default: break;
     }
     return (uint16_t)(((seq & 0x3u) << 14) | ((sel & 0xFu) << 10) | (payload & 0x3FFu));
@@ -38,6 +44,16 @@ uint8_t icc_status_unpack(uint16_t word, display_status_t *acc)
             acc->probe   = (uint8_t)((payload >> 4) & 0xFu);
             acc->gotmask = (uint8_t)(payload & 0xFu);
             acc->zerolen = (uint8_t)(acc->probe & 0x1u);
+            break;
+        case ICC_ST_SEL_WEDGE:  acc->wedge = payload; break;
+        case ICC_ST_SEL_SPEEDS:
+            acc->cap_speed = (uint8_t)((payload >> 2) & 0x3u);
+            acc->dev_speed = (uint8_t)(payload & 0x3u);
+            break;
+        case ICC_ST_SEL_DEV:
+            acc->dev_link  = (uint8_t)((payload >> 9) & 0x1u);
+            acc->dev_enum  = (uint8_t)((payload >> 8) & 0x1u);
+            acc->dev_temp_c = (int8_t)(payload & 0xFFu);
             break;
         default: break;
     }

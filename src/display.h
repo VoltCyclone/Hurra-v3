@@ -32,6 +32,14 @@ typedef struct {
     uint16_t inj_k;            // keyboard injection count
     // --- board temperature (V3F-local ADC) ---
     int8_t   temp_c;           // degrees Celsius (signed)
+    // --- two-board: host-side relay link health (host-local) ---
+    uint16_t wedge;            // SPI master wedge/recovery count
+    uint8_t  cap_speed;        // captured-device speed (USB_SPEED_*)
+    // --- two-board: device-board (Board A) status, via SPI return slot ---
+    uint8_t  dev_enum;         // 1 = clone configured on the PC
+    uint8_t  dev_speed;        // clone->PC speed (USB_SPEED_*)
+    int8_t   dev_temp_c;       // device board temperature (deg C)
+    uint8_t  dev_link;         // 1 = device telemetry fresh, 0 = stale
 } display_status_t;
 
 // Text grid. Scale 2 => 12px glyphs; 240px / 12px = 20 cols.

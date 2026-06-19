@@ -88,6 +88,21 @@ int main(void) {
     assert(za.gotmask == 0x1);
     assert(za.zerolen == 1);   // probe bit0 = 1
 
+    // --- new two-board selectors round-trip ---
+    display_status_t nsrc = { .wedge = 500, .cap_speed = 2 /*HS*/,
+                              .dev_enum = 1, .dev_speed = 0 /*FS*/,
+                              .dev_temp_c = -5, .dev_link = 1 };
+    display_status_t nacc = {0};
+    icc_status_unpack(icc_status_pack(ICC_ST_SEL_WEDGE,  0, &nsrc), &nacc);
+    icc_status_unpack(icc_status_pack(ICC_ST_SEL_SPEEDS, 1, &nsrc), &nacc);
+    icc_status_unpack(icc_status_pack(ICC_ST_SEL_DEV,    2, &nsrc), &nacc);
+    assert(nacc.wedge == 500);
+    assert(nacc.cap_speed == 2);
+    assert(nacc.dev_speed == 0);
+    assert(nacc.dev_enum == 1);
+    assert(nacc.dev_link == 1);
+    assert(nacc.dev_temp_c == -5);
+
     // 7. Transition WAITING->RELAYING: ROW_IDS goes blank->populated (dirty).
     //    `w` is the WAITING status from case 6; `rows` currently holds its render.
     memcpy(prev, rows, sizeof rows);   // prev = WAITING rows (ROW_IDS blank)
