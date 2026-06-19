@@ -53,7 +53,15 @@ void led_heartbeat_start(void)
     t.TIM_Period        = 4999;                 /* overwritten by apply_rate */
     t.TIM_ClockDivision = TIM_CKD_DIV1;
     TIM_TimeBaseInit(TIM2, &t);
+    /* ARR preload: ATRLR writes latch on the update event instead of mid-count,
+     * so a runtime rate change never produces a partial first period.
+     * URS=Regular: only a real counter overflow raises the update interrupt, so
+     * a software update event (used to latch a new ARR immediately) reloads the
+     * timer without spuriously firing the toggle ISR. */
+    TIM_ARRPreloadConfig(TIM2, ENABLE);
+    TIM_UpdateRequestConfig(TIM2, TIM_UpdateSource_Regular);
     heartbeat_apply_rate(s_centihz);
+    TIM_GenerateEvent(TIM2, TIM_EventSource_Update);  /* latch initial ARR now */
     TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
     NVIC_SetPriority(TIM2_IRQn, 16);
     NVIC_EnableIRQ(TIM2_IRQn);
@@ -65,6 +73,10 @@ void led_heartbeat_set_rate(uint16_t centihz)
 {
     s_centihz = centihz;
     heartbeat_apply_rate(centihz);
+    /* Latch the new ARR immediately. With URS=Regular this software update does
+     * not raise the update interrupt, so no extra masking dance is needed and the
+     * heartbeat ISR cannot spuriously fire from the rate change. */
+    TIM_GenerateEvent(TIM2, TIM_EventSource_Update);
 }
 
 void TIM2_IRQHandler(void) WCH_IRQ;

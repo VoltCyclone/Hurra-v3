@@ -85,7 +85,10 @@ static void gpio_spi_init(void)
     spi.SPI_CPOL = SPI_CPOL_High;
     spi.SPI_CPHA = SPI_CPHA_2Edge;
     spi.SPI_NSS = SPI_NSS_Soft;
-    spi.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_Mode0;
+    // SPI2 clocks from HCLK = 100 MHz via the HB1 bus (no APB divider on this
+    // part). Mode2 = /8 = 12.5 MHz SCK. The vendor SPI_LCD example runs Mode0
+    // (/2 = 50 MHz), so /8 is a conservative margin for reliable panel writes.
+    spi.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_Mode2;
     spi.SPI_FirstBit = SPI_FirstBit_MSB;
     spi.SPI_CRCPolynomial = 7;
     SPI_Init(LCD_SPI, &spi);

@@ -1,5 +1,6 @@
 // display.c — status-to-text layout (pure) and hardware render.
 #include "display.h"
+#include "display_rowpick.h"
 #include <stdio.h>
 #include <string.h>
 // Hardware headers are embedded-only; excluded from host unit tests.
@@ -109,23 +110,33 @@ void display_render(const display_status_t *st)
 {
     static char prev[DISP_ROWS][DISP_COLS + 1];
     static bool have_prev;
+    static uint8_t start_row;        // rotating scan cursor (anti-starvation)
     char rows[DISP_ROWS][DISP_COLS + 1];
     uint32_t dirty = display_format_lines(st, rows,
                         have_prev ? (const char (*)[DISP_COLS + 1])prev : 0);
-    for (int r = 0; r < DISP_ROWS; r++) {
-        if (!(dirty & (1u << r))) continue;
-        uint16_t y = (uint16_t)(r * 8 * DISP_SCALE);
-        // Clear the row band before drawing text.
-        st7789_fill_rect(0, y, LCD_WIDTH, (uint16_t)(y + 8 * DISP_SCALE), ST_BLACK);
-        uint16_t fg = (st->state == DISP_STATE_RELAYING) ? ST_GREEN :
-                      (st->state == DISP_STATE_ERROR ||
-                       st->state == DISP_STATE_NOSIGNAL) ? ST_RED : ST_WHITE;
-        if (r == ROW_HTEMP) fg = temp_color((int)st->temp_c);
-        else if (r == ROW_DTEMP) fg = st->dev_link ? temp_color((int)st->dev_temp_c) : ST_WHITE;
-        st7789_draw_string(0, y, rows[r], fg, ST_BLACK, DISP_SCALE);
-    }
-    memcpy(prev, rows, sizeof rows);
     have_prev = true;
+
+    // Paint at most one dirty row per call so a multi-row change (e.g. a state
+    // transition, or the first full render) can't block the V3F command loop in
+    // a single fill_rect+draw_string burst. The rotating cursor guarantees every
+    // row eventually repaints; rows not painted this call stay dirty because
+    // only the painted row is copied into prev[].
+    int r = display_pick_row(dirty, start_row, DISP_ROWS);
+    if (r < 0)
+        return;                      // nothing changed
+    start_row = (uint8_t)((r + 1) % DISP_ROWS);
+
+    uint16_t y = (uint16_t)(r * 8 * DISP_SCALE);
+    // Clear the row band before drawing text.
+    st7789_fill_rect(0, y, LCD_WIDTH, (uint16_t)(y + 8 * DISP_SCALE), ST_BLACK);
+    uint16_t fg = (st->state == DISP_STATE_RELAYING) ? ST_GREEN :
+                  (st->state == DISP_STATE_ERROR ||
+                   st->state == DISP_STATE_NOSIGNAL) ? ST_RED : ST_WHITE;
+    if (r == ROW_HTEMP) fg = temp_color((int)st->temp_c);
+    else if (r == ROW_DTEMP) fg = st->dev_link ? temp_color((int)st->dev_temp_c) : ST_WHITE;
+    st7789_draw_string(0, y, rows[r], fg, ST_BLACK, DISP_SCALE);
+
+    memcpy(prev[r], rows[r], DISP_COLS + 1);   // only the painted row is now clean
 }
 #else  /* host build: display is hardware-only, no-op stubs */
 void display_init(void) { }

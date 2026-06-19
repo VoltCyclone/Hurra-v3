@@ -311,5 +311,7 @@ test:
 	/tmp/uart_rx_class_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/hid_iface_index_test test/hid_iface_index_test.c
 	/tmp/hid_iface_index_test
+	cc -std=c11 -O2 -Wall -Isrc -o /tmp/display_rowpick_test test/display_rowpick_test.c
+	/tmp/display_rowpick_test
 
 .PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test build

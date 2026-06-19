@@ -12,8 +12,12 @@
 void temp_init(void)
 {
     RCC_HB2PeriphClockCmd(RCC_HB2Periph_ADC1, ENABLE);
-    // Clock ADC from HCLK; leaves the USBHS PLL untouched.
+    // Clock ADC from HCLK (leaves the USBHS PLL untouched), then pin the divider
+    // to HCLK/32 = 3.125 MHz. RCC_ADCCLKConfig selects the source; the divider
+    // call only sets PPRE2/ADCPRE, so both are needed. DIV4,DIV8 matches every
+    // vendor ADC example — the high-impedance temp sensor wants a slow ADCCLK.
     RCC_ADCCLKConfig(RCC_ADCCLKSource_HCLK);
+    RCC_ADCHCLKCLKAsSourceConfig(RCC_PPRE2_DIV4, RCC_HCLK_ADCPRE_DIV8);
 
     ADC_InitTypeDef adc = {0};
     ADC_DeInit(ADC1);
@@ -39,8 +43,10 @@ void temp_init(void)
 
 int8_t temp_read_c(void)
 {
-    // On-demand conversion of the temp sensor channel at the longest sample time.
-    ADC_RegularChannelConfig(ADC1, ADC_Channel_TempSensor, 1, ADC_SampleTime_CyclesMode5);
+    // On-demand conversion of the temp sensor channel at the longest sample time
+    // (Mode7) — the internal sensor's high source impedance needs maximum
+    // sampling for an accurate reading.
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_TempSensor, 1, ADC_SampleTime_CyclesMode7);
     ADC_SoftwareStartConvCmd(ADC1, ENABLE);
 
     // Bail with sentinel if EOC never arrives.
