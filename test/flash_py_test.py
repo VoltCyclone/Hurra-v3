@@ -76,5 +76,25 @@ class TestResolveSerial(unittest.TestCase):
             flash.resolve_serial(self.probes, None)
 
 
+class TestIsTransient(unittest.TestCase):
+    def _r(self, rc=0, out="", timed_out=False):
+        return flash.RunResult(returncode=rc, output=out, timed_out=timed_out)
+
+    def test_success_not_transient(self):
+        self.assertFalse(flash.is_transient(self._r(rc=0)))
+
+    def test_timeout_is_transient(self):
+        self.assertTrue(flash.is_transient(self._r(rc=1, timed_out=True)))
+
+    def test_0x55_protocol_error_is_transient(self):
+        self.assertTrue(flash.is_transient(self._r(rc=1, out="protocol error: 0x55")))
+
+    def test_probe_busy_is_transient(self):
+        self.assertTrue(flash.is_transient(self._r(rc=1, out="device or resource busy")))
+
+    def test_generic_failure_not_transient(self):
+        self.assertFalse(flash.is_transient(self._r(rc=1, out="chip id mismatch")))
+
+
 if __name__ == "__main__":
     unittest.main()

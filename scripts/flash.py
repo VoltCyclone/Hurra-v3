@@ -81,3 +81,25 @@ def resolve_serial(probes, requested, allow_any=False):
         raise ResolveError("serial %r is ambiguous; matches: %s" % (requested, cands))
     avail = ", ".join(p.serial for p in probes) or "(none)"
     raise ResolveError("serial %r not found; connected: %s" % (requested, avail))
+
+
+class RunResult:
+    """Outcome of a single subprocess call through the runner seam."""
+    def __init__(self, returncode, output, timed_out=False):
+        self.returncode = returncode
+        self.output = output
+        self.timed_out = timed_out
+
+
+_TRANSIENT_MARKERS = ("0x55", "protocol error", "resource busy",
+                      "device busy", "timeout", "timed out")
+
+
+def is_transient(result):
+    """True if a failure looks retryable (NAK after power-off, busy, timeout)."""
+    if result.returncode == 0:
+        return False
+    if result.timed_out:
+        return True
+    low = result.output.lower()
+    return any(m in low for m in _TRANSIENT_MARKERS)
