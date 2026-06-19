@@ -22,9 +22,31 @@ def strip_ansi(s):
 
 Probe = collections.namedtuple("Probe", "serial index id")
 
-_INDEX_RE = re.compile(r"^\s*(\d+)\s*:")
-_SERIAL_RE = re.compile(r"serial[=:\s]+(\S+)", re.IGNORECASE)
+# A line describes a probe if it names the adapter. wlink's exact `list` line
+# format is not pinned across versions (it has appeared as "0:", "Probe 0:",
+# and "WCH-Link #0:"), so detection keys off the adapter name and index
+# extraction tolerates all those shapes — falling back to enumeration order,
+# which is exactly what `-d <index>` selects by anyway.
+_PROBE_LINE_RE = re.compile(r"wch[\s-]?link|wchlink|linke", re.IGNORECASE)
+# Index markers, tried in order: "#0", "probe/link/device 0", leading "0:".
+_INDEX_RES = (
+    re.compile(r"#\s*(\d+)"),
+    re.compile(r"(?:probe|link|device)\s*#?\s*(\d+)", re.IGNORECASE),
+    re.compile(r"^\s*(\d+)\s*[:.)]"),
+)
+# Serial tokens are alphanumeric; stop at punctuation/whitespace so a trailing
+# comma or paren in the source line does not leak into the captured serial.
+_SERIAL_RE = re.compile(r"(?:serial|sn)[=:\s]+([0-9A-Za-z]+)", re.IGNORECASE)
 _DEVID_RE = re.compile(r"Probing device\s+(\S+)")
+
+
+def _extract_index(line):
+    """Return an explicit probe index from a line, or None if none is present."""
+    for rx in _INDEX_RES:
+        m = rx.search(line)
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def parse_probe_list(plain, verbose):
@@ -33,6 +55,12 @@ def parse_probe_list(plain, verbose):
     plain:   stdout/stderr of `wlink list`
     verbose: stdout/stderr of `wlink -v list` (device ids), used only when a
              probe has no USB serial.
+
+    Tolerant of wlink line-format drift: a line is treated as a probe when it
+    names the adapter (see _PROBE_LINE_RE). The index is taken from an explicit
+    marker when present, else from the probe's position in the list (the order
+    `-d <index>` uses). The serial comes from a `serial=`/`sn:` token, else the
+    `-v` device id, else the index as a last resort.
     """
     plain = strip_ansi(plain)
     verbose = strip_ansi(verbose)
@@ -40,10 +68,11 @@ def parse_probe_list(plain, verbose):
     probes = []
     n = 0
     for line in plain.splitlines():
-        m = _INDEX_RE.match(line)
-        if not m:
+        if not _PROBE_LINE_RE.search(line):
             continue
-        index = int(m.group(1))
+        index = _extract_index(line)
+        if index is None:
+            index = n
         sm = _SERIAL_RE.search(line)
         if sm:
             serial = sm.group(1)

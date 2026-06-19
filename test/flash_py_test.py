@@ -47,6 +47,40 @@ class TestParseProbeList(unittest.TestCase):
     def test_empty_means_no_probes(self):
         self.assertEqual(flash.parse_probe_list("", ""), [])
 
+    def test_probe_prefix_format(self):
+        # wlink has also printed "Probe N:" — index must still be extracted.
+        plain = "Probe 0: WCH-LinkE serial=ABC123\nProbe 1: WCH-LinkE serial=DEF456\n"
+        probes = flash.parse_probe_list(plain, "")
+        self.assertEqual([(p.index, p.serial) for p in probes],
+                         [(0, "ABC123"), (1, "DEF456")])
+
+    def test_hash_index_format(self):
+        # "WCH-Link #1" style — the # marker drives the index, not line position.
+        plain = "WCH-Link #1: serial=ABC123\n"
+        probes = flash.parse_probe_list(plain, "")
+        self.assertEqual(probes[0].index, 1)
+        self.assertEqual(probes[0].serial, "ABC123")
+
+    def test_index_falls_back_to_list_position(self):
+        # No explicit index marker -> position in the list (what -d selects by).
+        plain = "WCH-LinkE serial=ABC123\nWCH-LinkE serial=DEF456\n"
+        probes = flash.parse_probe_list(plain, "")
+        self.assertEqual([(p.index, p.serial) for p in probes],
+                         [(0, "ABC123"), (1, "DEF456")])
+
+    def test_serial_strips_trailing_punctuation(self):
+        # A trailing comma/field separator must not leak into the serial.
+        plain = "0: WCH-LinkE serial=ABC123, mode=RV\n"
+        probes = flash.parse_probe_list(plain, "")
+        self.assertEqual(probes[0].serial, "ABC123")
+
+    def test_non_probe_lines_ignored(self):
+        # Banner/blank lines without the adapter name are skipped.
+        plain = "Listing probes:\n\n0: WCH-LinkE serial=ABC123\nDone.\n"
+        probes = flash.parse_probe_list(plain, "")
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0].serial, "ABC123")
+
 
 class TestResolveSerial(unittest.TestCase):
     def setUp(self):
