@@ -207,8 +207,12 @@ Board B's USBHS host port, and plug Board A into the PC.
 
 Toolchain:
 
-- **`riscv-none-elf-gcc`** (MounRiver / xPack) is the default. If you use the
-  Homebrew RISC-V toolchain instead, override the prefix:
+- **`riscv-none-elf-gcc`** (MounRiver / xPack) is the default. The build uses it
+  from `PATH` when present, otherwise auto-detects the newest xPack install under
+  `~/Library/xPacks/@xpack-dev-tools/riscv-none-elf-gcc/` — so `make` and
+  `scripts/flash.py` work without manually adding the xPack `bin/` to `PATH`.
+  Point at a specific bin dir with `make TOOLCHAIN_BIN=/path/to/bin`, or use the
+  Homebrew RISC-V toolchain by overriding the prefix:
 
   ```sh
   make TOOLCHAIN=riscv64-unknown-elf all
@@ -232,6 +236,38 @@ link):
   targets do a power-off erase first, so flashing always works without
   button-tapping.
 - Overrides: `FLASH_TOOL=wlink|openocd`, `WLINK=`, `WCH_OPENOCD=`, `WCH_CFG=`.
+
+### Serial-addressed flashing (`scripts/flash.py`)
+
+The `make flash-board*` targets above flash whichever single probe is plugged
+in. When **both** WCH-LinkE probes are connected at once, use
+[`scripts/flash.py`](scripts/flash.py) to flash each board by its probe
+**serial number** — so the host image always lands on the host probe and the
+device image on the device probe, regardless of enumeration order. It builds
+the right image, retries transient failures (the `0x55` SWJ-disabled NAK, busy,
+timeout), and can emit JSON for CI / AI tooling.
+
+```sh
+# 1. Discover the connected probe serials:
+scripts/flash.py --list
+
+# 2. Flash both boards (host = Board B, device = Board A):
+scripts/flash.py --host-serial ABC123 --device-serial DEF456
+
+# Flash just one role, reusing the existing build:
+scripts/flash.py --device-serial DEF456 --no-build
+
+# Machine-readable output (one JSON object on stdout, logs on stderr):
+scripts/flash.py --host-serial ABC123 --json
+```
+
+Useful flags: `--retries N` (default 2), `--timeout S` (per-`wlink` call,
+default 60), `--fail-fast` (stop after the first role fails), `--allow-any`
+(flash the only connected probe when no serial is given).
+
+Exit codes: `0` ok · `2` usage · `3` probe/serial not found · `4` build failed
+· `5` flash failed after retries · `6` `wlink` not installed. Requires `wlink`
+(the `openocd` path is Makefile-only).
 
 ## Test
 

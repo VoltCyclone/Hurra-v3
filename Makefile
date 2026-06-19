@@ -1,7 +1,22 @@
 TOOLCHAIN ?= riscv-none-elf
-CC      = $(TOOLCHAIN)-gcc
-OBJCOPY = $(TOOLCHAIN)-objcopy
-SIZE    = $(TOOLCHAIN)-size
+
+# Locate the toolchain's bin dir. Prefer one already on PATH; otherwise fall back
+# to the newest xPack install (the MounRiver/xPack GNU RISC-V GCC ships here and
+# is NOT on PATH in non-login shells, so `make` and scripts/flash.py would fail
+# with "riscv-none-elf-gcc: No such file or directory"). Override with TOOLCHAIN
+# for a different prefix, or TOOLCHAIN_BIN to point at a specific bin dir.
+TOOLCHAIN_BIN ?= $(shell \
+  if command -v $(TOOLCHAIN)-gcc >/dev/null 2>&1; then \
+    dirname `command -v $(TOOLCHAIN)-gcc`; \
+  else \
+    ls -d $(HOME)/Library/xPacks/@xpack-dev-tools/riscv-none-elf-gcc/*/.content/bin \
+      2>/dev/null | sort -V | tail -1; \
+  fi)
+TOOLCHAIN_PREFIX = $(if $(TOOLCHAIN_BIN),$(TOOLCHAIN_BIN)/,)$(TOOLCHAIN)
+
+CC      = $(TOOLCHAIN_PREFIX)-gcc
+OBJCOPY = $(TOOLCHAIN_PREFIX)-objcopy
+SIZE    = $(TOOLCHAIN_PREFIX)-size
 
 ARCH = -march=rv32imac_zicsr -mabi=ilp32
 
@@ -257,6 +272,9 @@ endef
 
 # Flash the two-board role images. Plug ONE WCH-LinkE at a time (or pass
 # WLINK_DEV='-d <index>' via WLINK to pick a probe). Build fresh, then program.
+# Preferred two-board flow: scripts/flash.py --host-serial <S> --device-serial <S>
+# (serial-addressed, retries, --json for CI/AI). These make targets remain for
+# single-probe / single-core use.
 # Board B = host (SPI master + USBHS capture).
 flash-boardb:
 	$(MAKE) merge BOARD=host
@@ -322,5 +340,6 @@ test:
 	/tmp/hid_iface_index_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/display_rowpick_test test/display_rowpick_test.c
 	/tmp/display_rowpick_test
+	python3 -m unittest test.flash_py_test
 
 .PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test build
