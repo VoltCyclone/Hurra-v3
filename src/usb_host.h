@@ -41,8 +41,8 @@ bool usb_host_control_async_busy(void);
 void usb_host_interrupt_init(uint8_t index, uint8_t addr, uint8_t ep,
 	uint16_t maxpkt);
 int usb_host_interrupt_poll(uint8_t index, uint8_t *data, uint16_t len);
-// Zero-copy poll: returns pointer directly into DMA buffer (valid until next poll).
-// Caller must finish reading/modifying before calling poll again on this index.
+// Zero-copy poll: returns a pointer into the DMA buffer, valid until the next
+// poll. Caller must finish reading/modifying before polling this index again.
 int usb_host_interrupt_poll_zerocopy(uint8_t index, uint8_t **data_ptr, uint16_t len);
 void usb_host_interrupt_dump_state(void);
 

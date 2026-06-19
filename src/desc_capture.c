@@ -1,4 +1,5 @@
-// USB descriptor capture
+// desc_capture.c — capture a device's full descriptor set on the USBHS host
+// port for the clone to replay. See desc_capture.h.
 #include <string.h>
 #include "usb_host.h"
 #include "desc_capture.h"
@@ -44,8 +45,8 @@ static bool parse_config_descriptor(captured_descriptors_t *desc)
 
 		if (dtype == USB_DESC_INTERFACE && dlen >= 9) {
 			uint8_t alt_setting = p[3];
-			// Skip alternate settings — assumes alt 0 precedes higher alts
-			// (true for all compliant devices per USB spec ordering)
+			// Skip alternate settings; alt 0 precedes higher alts per USB spec
+			// descriptor ordering.
 			if (alt_setting != 0) {
 				cur_iface = NULL;
 				p += dlen;
@@ -109,8 +110,7 @@ static void capture_bos(captured_descriptors_t *desc)
 	int ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 		&setup, hdr, 2000);
 
-	// Device doesn't support BOS — STALL. Not fatal; Phase 1 passthrough handles
-	// live requests if the host probes anyway.
+	// A device without BOS support STALLs; not fatal.
 	if (ret < 5 || hdr[1] != USB_DESC_BOS) {
 		desc->bos_desc_len = 0;
 		return;
@@ -162,28 +162,21 @@ static void capture_ms_os_1_0(captured_descriptors_t *desc)
 	desc->ms_os_vendor_code = buf[16]; // bMS_VendorCode at offset 0x10
 }
 
-// Bring-up diagnostics removed for release. CAP_DBG/CAP_RET were single-shot
-// {step, last-ret} markers the V3F UART oracle read to pinpoint which control
-// transfer failed during enumeration; the call sites are kept (no-ops) to leave
-// the capture/retry flow undisturbed.
+// CAP_DBG/CAP_RET were UART-oracle markers ({step, last-ret}) for locating a
+// failed control transfer during enumeration; kept as no-ops to leave the
+// capture/retry flow undisturbed.
 #define CAP_DBG(step)  ((void)0)
 #define CAP_RET(r)     ((void)0)
 
-// Wait for the port to settle after a bus reset: poll for a stable CONNECT
-// (several consecutive reads, mirroring WCH's USBH_EnableRootHubPort >6-in-a-row
-// check) before issuing the first control transfer. Returns true once stable.
-// This is the missing piece that made the first GET_DESCRIPTOR flaky: a device
-// that is slightly slow to recover from reset NAKs/ignores the SETUP, which our
-// single-shot code reported as a hard failure (cap_step=1, ret=-1).
+// Wait for the port to settle after a bus reset: poll for a stable CONNECT (>6
+// consecutive reads, mirroring WCH's USBH_EnableRootHubPort) before the first
+// control transfer, so a device slow to recover from reset is not misreported as
+// a hard failure.
 static bool enum_wait_port_stable(void)
 {
-	// Mirror the EVT post-reset enable loop (USBH_EnumRootDevice: loop calling
-	// USBHSH_EnableRootHubPort until >6 consecutive successes). EnableRootHubPort
-	// checks CONNECT, reads the port speed, and re-asserts CFG.SOF_EN — so on each
-	// successful connect read we do the same: re-read speed (caches s_dev_speed for
-	// the transact PRE-PID decision) and re-assert SOF (usb_host_power_on). This
-	// keeps the port actively clocked while the just-reset device settles, instead
-	// of only passively polling the CONNECT bit.
+	// Mirror the EVT post-reset enable loop: on each successful connect read,
+	// re-read the port speed (caches s_dev_speed for the PRE-PID decision) and
+	// re-assert SOF, keeping the port clocked while the device settles.
 	uint8_t stable = 0;
 	for (uint16_t i = 0; i < 300; i++) {   // ~300 ms worst case
 		if (usb_host_device_connected()) {
@@ -205,24 +198,18 @@ bool capture_descriptors(captured_descriptors_t *desc)
 	usb_setup_t setup;
 	uint16_t total_len = 0;
 
-	// Enumeration retry loop (ports WCH app_km.c USBH_EnumRootDevice ENUM_START):
-	// up to 6 attempts, each re-resets the port, waits for it to stabilize with an
-	// escalating settle delay, then runs the address-assignment handshake. A reset
-	// at the top of every attempt returns the device to address 0, so a retry
-	// after a partial failure is always clean. Our previous code did this ONCE
-	// with no retry, so any slow-to-recover device failed enumeration outright.
+	// Enumeration retry loop (ports WCH USBH_EnumRootDevice): up to 6 attempts,
+	// each re-resets the port, waits with an escalating settle delay, then runs the
+	// address-assignment handshake. The reset returns the device to address 0, so a
+	// retry after a partial failure is always clean.
 	bool enumerated = false;
 	for (uint8_t attempt = 0; attempt < 6 && !enumerated; attempt++) {
 		CAP_DBG(0x10 | attempt);   // 0x1N = enum attempt N
 
-		// Escalating settle + re-reset + stability poll. Match the EVT reference
-		// (USBH_EnumRootDevice: Delay_Ms(100); Delay_Ms(8<<enum_cnt), enum_cnt
-		// starts at 1) EXACTLY — gives 116,132,164,228,356,612 ms. The previous
-		// 20+(8<<attempt) (28..276 ms) fired the first SETUP only ~28 ms after
-		// settling, too soon for a slow-booting gaming-mouse MCU (Razer Basilisk
-		// V3) to be ready after bus reset, causing intermittent first-SETUP
-		// failures (setup_s=0xFE). The reference's longer, escalating settle is
-		// what makes its enumeration reliable.
+		// Escalating settle + re-reset + stability poll, matching the EVT reference
+		// (Delay_Ms(100); Delay_Ms(8<<enum_cnt), enum_cnt from 1) for settle times of
+		// 116,132,164,228,356,612 ms. A slow-booting device needs this margin after
+		// bus reset before the first SETUP.
 		delay(100u);                 // EVT: fixed 100 ms device-stabilize
 		delay(8u << (attempt + 1));  // EVT: Delay_Ms(8 << enum_cnt), enum_cnt from 1
 		usb_host_port_reset();
@@ -259,7 +246,7 @@ bool capture_descriptors(captured_descriptors_t *desc)
 		ret = usb_host_control_transfer(0, desc->ep0_maxpkt, &setup, NULL, 2000);
 		CAP_RET(ret);
 		if (ret < 0) continue;
-		delay(5);   // USB spec: 2ms recovery; give the device margin to switch addr
+		delay(5);   // USB spec 2ms recovery, with margin for the device to switch addr
 
 		// Step 3: GET_DESCRIPTOR(device, 18) @ the new address.
 		CAP_DBG(4);
@@ -325,8 +312,8 @@ bool capture_descriptors(captured_descriptors_t *desc)
 		}
 	}
 
-	// Capture the full LANGID descriptor (string index 0). We replay it
-	// verbatim downstream so the host sees the device's actual language list.
+	// Capture the full LANGID descriptor (string index 0), replayed verbatim so
+	// the host sees the device's actual language list.
 	setup = make_get_descriptor(USB_DESC_STRING, 0, 0, MAX_LANGID_DESC_SIZE);
 	ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 		&setup, desc->langid_desc, 2000);
@@ -334,19 +321,17 @@ bool capture_descriptors(captured_descriptors_t *desc)
 	desc->langid_desc_len = 0;
 	if (ret >= 4 && desc->langid_desc[1] == USB_DESC_STRING) {
 		desc->langid_desc_len = (uint8_t)ret;
-		// If the device claims a bLength larger than what we actually
-		// captured (because it had more LANGIDs than MAX_LANGID_DESC_SIZE
-		// could hold), patch the stored bLength down so downstream
-		// consumers don't walk off the end of our buffer.
+		// If the claimed bLength exceeds the captured length (more LANGIDs than
+		// MAX_LANGID_DESC_SIZE holds), clamp it so downstream consumers stay in
+		// bounds.
 		if (desc->langid_desc[0] > desc->langid_desc_len) {
 			desc->langid_desc[0] = desc->langid_desc_len;
 		}
 		desc->langid = desc->langid_desc[2] | (desc->langid_desc[3] << 8);
 	}
 	uint16_t langid = desc->langid;  // local alias used by subsequent string fetches
-	// Collect every string index referenced by the device, config, and
-	// interface descriptors. Dedup so we don't fetch the same index twice
-	// (common: many devices use the same string for multiple iInterface fields).
+	// Collect every string index referenced by the device, config, and interface
+	// descriptors, deduped to avoid fetching the same index twice.
 	uint8_t string_indices[3 + 1 + MAX_INTERFACES];
 	uint8_t string_indices_count = 0;
 	string_indices[string_indices_count++] = desc->device_desc[14]; // iManufacturer
@@ -403,7 +388,7 @@ bool capture_descriptors(captured_descriptors_t *desc)
 		setup.wLength = 0;
 		usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 			&setup, NULL, 2000);
-		// Don't fail on error, some devices STALL SET_IDLE legally
+		// Ignore errors; some devices legally STALL SET_IDLE.
 	}
 
 	desc->valid = true;

@@ -1,15 +1,12 @@
-// src/ferrum.c — Ferrum ASCII command parser
+// src/ferrum.c — Ferrum ASCII command parser.
 //
-// Implements the documented text API:
+// Text API:
 //   km.<name>(<args>)\r\n      (or trailing \n)
 //   m(x, y)\r\n                (alias for km.move)
-// Reads reply value\r\n; writes reply nothing; junk is silently dropped.
-// No echo, no >>> prompt.  Callbacks (km.buttons/axes/keys) emit
-// unsolicited lines from the HID merge hot-path.
-//
-// Hot-path discipline: ferrum_notify_* must early-out when the callback
-// is disabled (one branch).  No printf/sprintf/atoi — internal helpers
-// keep newlib bloat out of the firmware image.
+// Read commands reply value\r\n; write commands reply nothing; junk is dropped.
+// No echo, no prompt. Callbacks (km.buttons/axes/keys) emit unsolicited lines
+// from the HID merge hot-path; ferrum_notify_* early-out when disabled. No
+// printf/sprintf/atoi — internal helpers keep newlib out of the image.
 
 #include "ferrum.h"
 #include "actions.h"
@@ -21,11 +18,9 @@ extern uint32_t millis(void);
 
 #define FERRUM_LINE_MAX  128
 #define FERRUM_MAX_ARGS  8
-// If a byte arrives this many ms after the previous one with a partial
-// line still in the accumulator, drop the partial line first. Guards
-// against garbage from a wrong-baud burst sticking around without a
-// terminator and prefixing the next legitimate command after the host
-// close-reopens at the correct baud.
+// Drop a partial (unterminated) line if the next byte arrives more than this
+// many ms later. Prevents a wrong-baud garbage burst from prefixing the first
+// valid command after the host reopens at the correct baud.
 #define FERRUM_IDLE_GAP_MS 25
 
 // --- transport ---------------------------------------------------------------
@@ -66,9 +61,8 @@ static uint8_t s_last_keys[6];
 // --- last-seen buttons bitmap for buttons callback dedup ---------------------
 static uint8_t s_last_buttons;
 
-// --- locks: mapping from name char-tag to bit --------------------------------
-// Bit assignments are local to ferrum.c — only g_lock_mask is shared.
-// 0..4: ml/mr/mm/ms1/ms2  5: mx  6: my
+// --- lock name-to-bit mapping ------------------------------------------------
+// Bit assignments are local to ferrum.c; only g_lock_mask is shared.
 #define LOCK_BIT_ML  0
 #define LOCK_BIT_MR  1
 #define LOCK_BIT_MM  2
@@ -78,11 +72,11 @@ static uint8_t s_last_buttons;
 #define LOCK_BIT_MY  6
 
 // =============================================================================
-// Tiny formatters / parsers — no newlib bloat
+// Formatters / parsers
 // =============================================================================
 
-// Parse a signed decimal integer from [s, s+len).  Returns true on success.
-// Leading/trailing whitespace is *not* tolerated; callers trim first.
+// Parse a signed decimal integer from [s, s+len). Returns true on success.
+// Whitespace is not tolerated; callers trim first.
 static bool parse_int(const char *s, uint8_t len, int32_t *out)
 {
 	if (len == 0) return false;
@@ -96,8 +90,7 @@ static bool parse_int(const char *s, uint8_t len, int32_t *out)
 		char c = s[i];
 		if (c < '0' || c > '9') return false;
 		uint32_t d = (uint32_t)(c - '0');
-		// Reject anything that wouldn't fit in uint32_t — keeps the
-		// downstream cast deterministic and avoids signed overflow UB.
+		// Reject values that overflow uint32_t to avoid signed overflow UB.
 		if (u > (0xFFFFFFFFu - d) / 10u) return false;
 		u = u * 10u + d;
 	}
@@ -126,7 +119,7 @@ static bool parse_bool(const char *s, uint8_t len, bool *out)
 	return false;
 }
 
-// Format a signed decimal integer into buf.  Returns number of chars written.
+// Format a signed decimal integer into buf. Returns chars written.
 // Caller guarantees buf has at least 12 bytes (enough for INT32_MIN).
 static uint8_t format_int(int32_t v, char *buf)
 {
@@ -167,9 +160,8 @@ static void emit_pair(int32_t x, int32_t y)
 	emit(buf, n);
 }
 
-// Emit and zero the catch_xy accumulator.  Caller must own s_catch.active;
-// this helper does not flip the flag (the call sites differ on whether the
-// state should remain active).
+// Emit and zero the catch_xy accumulator. Does not change s_catch.active;
+// call sites differ on whether the state should remain active.
 static void emit_catch_result(void)
 {
 	emit_pair(s_catch.accum_x, s_catch.accum_y);
@@ -213,7 +205,7 @@ static uint8_t split_args(const char *s, uint8_t len, arg_t *args)
 			start = i + 1;
 		}
 	}
-	// Trailing single empty slot (e.g. "km.foo()") counts as zero args.
+	// A single empty slot (e.g. "km.foo()") counts as zero args.
 	if (n == 1 && args[0].len == 0) return 0;
 	return n;
 }
@@ -234,8 +226,7 @@ static void cmd_move(arg_t *args, uint8_t nargs)
 	int32_t x, y;
 	if (!parse_int(args[0].p, args[0].len, &x)) return;
 	if (!parse_int(args[1].p, args[1].len, &y)) return;
-	// parse_int can legitimately return values outside int16 range — clamp
-	// instead of relying on implementation-defined narrowing.
+	// Clamp to int16 instead of relying on implementation-defined narrowing.
 	if (x > INT16_MAX) x = INT16_MAX;
 	if (x < INT16_MIN) x = INT16_MIN;
 	if (y > INT16_MAX) y = INT16_MAX;
@@ -243,7 +234,7 @@ static void cmd_move(arg_t *args, uint8_t nargs)
 	act_move((int16_t)x, (int16_t)y);
 }
 
-// Generic button handler.  mask is the bit in g_buttons.
+// Generic button handler. mask is the bit in g_buttons.
 static void cmd_button(uint8_t mask, arg_t *args, uint8_t nargs)
 {
 	if (nargs == 0) {
@@ -276,7 +267,7 @@ static void cmd_wheel(arg_t *args, uint8_t nargs)
 	kmbox_inject_mouse(0, 0, g_buttons, (int8_t)n);
 }
 
-// Generic lock handler.  bit is the LOCK_BIT_* index.
+// Generic lock handler. bit is the LOCK_BIT_* index.
 static void cmd_lock(uint8_t bit, arg_t *args, uint8_t nargs)
 {
 	uint16_t mask = (uint16_t)(1u << bit);
@@ -305,7 +296,7 @@ static void cmd_catch_xy(arg_t *args, uint8_t nargs)
 		(void)inc; // accepted for syntactic compatibility
 	}
 	// Re-entrant call: emit the prior request's accumulator so the original
-	// caller's read still completes — real Ferrum behaviour.
+	// caller's read still completes.
 	if (s_catch.active) {
 		emit_catch_result();
 		s_catch.active = false;
@@ -332,7 +323,7 @@ static void cmd_kb_up(arg_t *args, uint8_t nargs)
 	act_kb_up((uint8_t)k);
 }
 
-// Cheap deterministic-ish jitter for HID-style press timing (75..125 ms).
+// Cheap jitter for HID-style press timing (75..125 ms).
 static uint32_t press_delay(void)
 {
 	return 75u + (millis() % 51u);
@@ -375,9 +366,7 @@ static void cmd_kb_isdown(arg_t *args, uint8_t nargs)
 static void cmd_kb_mask(arg_t *args, uint8_t nargs)
 {
 	if (nargs == 1) {
-		// Read variant — actions.c does not currently expose a getter
-		// for the masked-key table; report 0 as a conservative default.
-		// (Write path below still works fine.)
+		// Read variant: no getter for the masked-key table, so report 0.
 		int32_t k;
 		if (!parse_int(args[0].p, args[0].len, &k)) return;
 		(void)k;
@@ -395,7 +384,7 @@ static void cmd_init(uint8_t nargs)
 {
 	(void)nargs;
 	act_init();
-	act_kb_init();  // also flush a zero HID keyboard report
+	act_kb_init();  // flush a zero HID keyboard report
 }
 
 static void cmd_cb_toggle(uint8_t *flag, arg_t *args, uint8_t nargs)
@@ -410,8 +399,7 @@ static void cmd_cb_toggle(uint8_t *flag, arg_t *args, uint8_t nargs)
 	if (s != 0 && s != 1) return;
 	*flag = (uint8_t)s;
 	if (flag == &s_cb_keys) {
-		// Force re-emit on next observation.
-		memset(s_last_keys, 0xFF, sizeof(s_last_keys));
+		memset(s_last_keys, 0xFF, sizeof(s_last_keys));  // force re-emit
 	}
 }
 
@@ -438,7 +426,7 @@ static void cmd_human(arg_t *args, uint8_t nargs)
 // Dispatch
 // =============================================================================
 
-// Match the body between "km." and "(".  Returns true on match.
+// Match the command name between "km." and "(". Returns true on match.
 static inline bool name_is(const char *s, uint8_t len, const char *kw)
 {
 	uint8_t kl = (uint8_t)strlen(kw);
@@ -496,7 +484,6 @@ static void dispatch(const char *name, uint8_t name_len, arg_t *args, uint8_t na
 
 static void dispatch_line(char *line, uint8_t len)
 {
-	// Skip leading whitespace.
 	uint8_t i = 0;
 	while (i < len && (line[i] == ' ' || line[i] == '\t')) i++;
 	if (i >= len) return;
@@ -570,9 +557,8 @@ void ferrum_set_tx(ferrum_tx_fn tx)
 
 void ferrum_tick(void)
 {
-	// Poll-loop entry point — drives the catch_xy deadline check
-	// independent of UART RX activity.  Without this, a host that calls
-	// km.catch_xy(dur) and then idles would never see the reply.
+	// Drives the catch_xy deadline check independent of UART RX, so a host
+	// that calls km.catch_xy(dur) then idles still gets its reply.
 	if (__builtin_expect(!s_catch.active, 1)) return;
 	if (millis() < s_catch.deadline) return;
 	emit_catch_result();
@@ -583,15 +569,14 @@ void ferrum_feed_byte(uint8_t b)
 {
 	uint32_t now = millis();
 
-	// catch_xy: emit result when timer expires.  Belt-and-braces — also
-	// covered by ferrum_tick() from the poll loop, but checking here lets
-	// us emit immediately when the host pokes us with new bytes.
+	// catch_xy: emit immediately when new bytes arrive after the deadline,
+	// rather than waiting for the next ferrum_tick().
 	if (__builtin_expect(s_catch.active, 0) && now >= s_catch.deadline) {
 		emit_catch_result();
 		s_catch.active = false;
 	}
 
-	// Idle-gap reset: see FERRUM_IDLE_GAP_MS.
+	// Idle-gap reset (see FERRUM_IDLE_GAP_MS).
 	if (s_line_pos > 0 && (now - s_last_byte_ms) > FERRUM_IDLE_GAP_MS) {
 		s_line_pos = 0;
 		s_overflow = false;
@@ -621,11 +606,10 @@ void ferrum_feed_byte(uint8_t b)
 void ferrum_notify_buttons(uint8_t buttons_bitmap)
 {
 	if (__builtin_expect(s_cb_buttons == 0, 1)) return;
-	// Dedup: a 1 kHz mouse with no button changes would otherwise flood
-	// the TX ring at the HID poll rate.  Mirrors the keys callback.
+	// Dedup so an unchanging mouse does not flood the TX ring at poll rate.
 	if (buttons_bitmap == s_last_buttons) return;
 	s_last_buttons = buttons_bitmap;
-	// "km.<bitmap_byte>\r\n" — single binary byte after "km."
+	// "km.<bitmap_byte>\r\n": a single binary byte after "km."
 	uint8_t buf[6];
 	buf[0] = 'k';
 	buf[1] = 'm';
@@ -638,7 +622,7 @@ void ferrum_notify_buttons(uint8_t buttons_bitmap)
 
 void ferrum_notify_axes(int16_t dx, int16_t dy, int8_t scroll)
 {
-	// catch_xy accumulator: runs even when callback disabled.
+	// catch_xy accumulator runs even when the callback is disabled.
 	if (__builtin_expect(s_catch.active, 0)) {
 		s_catch.accum_x += dx;
 		s_catch.accum_y += dy;
@@ -664,7 +648,7 @@ void ferrum_notify_keys(const uint8_t keys[6])
 {
 	if (__builtin_expect(s_cb_keys == 0, 1)) return;
 
-	// Copy + insertion-sort.  Empty slots (0) stay at the front and are
+	// Insertion-sort a copy; empty slots (0) sort to the front and are
 	// filtered out when formatting.
 	uint8_t sorted[6];
 	memcpy(sorted, keys, 6);

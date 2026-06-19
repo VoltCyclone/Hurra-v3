@@ -8,9 +8,9 @@ void spi_frame_stream_init(spi_frame_stream_t *st)
     st->len = 0;
 }
 
-// Slide the window so it restarts at the next SOF (0x68) byte AFTER index 0,
-// discarding everything before it. Leaves buf/len holding the bytes from that SOF
-// onward. If no later SOF exists, the window is cleared.
+// Slide the window to restart at the next SOF (0x68) after index 0, discarding
+// everything before it. If no later SOF exists, the window is cleared (a trailing
+// lone SOF is preserved as the start of the next frame).
 static void resync(spi_frame_stream_t *st)
 {
     uint8_t i;
@@ -18,8 +18,7 @@ static void resync(spi_frame_stream_t *st)
         if (st->buf[i] == SPI_FRAME_SOF) break;
     }
     if (i >= st->len) {
-        // No SOF after position 0 — drop everything (the last byte, if it is a SOF,
-        // is handled by the caller appending fresh; keep a trailing lone SOF).
+        // No SOF after position 0: keep a trailing lone SOF, else drop everything.
         if (st->len > 0 && st->buf[st->len - 1] == SPI_FRAME_SOF) {
             st->buf[0] = SPI_FRAME_SOF;
             st->len = 1;

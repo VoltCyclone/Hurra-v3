@@ -12,9 +12,8 @@
 #define TF_SENDBUF_LEN    264     // max payload + 8 byte header overhead
 #define TF_PARSER_TIMEOUT_TICKS 5  // 5 × hurra_tick period (1 ms) = 5 ms idle gap
 
-// Listener storage. Spec §3 has ~45 distinct TYPE listeners; 48 leaves room.
-// ID listeners are temporary (catch_xy deferred reply); 4 is generous.
-// Generic listeners: firmware has no need for catch-all, but TinyFrame needs ≥1.
+// Listener storage. Spec §3 defines ~45 TYPE listeners; 48 leaves headroom.
+// ID listeners cover transient deferred replies. TinyFrame requires >=1 generic.
 #include <stdint.h>
 typedef uint32_t TF_TICKS;
 typedef uint8_t  TF_COUNT;
@@ -22,8 +21,6 @@ typedef uint8_t  TF_COUNT;
 #define TF_MAX_TYPE_LST  48
 #define TF_MAX_GEN_LST   1
 
-// Error logging stub. No serial console in this firmware, and TF errors are
-// surfaced via the stats counters (head_crc_err, payload_invalid, etc.), so
-// the printf-style log lines are dropped. If debug logging is ever wired up,
-// reroute this to the chosen sink.
+// Error logging stub: no console in this firmware; TF errors surface via the
+// stats counters instead.
 #define TF_Error(...) ((void)0)

@@ -1,6 +1,6 @@
 // icc_status.c — pure (host-testable) pack/unpack for the V5F->V3F reverse
-// status channel. NO MMIO, NO WCH headers — includes only icc.h (stdint +
-// display.h). The MMIO wrappers that USE these live in icc.c.
+// status channel. No MMIO, no WCH headers; includes only icc.h. The MMIO wrappers
+// that use these live in icc.c.
 #include "icc.h"
 
 uint16_t icc_status_pack(uint8_t sel, uint8_t seq, const display_status_t *st)

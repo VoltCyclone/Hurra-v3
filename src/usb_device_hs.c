@@ -1,44 +1,35 @@
-// usb_device.c — USBHSD device driver (PC-facing HID device side, High-Speed).
+// usb_device_hs.c — USBHSD device driver (PC-facing HID device side, High-Speed).
 //
-// Runs on the V5F core. Implements the stable usb_device.h API against the
-// CH32H417 USBHSD controller in High-Speed (480 Mbps) DEVICE mode. The EP0
-// standard-request enumeration state machine clones descriptors FROM THE REAL
-// DOWNSTREAM DEVICE — every GET_DESCRIPTOR is answered from the
-// captured_descriptors_t passed to usb_device_init (src/desc_capture.c). There
-// are NO static/fallback descriptors: if capture failed the device does not
-// enumerate. Interrupt endpoints (IN and OUT) are armed dynamically to match the
-// cloned config, so composite devices and arbitrary report descriptors pass
-// through faithfully.
+// Runs on the V5F core against the CH32H417 USBHSD controller in High-Speed
+// (480 Mbps) DEVICE mode. The EP0 standard-request enumeration state machine
+// serves descriptors cloned from the real downstream device: every
+// GET_DESCRIPTOR is answered from the captured_descriptors_t passed to
+// usb_device_init. There are no static/fallback descriptors; if capture failed
+// the device does not enumerate. Interrupt endpoints (IN and OUT) are armed
+// dynamically to match the cloned config, so composite devices and arbitrary
+// report descriptors pass through faithfully.
 //
-// ── PORTED FROM USBFS ────────────────────────────────────────────────────────
-// This driver was migrated from the USBFS controller. The enumeration LOGIC is
-// unchanged; only the MMIO register layer moved. The traps that the port had to
-// navigate (all verified against vendor/wch/Peripheral/inc/ch32h417_usb.h):
-//   * RESPONSE ENCODING IS INVERTED vs USBFS. USBHSD: ACK=0x02, NAK=0x00,
-//     STALL=0x01 (USBFS was ACK=0x00, NAK=0x02, STALL=0x03). Every *_RES_*
-//     write uses the USBHS_UEP_*_RES_* constants — do NOT reintroduce a USBFS one.
-//   * NO TOKEN BITS in INT_ST. Dispatch is by direction (UDIS_EP_DIR) + EP id
+// Register-layer differences from the USBFS sibling driver (enumeration logic is
+// identical):
+//   * Response encoding is inverted: USBHSD ACK=0x02, NAK=0x00, STALL=0x01.
+//     Always use the USBHS_UEP_*_RES_* constants.
+//   * INT_ST has no token bits. Dispatch is by direction (UDIS_EP_DIR) + EP id
 //     (UDIS_EP_ID_MASK); SETUP is detected via UEP0_RX_CTRL & UEP_R_SETUP_IS.
-//   * NO +0x20000000 DMA ALIAS. USBHSD DMA uses per-EP UEPn_TX_DMA/UEPn_RX_DMA
-//     programmed with the raw buffer address; the CPU touches the SAME address.
-//   * DATA TOGGLE IS HARDWARE-AUTO. UEP_TX_TOG_AUTO/UEP_RX_TOG_AUTO = 0xFF makes
-//     the SIE advance DATA0/DATA1 on each successful transfer, so the ISR does
-//     NOT manually flip the toggle (the USBFS driver did). See BENCH GATE B1 in
-//     the plan: if HS enumeration desyncs after the first IN, auto-toggle is not
-//     behaving as the header implies and this must fall back to explicit
-//     UEP_T_TOG_DATAx writes.
-//   * PER-EP RX LENGTH. EP0 OUT length is UEP0_RX_LEN; non-EP0 is UEPn_RX_LEN
-//     (the shared USBFS RX_LEN register is gone).
+//   * No +0x20000000 DMA alias. Per-EP UEPn_TX_DMA/UEPn_RX_DMA hold the raw
+//     buffer address; the CPU uses the same address.
+//   * Data toggle is driven explicitly by the ISR (hardware auto-toggle off);
+//     see usbhsd_endp_init.
+//   * RX length is per-EP: EP0 OUT is UEP0_RX_LEN, non-EP0 is UEPn_RX_LEN.
 
 #include "ch32h417_port.h"      // ch32h417.h (USBHSD struct, RCC), usb bit defs
 #include "debug.h"
-#include "icc.h"                // dbg_stage() / DBG_V5F_DEV_INIT — UART-readable marker
-#include "timebase_v5f.h"      // timebase_v5f_delay_us — race-free TIM9 delay
-#include "usb_hs_desc.h"       // usb_hs_synth_qualifier (HS DEVICE_QUALIFIER)
+#include "icc.h"                // dbg_stage() / DBG_V5F_DEV_INIT
+#include "timebase_v5f.h"
+#include "usb_hs_desc.h"        // usb_hs_synth_qualifier (HS DEVICE_QUALIFIER)
 #include <string.h>
 
-// Use the TIM9-based delay, not the vendor Delay_Us (which spins on the shared
-// SysTick0->ISR and can be raced to a hang by V3F).
+// TIM9-based delay; the vendor Delay_Us spins on the shared SysTick0 ISR and can
+// be raced to a hang by V3F.
 #define Delay_Us(us)  timebase_v5f_delay_us(us)
 
 #include "usb_device.h"
@@ -49,32 +40,28 @@
 #define DEF_UEP_IN                  0x80
 #define DEF_UEP0                    0x00
 
-/* EP0 control-endpoint buffer size. The device clones the captured device
- * descriptor verbatim, but the EP0 DMA buffer is always sized at the 64-byte
- * maximum; the value we packetize EP0 transfers at is the runtime s_ep0_mps. */
+/* EP0 DMA buffer size: 64 (maximum). EP0 transfers are packetized at the runtime
+ * s_ep0_mps. */
 #define USBD_EP0_SIZE               64
 
-/* Setup-request packet alias over EP0 DMA buffer (CPU side). USBHSD has no
- * +0x20000000 alias — the CPU reads the DMA buffer at its plain address. */
+/* Setup-request packet alias over the EP0 DMA buffer (plain address; no
+ * +0x20000000 alias on USBHSD). */
 #define pUSBHS_SetupReqPak          ((PUSB_SETUP_REQ)USBHS_EP0_Buf)
 
 /* ------------------------------------------------------------------------ */
 /* DMA buffers — placed in the dedicated .usbdma section (uncached SRAM).   */
 /* One 64-byte buffer per endpoint (EP0..EP7). EP0 is control; EP1..EP7 are */
 /* armed dynamically to match the cloned device's endpoints. 8*64 = 512 B.  */
-/* The working USBHS host driver proves USBHSD DMA reaches this 0x200Cxxxx  */
-/* range (same .usbdma section), so no +0x20000000 alias is needed.         */
 /* ------------------------------------------------------------------------ */
 __attribute__((section(".usbdma"), aligned(4)))
 static uint8_t USBHS_EP_Buf[USB_DEV_NUM_ENDPOINTS][64];
 #define USBHS_EP0_Buf  (USBHS_EP_Buf[0])
 
 /* ------------------------------------------------------------------------ */
-/* Per-EP MMIO accessors. The USBHSD register struct exposes each endpoint's */
-/* control/length/DMA registers as named members; index them by EP number    */
-/* through small switch helpers so the dynamic (cloned-topology) endpoint     */
-/* arming stays data-driven without raw pointer math over the interleaved     */
-/* RX_LEN/RX_SIZE layout (ch32h417.h:1038-1097).                              */
+/* Per-EP MMIO accessors. The USBHSD register struct names each endpoint's     */
+/* control/length/DMA registers individually; these switch helpers index them  */
+/* by EP number so cloned-topology arming stays data-driven without raw pointer */
+/* math over the interleaved register layout.                                  */
 /* ------------------------------------------------------------------------ */
 
 /* Write the per-EP IN (TX) control byte. */
@@ -227,9 +214,9 @@ static volatile uint8_t  s_configured;        /* set after SET_CONFIGURATION */
 static const captured_descriptors_t *s_desc;
 static uint8_t s_ep0_mps = USBD_EP0_SIZE;     /* runtime EP0 max packet (8/16/32/64) */
 
-/* Synthesized DEVICE_QUALIFIER (HS requirement), built once in usb_device_init
- * from the cloned device descriptor. A HS-capable device MUST answer
- * GET_DESCRIPTOR(DEVICE_QUALIFIER); only built+answered for an HS clone. */
+/* Synthesized DEVICE_QUALIFIER, built once from the cloned device descriptor. An
+ * HS device must answer GET_DESCRIPTOR(DEVICE_QUALIFIER); built only for an HS
+ * clone. */
 static uint8_t s_qualifier[10];
 
 /* True when cloning a High-Speed device (s_desc->speed == USB_SPEED_HIGH). Drives
@@ -271,13 +258,10 @@ static volatile uint8_t  s_ep0_rpt_pending;    /* complete payload ready to fwd 
 void USBHS_IRQHandler(void) WCH_IRQ;
 
 /* ------------------------------------------------------------------------ */
-/* usbhsd_rcc_init — bring up the USBHS device clocks.                        */
-/*                                                                           */
-/* Mirrors usb_host.c's usbhs_rcc_init: the USBHS 480M PLL is SHARED (host +  */
-/* device derive from it), so the bring-up is guarded on the actual PLL-ready */
-/* bit and is idempotent — if the PLL is already locked we only (re)enable    */
-/* the UTMI + USBHS peripheral clocks and never tear down a live PLL. Unlike  */
-/* the old USBFS path there is NO USBFS-48MHz derivation and NO GPIOA/OTG_FS. */
+/* usbhsd_rcc_init — bring up the USBHS device clocks. The USBHS 480M PLL is    */
+/* shared with the host, so the bring-up is guarded on the PLL-ready bit and is */
+/* idempotent: if the PLL is already locked, only the UTMI + USBHS peripheral   */
+/* clocks are (re)enabled and a live PLL is never torn down.                    */
 /* ------------------------------------------------------------------------ */
 static void usbhsd_rcc_init(void)
 {
@@ -317,21 +301,16 @@ static void usbhsd_endp_init(void)
         s_out_rx_pend[i] = 0;
     }
 
-    /* Data toggle is managed EXPLICITLY by the ISR (NOT hardware auto-toggle).
-     * BENCH GATE B1 resolved against auto-toggle: with UEP_*_TOG_AUTO=0xFF the
-     * first descriptor IN after SETUP went out as the wrong DATAx and the host
-     * rejected every descriptor (enumerated at HS, SETUP arrived, but no device
-     * appeared on the PC). The WCH reference drives the toggle by hand — SETUP
-     * data stage starts at DATA1, each subsequent EP0 IN packet XORs DATA1, and
-     * every IN/OUT completion first clears the UEP_*_DONE bit. We mirror that, so
-     * auto-toggle stays OFF (registers left at reset 0). */
+    /* Data toggle is driven explicitly by the ISR, not hardware auto-toggle:
+     * with UEP_*_TOG_AUTO=0xFF the first descriptor IN after SETUP went out as the
+     * wrong DATAx and the host rejected every descriptor. The toggle is driven by
+     * hand instead — SETUP data stage starts at DATA1, each subsequent EP0 IN
+     * packet XORs DATA1, and every IN/OUT completion first clears UEP_*_DONE — so
+     * auto-toggle stays off (registers left at reset 0). */
 
-    /* EP0 control endpoint is always present. CRITICAL: EP0 must be ENABLED in the
-     * UEP_TX_EN/UEP_RX_EN bitfields, not just have its response registers set —
-     * without this the controller never ACKs SETUP, so no TRANSFER interrupt fires
-     * and the host resets→suspends in a loop (the reference sets UEP0_T_EN/R_EN in
-     * USBHS_Device_Endp_Init; omitting it was the "device on bus but no enumeration"
-     * bug). */
+    /* EP0 must be enabled in the UEP_TX_EN/UEP_RX_EN bitfields, not just have its
+     * response registers set; otherwise the controller never ACKs SETUP, no
+     * TRANSFER interrupt fires, and the host loops reset->suspend. */
     USBHSD->UEP_TX_EN |= USBHS_UEP0_T_EN;
     USBHSD->UEP_RX_EN |= USBHS_UEP0_R_EN;
     USBHSD->UEP0_DMA     = (uint32_t)(uintptr_t)USBHS_EP_Buf[0];
@@ -429,18 +408,13 @@ bool usbhsd_init(const captured_descriptors_t *desc)
     s_desc = desc;
 
     /* EP0 max packet: advertise + packetize at the cloned device's
-     * bMaxPacketSize0 (device_desc[7]). Validate to a legal control-EP size;
-     * fall back to 64. HS control EPs always use 64, but we keep the clamp so a
-     * weird cloned value can't desync packetization. */
+     * bMaxPacketSize0 (device_desc[7]). Validate to a legal control-EP size and
+     * fall back to 64 so a malformed cloned value cannot desync packetization. */
     uint8_t mps = s_desc->device_desc[7];
     s_ep0_mps = (mps == 8 || mps == 16 || mps == 32 || mps == 64) ? mps : 64;
 
-    /* FAITHFUL CLONE: serve descriptors VERBATIM at the captured device's speed.
-     * We do NOT rewrite bcdUSB or bInterval — a real HS device already encodes HS
-     * bIntervals and bcdUSB>=0x0200; a FS device already encodes FS. The earlier
-     * step-3 FS->HS transforms made the clone LIE about its speed, which is wrong
-     * for a MITM. The device side is HS-CAPABLE, so a real HS device clones at HS;
-     * a FS device clones as FS (BASE_MODE below matches s_desc->speed). */
+    /* Serve descriptors verbatim at the captured device's speed; bcdUSB and
+     * bInterval are not rewritten. BASE_MODE below matches s_desc->speed. */
     s_is_hs = (s_desc->speed == 2 /*USB_SPEED_HIGH*/);
 
     /* A High-Speed device MUST answer GET_DESCRIPTOR(DEVICE_QUALIFIER); a Full- or
@@ -452,14 +426,10 @@ bool usbhsd_init(const captured_descriptors_t *desc)
 
     usbhsd_rcc_init();
 
-    /* Bring-up sequence — ported VERBATIM from the WCH USBHS device reference
-     * (nanoCH32H417 doc/EVT/.../USBHS/DEVICE/CompositeKM USBHS_Device_Init). The
-     * earlier hand-rolled sequence (RST_SIE|CLR_ALL → bare PHY_SUSPENDM) left the
-     * device off the bus — the host never enumerated it. The reference holds
-     * UD_RST_LINK (NOT RST_SIE) with the PHY un-suspended, programs INT_EN +
-     * endpoints + speed while reset is asserted, then drops reset by writing the
-     * final enable word (DEV_EN drives D+, plus DMA_EN + LPM_EN). Order matters:
-     * INT_EN, then Endp_Init, then BASE_MODE, then the final CONTROL last. */
+    /* Bring-up sequence from the WCH USBHS device reference: hold UD_RST_LINK with
+     * the PHY un-suspended, program INT_EN + endpoints + speed while reset is
+     * asserted, then drop reset by writing the final enable word. Order matters:
+     * INT_EN, then endp_init, then BASE_MODE, then CONTROL last. */
     USBHSD->CONTROL = USBHS_UD_RST_LINK | USBHS_UD_PHY_SUSPENDM;
 
     USBHSD->INT_EN  = USBHS_UDIE_BUS_RST | USBHS_UDIE_SUSPEND |
@@ -468,14 +438,13 @@ bool usbhsd_init(const captured_descriptors_t *desc)
 
     usbhsd_endp_init();
 
-    /* Device speed = the captured device's speed (faithful clone). HS device ->
-     * UD_SPEED_HIGH; FS/LOW -> UD_SPEED_FULL (the USBHSD PHY runs the FS/LS device
-     * signaling in this mode). */
+    /* Device speed = captured device's speed: HS -> UD_SPEED_HIGH, FS/LOW ->
+     * UD_SPEED_FULL (the USBHSD PHY runs FS/LS device signaling in that mode). */
     USBHSD->BASE_MODE = s_is_hs ? USBHS_UD_SPEED_HIGH : USBHS_UD_SPEED_FULL;
 
-    /* Release link reset + enable the device: UD_DEV_EN drives the D+ pull-up
-     * (replaces USBFS DEV_PU_EN), UD_DMA_EN enables endpoint DMA, UD_LPM_EN per
-     * the reference, PHY stays out of suspend. */
+    /* Release link reset and enable the device: UD_DEV_EN drives the D+ pull-up,
+     * UD_DMA_EN enables endpoint DMA, UD_LPM_EN per the reference, PHY out of
+     * suspend. */
     USBHSD->CONTROL = USBHS_UD_DEV_EN | USBHS_UD_DMA_EN |
                       USBHS_UD_LPM_EN | USBHS_UD_PHY_SUSPENDM;
 
@@ -484,11 +453,10 @@ bool usbhsd_init(const captured_descriptors_t *desc)
     USBHS_DevSleepStatus = 0;
     s_configured         = 0;
 
-    // DUAL-CORE IRQ ROUTING: IRQn>31 are core-allocated via NVIC->IALLOCR, and the
-    // RESET DEFAULT is Core_ID_V3F (0). The USBHS enumeration ISR runs on V5F, so
-    // without this the interrupt is delivered to V3F (which has no USBHS device
-    // handler) and V5F's USBHS_IRQHandler never fires — s_configured stays 0
-    // forever. Route USBHS_IRQn (56) to V5F before enabling it.
+    // Dual-core IRQ routing: IRQn>31 are core-allocated via NVIC->IALLOCR with a
+    // reset default of Core_ID_V3F. The USBHS ISR runs on V5F, so route USBHS_IRQn
+    // (56) to V5F before enabling it; otherwise the interrupt goes to V3F (no
+    // device handler) and USBHS_IRQHandler never fires.
     NVIC_SetAllocateIRQ(USBHS_IRQn, Core_ID_V5F);
 
     NVIC_EnableIRQ(USBHS_IRQn);
@@ -497,8 +465,7 @@ bool usbhsd_init(const captured_descriptors_t *desc)
 
 void usbhsd_poll(void)
 {
-    /* Housekeeping only — the IRQ handler does the real work. Kept for API
-     * parity with the host-side loop. */
+    /* No-op: the IRQ handler does the work. Present for API parity. */
 }
 
 bool usbhsd_send_report(uint8_t ep_num, const uint8_t *data, uint16_t len)
@@ -518,10 +485,8 @@ bool usbhsd_send_report(uint8_t ep_num, const uint8_t *data, uint16_t len)
         return false;
     }
 
-    /* TX busy if the endpoint is NOT currently NAK'ing (a previous report is
-     * still armed and unconsumed by the host). NOTE the INVERSION vs USBFS:
-     * USBHSD NAK == 0x00, so "busy" is "RES field != NAK". A naive USBFS port
-     * (NAK==0x02) would read busy as idle here and double-arm the endpoint. */
+    /* TX busy if the endpoint is not currently NAK'ing (a previous report is
+     * still armed and unconsumed). USBHSD NAK == 0x00, so "busy" is RES != NAK. */
     if ((uep_tx_ctrl_get(ep_num) & USBHS_UEP_T_RES_MASK) != USBHS_UEP_T_RES_NAK) {
         return false;
     }
@@ -715,13 +680,11 @@ void USBHS_IRQHandler(void)
                      * is STALLed. */
                     switch ((uint8_t)(USBHS_SetupReqValue >> 8)) {
                     case USB_DESCR_TYP_DEVICE:
-                        /* Serve the captured device descriptor VERBATIM. */
                         pUSBHS_Descr = s_desc->device_desc;
                         len = s_desc->device_desc[0];
                         break;
 
                     case USB_DESCR_TYP_CONFIG:
-                        /* Serve the captured config blob VERBATIM. */
                         pUSBHS_Descr = s_desc->config_desc;
                         /* wTotalLength from the blob, clamped to what we captured. */
                         len = (uint16_t)s_desc->config_desc[2] |
@@ -1040,20 +1003,19 @@ void USBHS_IRQHandler(void)
         USBHSD->INT_FG = USBHS_UDIF_BUS_RST;
 
     } else if (intflag & USBHS_UDIF_LINK_RDY) {
-        /* HS handshake complete. MIS_ST & UDMS_HS_MOD confirms High-Speed was
-         * negotiated (vs falling back to Full-Speed). Stamp the stage oracle so
+        /* Link handshake complete. MIS_ST & UDMS_HS_MOD confirms High-Speed was
+         * negotiated (vs falling back to Full-Speed); stamp the stage oracle so
          * V3F can report whether the clone came up at HS. */
         if (USBHSD->MIS_ST & USBHS_UDMS_HS_MOD) {
-            dbg_stage(DBG_V5F_DEV_INIT);   /* HS negotiated — cloning to PC at HS */
+            dbg_stage(DBG_V5F_DEV_INIT);   /* HS negotiated */
         }
         USBHSD->INT_FG = USBHS_UDIF_LINK_RDY;
 
     } else if (intflag & USBHS_UDIF_SUSPEND) {
         USBHSD->INT_FG = USBHS_UDIF_SUSPEND;
-        // CRITICAL: do NOT call Delay_Us() here. This runs in ISR context on V5F,
-        // and Delay_Us is a non-reentrant SysTick blocking wait shared with the
-        // relay-loop foreground. The MIS_ST suspend bit is already valid when the
-        // IRQ fires, so read it now.
+        // Do not call Delay_Us() here: this runs in ISR context on V5F and Delay_Us
+        // is a non-reentrant SysTick wait shared with the relay-loop foreground. The
+        // MIS_ST suspend bit is already valid when the IRQ fires, so read it now.
         if (USBHSD->MIS_ST & USBHS_UDMS_SUSPEND) {
             USBHS_DevSleepStatus |= 0x02;
         } else {

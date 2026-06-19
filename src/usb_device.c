@@ -1,28 +1,26 @@
-// usb_device.c — device-clone controller DISPATCHER.
+// usb_device.c — device-clone controller dispatcher.
 //
-// Faithful USB MITM cloning must present the clone at the SAME speed as the
-// captured device. The two speeds use DIFFERENT controllers on the CH32H417:
+// The clone must present at the same speed as the captured device, and the two
+// speeds use different controllers on the CH32H417:
 //   * High-Speed clone -> USBHSD controller (PB8/PB9, USB-3 Type-A) — usb_device_hs.c
 //   * Full/Low-Speed clone -> USBFS controller (PA11/PA12, USB-C) — usb_device_fs.c
-// (The USBHS *device* controller does NOT enumerate in Full-Speed mode — verified
-// on the bench: it only ever reaches SUSPEND, never a bus reset. WCH's own SDK
-// uses two separate controllers for the two speeds; we match that.)
+// The USBHS device controller does not enumerate in Full-Speed mode (reaches
+// SUSPEND but never a bus reset), so the two speeds require separate controllers.
 //
-// This file owns the stable usb_device.h API and forwards each call to whichever
-// backend was selected at runtime by usb_device_init() from the captured device's
-// `speed`. The speed isn't known until the descriptor blob arrives (over SPI on
-// the device board), so the dispatch is necessarily runtime, not compile-time.
-// Each backend keeps ALL its own state and its OWN ISR + IRQ enable, so only the
-// active controller's interrupt is live.
+// This file owns the usb_device.h API and forwards each call to the backend
+// selected at runtime by usb_device_init() from the captured device's `speed`,
+// which is not known until the descriptor blob arrives over SPI. Each backend
+// keeps its own state and its own ISR + IRQ enable, so only the active
+// controller's interrupt is live.
 
-#include <stddef.h>          // NULL
+#include <stddef.h>
 #include "usb_device.h"
-#include "usb_device_hs.h"   // usbhsd_*
-#include "usb_device_fs.h"   // usbfsd_*
+#include "usb_device_hs.h"
+#include "usb_device_fs.h"
 #include "usb_host.h"        // USB_SPEED_FULL/LOW/HIGH
-#include "icc.h"             // dbg_stage() — UART-readable oracle marker
+#include "icc.h"             // dbg_stage()
 
-// Which backend is active: USB_SPEED_HIGH => HS (USBHSD), USB_SPEED_FULL/LOW => FS
+// Active backend: USB_SPEED_HIGH => HS (USBHSD), USB_SPEED_FULL/LOW => FS
 // (USBFS), 0xFF => none initialized yet.
 #define ACTIVE_NONE  0xFFu
 static uint8_t s_active = ACTIVE_NONE;
@@ -54,7 +52,7 @@ bool usb_device_init(const captured_descriptors_t *desc)
         return true;
 
     default:
-        return false;                    // unsupported speed — caller treats as fatal
+        return false;                    // unsupported speed
     }
 }
 

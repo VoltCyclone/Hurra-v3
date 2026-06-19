@@ -3,11 +3,11 @@
 #include <stdbool.h>
 #include "display.h"
 
-// Inter-core channel. ONE single-producer/single-consumer FIFO (V3F->V5F
+// Inter-core channel. One single-producer/single-consumer FIFO (V3F->V5F
 // injection commands), drained into the coherent IPC MSG mailbox by
-// icc_pump_to_v5f (the SRAM ring is V3F-DTCM-local and unreadable by V5F).
-// IPC channel 0 is the V3F->V5F doorbell. There is no V5F->V3F ring; V5F status
-// rides the IPC CH1 stage telemetry (icc_telem_*).
+// icc_pump_to_v5f (the SRAM ring is V3F-DTCM-local and unreadable by V5F). IPC
+// channel 0 is the V3F->V5F doorbell. No V5F->V3F ring; V5F status rides the IPC
+// CH1 stage telemetry (icc_telem_*).
 
 #define ICC_RECORD_BYTES   16
 #define ICC_RING_SLOTS     256          // power of two
@@ -25,8 +25,8 @@ enum {
     ICC_TAG_SET_HUMAN_LEVEL,
     ICC_TAG_PHYS_MASK,
     ICC_TAG_DEV_TEMP,     // device V3F -> V5F: device-board temp in b[0] (int8)
-    // (V5F->V3F telemetry tags removed — that direction is not carried; V5F
-    //  liveness rides the IPC CH1 stage telemetry, see icc_telem_* below.)
+    // No V5F->V3F telemetry tags: that direction rides the IPC CH1 stage
+    // telemetry (icc_telem_* below), not this FIFO.
 };
 
 typedef struct {
@@ -41,10 +41,10 @@ typedef struct {
 } icc_ring_t;
 
 // The shared block lives at a fixed address in both images' .shared section.
-// `magic` MUST stay first: V3F reads it raw at 0x20178000 (main_v3f.c) as the
-// "V5F is up" handshake. Only V3F->V5F is carried (and only as a V3F-local
-// producer FIFO that icc_pump_to_v5f drains into the IPC mailbox); there is no
-// V5F->V3F ring — that direction reads back stale across the DTCM boundary.
+// `magic` must stay first: V3F reads it raw at 0x20178000 (main_v3f.c) as the
+// "V5F is up" handshake. Only V3F->V5F is carried, as a V3F-local producer FIFO
+// that icc_pump_to_v5f drains into the IPC mailbox; a V5F->V3F ring would read
+// back stale across the DTCM boundary.
 typedef struct {
     volatile uint32_t magic;            // set by V3F at init
     icc_ring_t v3f_to_v5f;
@@ -60,8 +60,8 @@ bool icc_send_to_v5f(const icc_record_t *r);   // call from V3F (enqueue to loca
 
 // V3F: drain one queued V3F->V5F record from the local FIFO into the coherent IPC
 // MSG mailbox if it is free. Call every V3F main-loop iteration. Returns true if a
-// record was moved into the mailbox. (The V3F->V5F SRAM ring is not readable by
-// V5F — it lives in V3F's DTCM — so records cross via the IPC hardware mailbox.)
+// record was moved. The SRAM ring lives in V3F's DTCM (unreadable by V5F), so
+// records cross via the IPC hardware mailbox.
 bool icc_pump_to_v5f(void);                    // call from V3F
 
 // Consumer side (returns false if empty). V5F reads the IPC mailbox.
@@ -69,24 +69,22 @@ bool icc_recv_from_v3f(icc_record_t *out);     // call from V5F
 
 // Doorbell: V3F rings V5F after enqueue so V5F can wfi when idle.
 void icc_ring_doorbell_v5f(void);              // V3F side
-// V5F's IPC_CH0_Handler clears the doorbell AND disables its own IT bit (storm-proof
+// V5F's IPC_CH0_Handler clears the doorbell and disables its own IT bit (storm-proof
 // under AutoEN); the V5F foreground re-arms it after draining the mailbox.
 void icc_ipc_rearm_v5f(void);                  // V5F side, call after draining
 
 // --- V5F->V3F coherent stage telemetry (IPC CH1 status bits) -----------------
-// Replaces the dead shared-SRAM dbg_stage marker for the relay. V5F writing
-// 0x2017xxxx is an UNSANCTIONED cross-core store into V3F-side SRAM that
-// intermittently STALLS the V5F core (no-trap wedge) — see icc.c:5-16. The IPC
-// status bits are peripheral-bus MMIO (0xE000D000), coherent across both cores,
-// and SINGLE-WRITER here (only V5F writes CH1 bits, only V3F reads them) — the
-// established lock-free dual-core mailbox pattern (NXP/OpenAMP/Single-Writer SPSC).
+// V5F writing 0x2017xxxx is a cross-core store into V3F-side SRAM that
+// intermittently stalls the V5F core (no-trap wedge); see icc.c top comment. The
+// IPC status bits are peripheral-bus MMIO (0xE000D000), coherent across cores and
+// single-writer here (only V5F writes CH1, only V3F reads) — a lock-free SPSC
+// mailbox.
 //
-// Encoding: CH1 owns STS bits [8..15]. We pack a 2-bit rolling heartbeat seq in
-// bits [15:14] and a 6-bit stage/wedge code in bits [13:8]. A CHANGING seq means
-// V5F is alive; a FROZEN seq with a stuck code names exactly where V5F wedged.
-// icc_telem_stage_v5f sets the new byte and clears the stale bits (V5F is the sole
-// writer, so this is race-free). icc_telem_read_v3f returns the raw 8-bit value
-// (seq<<6 | code) for V3F to decode + print. NO MSG, NO lock, NO SRAM.
+// Encoding: CH1 owns STS bits [8..15] — a 2-bit rolling heartbeat seq in [15:14]
+// and a 6-bit stage/wedge code in [13:8]. A changing seq means V5F is alive; a
+// frozen seq with a stuck code names where V5F wedged. icc_telem_stage_v5f sets
+// the new byte and clears the stale bits; icc_telem_read_v3f returns the raw
+// 8-bit value (seq<<6 | code).
 void    icc_telem_stage_v5f(uint8_t code);     // V5F: publish a 6-bit stage code
 uint8_t icc_telem_read_v3f(void);              // V3F: read seq<<6 | code
 
@@ -104,7 +102,7 @@ enum {
 };
 
 // --- V5F->V3F reverse status channel (IPC status bits [16:31], CH2+CH3) -------
-// Single-writer (V5F) coherent MMIO status, time-multiplexed. Distinct from the
+// Single-writer (V5F) coherent MMIO status, time-multiplexed; distinct from the
 // CH1 [8:15] stage telemetry above. 16-bit word: [15:14]=seq, [13:10]=field
 // selector, [9:0]=payload. V3F polls and reassembles into a display_status_t.
 enum {                          // field selectors
@@ -122,16 +120,16 @@ enum {                          // field selectors
     ICC_ST_SEL__COUNT
 };
 
-// PURE (host-testable): pack one field of `st` into a 16-bit word with seq.
+// Pure (host-testable): pack one field of `st` into a 16-bit word with seq.
 uint16_t icc_status_pack(uint8_t sel, uint8_t seq, const display_status_t *st);
-// PURE: decode `word`, merging the carried field into `acc`. Returns the 2-bit seq.
+// Pure: decode `word`, merging the carried field into `acc`. Returns the 2-bit seq.
 uint8_t  icc_status_unpack(uint16_t word, display_status_t *acc);
 
 // V5F: publish the next field in rotation (call on a throttle); publishes STATE
 // immediately when `st->state` differs from the last published state.
 void icc_status_pump_v5f(const display_status_t *st);
 // V3F: read the current reverse word and merge into `acc`. Returns true if the
-// heartbeat seq advanced since the last call (i.e. V5F is alive & publishing).
+// heartbeat seq advanced since the last call (V5F alive and publishing).
 bool icc_status_poll_v3f(display_status_t *acc);
 // V3F: read the raw 16-bit reverse status word (IPC->STS bits [16:31]) without
 // decoding it. Used by the V5F_STAGE_DIAG dump in main_v3f.c to avoid pulling
@@ -139,11 +137,9 @@ bool icc_status_poll_v3f(display_status_t *acc);
 uint16_t icc_status_read_raw_v3f(void);
 
 // --- Bench debug: V5F boot-stage marker -------------------------------------
-// A single volatile word at a FIXED shared-SRAM address (well past g_icc, which
-// ends ~0x2017A014, and below the V3F stack) that V5F overwrites as it advances
-// through bring-up. Read it live with `wlink dump 0x2017F000 4` to see exactly
-// where V5F is, without depending on the icc_shared_t layout (it's a raw
-// address, not a struct member).
+// A single volatile word at a fixed shared-SRAM address (past g_icc, below the
+// V3F stack) that V5F overwrites as it advances through bring-up. Read it live
+// with `wlink dump 0x2017F000 4` independent of the icc_shared_t layout.
 #define DBG_STAGE_ADDR   0x2017F000u
 enum {                                         // V5F boot stages (monotonic)
     DBG_V5F_BOOT          = 0x51,              // entered main, pre-rendezvous
@@ -154,8 +150,7 @@ enum {                                         // V5F boot stages (monotonic)
     DBG_V5F_LED_INIT      = 0x63,              // after led_init
     DBG_V5F_ICC_MAGIC     = 0x64,              // after icc_init_v5f (magic seen)
     DBG_V5F_HSEM_DONE     = 0x65,              // after HSEM take/release
-    // Pre-USBHS window (between ICC_READY and usb_host_init) — bisects a hang that
-    // freezes V5F before it ever reaches usb_host_init()'s first marker (0x70).
+    // Pre-USBHS window (between ICC_READY and usb_host_init's first marker 0x70).
     DBG_V5F_PRE_AFIO      = 0x66,              // about to enable AFIO|GPIOB clock
     DBG_V5F_PRE_SWJ       = 0x67,              // AFIO|GPIOB on; about to disable SWJ
     DBG_V5F_PRE_HOSTINIT  = 0x68,              // SWJ disabled; about to call usb_host_init
@@ -166,10 +161,10 @@ enum {                                         // V5F boot stages (monotonic)
     DBG_V5F_DESC_OK       = 0x56,              // descriptors captured
     DBG_V5F_DEV_INIT      = 0x57,              // USBFS device init done (cloning to PC)
     DBG_V5F_RELAY         = 0x58,              // reached the relay loop (telemetry flows)
-    // Trap marker: V5F's HardFault_Handler ORs 0x80 over the low mcause nibble so
-    // a CPU trap surfaces as a single UART line (V3F prints it) instead of only a
-    // PC3 blink. e.g. 0x82 = illegal-instruction, 0x85 = load-fault, 0x87 = store-
-    // fault, 0x81 = instr-access-fault, 0x80 = instr-addr-misaligned, 0x8B=ecall-M.
+    // Trap marker: HardFault_Handler ORs 0x80 over the low mcause nibble so a CPU
+    // trap surfaces as a UART line instead of only a PC3 blink. e.g. 0x82 =
+    // illegal-instruction, 0x85 = load-fault, 0x87 = store-fault, 0x81 =
+    // instr-access-fault, 0x80 = instr-addr-misaligned, 0x8B = ecall-M.
     DBG_V5F_TRAP_BASE     = 0x80,              // 0x80 | (mcause & 0x0F)
 };
 static inline void dbg_stage(uint32_t s) { *(volatile uint32_t *)DBG_STAGE_ADDR = s; }

@@ -1,27 +1,25 @@
-// usb_device.c — USBFS device driver (PC-facing HID device side).
+// usb_device_fs.c — USBFS device driver (PC-facing HID device side).
 //
-// Runs on the V5F core. Implements the stable usb_device.h API against the
-// CH32H417 USBFS controller in Full-Speed (12 Mbps) DEVICE mode. The EP0
-// standard-request enumeration state machine is ported from the WCH reference
-// driver (vendor/wch/usb_reference/USBFS_CompositeKM/Common/ch32h417_usbfs_device.c)
-// but serves descriptors CLONED FROM THE REAL DOWNSTREAM DEVICE — every
-// GET_DESCRIPTOR is answered from the captured_descriptors_t passed to
-// usb_device_init (src/desc_capture.c). There are NO static/fallback
-// descriptors: if capture failed the device does not enumerate. Interrupt
+// Runs on the V5F core against the CH32H417 USBFS controller in Full-Speed
+// (12 Mbps) DEVICE mode. The EP0 standard-request enumeration state machine is
+// ported from the WCH reference driver but serves descriptors cloned from the
+// real downstream device: every GET_DESCRIPTOR is answered from the
+// captured_descriptors_t passed to usb_device_init. There are no static/fallback
+// descriptors; if capture failed the device does not enumerate. Interrupt
 // endpoints (IN and OUT) are armed dynamically to match the cloned config, so
 // composite devices and arbitrary report descriptors pass through faithfully.
 //
-// DMA-buffer convention (WCH FS): the UEPn_DMA registers are programmed with
-// the RAW buffer address; CPU access to that buffer uses the same address but
-// with a +0x20000000 alias (USBFSD_UEP_BUF). We follow the reference exactly.
+// DMA-buffer convention (WCH FS): the UEPn_DMA registers hold the raw buffer
+// address; CPU access uses the same address through a +0x20000000 alias
+// (USBFSD_UEP_BUF).
 
 #include "ch32h417_port.h"      // ch32h417.h (USBFSD struct, RCC), usb bit defs
 #include "debug.h"
-#include "timebase_v5f.h"      // timebase_v5f_delay_us — race-free TIM9 delay
+#include "timebase_v5f.h"
 #include <string.h>
 
-// Use the TIM9-based delay, not the vendor Delay_Us (which spins on the shared
-// SysTick0->ISR and can be raced to a hang by V3F).
+// TIM9-based delay; the vendor Delay_Us spins on the shared SysTick0 ISR and can
+// be raced to a hang by V3F.
 #define Delay_Us(us)  timebase_v5f_delay_us(us)
 
 #include "usb_device.h"
@@ -45,10 +43,8 @@
 #define DEF_UEP_IN                  0x80
 #define DEF_UEP0                    0x00
 
-/* EP0 control-endpoint buffer size. Re-homed here from the (now-deleted) static
- * descriptor header: the device clones the captured device descriptor verbatim,
- * but the EP0 DMA buffer is always sized at the 64-byte FS maximum; the value we
- * actually packetize EP0 transfers at is the runtime s_ep0_mps (see below). */
+/* EP0 DMA buffer size: the FS maximum (64). EP0 transfers are packetized at the
+ * runtime s_ep0_mps, which may be smaller. */
 #define USBD_EP0_SIZE               64
 
 /* Setup-request packet alias over EP0 DMA buffer (CPU side). */
@@ -81,11 +77,9 @@ static volatile uint8_t  USBFS_DevSleepStatus;
 static volatile uint8_t  s_configured;        /* set after SET_CONFIGURATION */
 
 /* ------------------------------------------------------------------------ */
-/* Cloned-descriptor state. The device serves ONLY the descriptors captured  */
-/* from the real downstream device (no static/fallback set). s_desc points    */
-/* at the caller's file-static captured_descriptors_t (valid for program      */
-/* lifetime). s_ep0_mps is the EP0 max-packet we advertise + packetize at,    */
-/* derived from the cloned device descriptor.                                 */
+/* Cloned-descriptor state. s_desc points at the caller's captured_descriptors */
+/* (valid for program lifetime). s_ep0_mps is the EP0 max-packet advertised and */
+/* packetized at, derived from the cloned device descriptor.                   */
 /* ------------------------------------------------------------------------ */
 static const captured_descriptors_t *s_desc;
 static uint8_t s_ep0_mps = USBD_EP0_SIZE;     /* runtime EP0 max packet (8/16/32/64) */
@@ -107,15 +101,13 @@ static volatile uint8_t  USBFS_HidIdle;
 static volatile uint8_t  USBFS_HidProtocol;
 
 /* Captured EP0 HID SET_REPORT (host->device control write). The ISR latches the
- * SET_REPORT setup and accumulates its EP0 OUT payload here; the V5F relay loop
- * drains it and replays it onto the real device's EP0 (vendor config writes —
- * Razer Synapse, Logitech HID++, keyboard LEDs). Single-writer (this ISR),
- * single-reader (the relay). s_ep0_rpt_pending gates a COMPLETE payload ready to
- * forward and back-pressures the writer: while a payload awaits drain we do not
- * start a new capture, so the reader never sees a half-written buffer.
- * EP0_RPT_BUF_MAX (256) covers multi-packet vendor reports (e.g. Razer's ~90 B
- * feature reports span two 64 B EP0 packets); larger writes are truncated into
- * the buffer but still fully drained from the wire so the control transfer ACKs. */
+ * setup and accumulates its EP0 OUT payload here; the V5F relay loop drains it
+ * and replays it onto the real device's EP0 (vendor config writes). Single-writer
+ * (ISR), single-reader (relay). s_ep0_rpt_pending gates a complete payload and
+ * back-pressures the writer: no new capture starts while one awaits drain, so the
+ * reader never sees a half-written buffer. EP0_RPT_BUF_MAX (256) covers
+ * multi-packet vendor reports; larger writes are truncated in the buffer but
+ * still fully drained from the wire so the control transfer ACKs. */
 #define EP0_RPT_BUF_MAX 256
 static volatile uint8_t  s_ep0_rpt_buf[EP0_RPT_BUF_MAX];
 static volatile uint16_t s_ep0_rpt_len;        /* bytes accumulated so far      */
@@ -130,37 +122,24 @@ static volatile uint8_t  s_ep0_rpt_pending;    /* complete payload ready to fwd 
 void USBFS_IRQHandler(void) WCH_IRQ;
 
 /* ------------------------------------------------------------------------ */
-/* usbfs_rcc_init — port of USBFS_RCC_Init.                                 */
-/*                                                                          */
-/* Brings up the USBHS 480 MHz PLL, derives the 48 MHz USBFS clock from it  */
-/* (/10), and enables the OTG_FS peripheral + GPIOA clocks.                 */
-/*                                                                          */
-/* DEPENDENCY NOTE: this enables the shared USBHS 480M PLL. A later task    */
-/* initializes the USBHS HOST controller, which also needs this PLL. The    */
-/* reference guards the PLL bring-up with a "already selected" check, so    */
-/* re-running it is safe; but if USBHS host init reconfigures the PLL it    */
-/* must not tear it down while USBFS is live. Tracked for Task 5.x.         */
+/* usbfs_rcc_init — bring up the shared USBHS 480 MHz PLL, derive the 48 MHz   */
+/* USBFS clock (/10), and enable the OTG_FS + GPIOA clocks. The PLL is shared   */
+/* with the USBHS host controller; the bring-up is idempotent and must not tear */
+/* down a live PLL.                                                             */
 /* ------------------------------------------------------------------------ */
 static void usbfs_rcc_init(void)
 {
-    // GUARD FIX: only bring up the USBHS 480M PLL if it is NOT already locked.
-    // The old guard tested SYSPLL_SEL (whether the USBHS PLL feeds SYSCLK), which
-    // in the 400M-HSE profile is ALWAYS false → the block always ran, needlessly
-    // doing RCC_USBHS_PLLCmd(DISABLE) + re-lock on the LIVE host PLL every device
-    // init. usb_host_init() already brought the PLL up before we get here, so test
-    // the actual PLL-ready bit and skip the teardown when it's already up. This
-    // removes the brief PLL-off window (and the unbounded re-lock spin below) from
-    // the normal path — a plausible freeze site on re-enumeration.
+    // Bring up the USBHS 480M PLL only if not already locked. usb_host_init() may
+    // have brought it up already; testing the PLL-ready bit avoids a needless
+    // DISABLE + re-lock on the live host PLL and the resulting PLL-off window.
     if (!(RCC->CTLR & RCC_USBHS_PLLRDY)) {
-        /* Initialize USBHS 480M PLL */
         RCC_USBHS_PLLCmd(DISABLE);
         RCC_USBHSPLLCLKConfig((RCC->CTLR & RCC_HSERDY) ? RCC_USBHSPLLSource_HSE
                                                        : RCC_USBHSPLLSource_HSI);
         RCC_USBHSPLLReferConfig(RCC_USBHSPLLRefer_25M);
         RCC_USBHSPLLClockSourceDivConfig(RCC_USBHSPLL_IN_Div1);
         RCC_USBHS_PLLCmd(ENABLE);
-        // BOUNDED re-lock spin (was unbounded — a never-locking PLL hung V5F here
-        // forever). Mirror the host side's bounded wait.
+        /* Bounded re-lock spin so a never-locking PLL cannot hang V5F. */
         for (uint32_t t = 0; t < 2000000u && !(RCC->CTLR & RCC_USBHS_PLLRDY); t++) { }
     }
     RCC_USBFSCLKConfig(RCC_USBFSCLKSource_USBHSPLL);
@@ -170,11 +149,10 @@ static void usbfs_rcc_init(void)
 }
 
 /* ------------------------------------------------------------------------ */
-/* usbfs_set_mod_bit — OR the TX(IN)/RX(OUT) enable bit for endpoint `ep`     */
-/* into the correct UEPx_MOD register. The packing is asymmetric: EP1 & EP4   */
-/* share UEP4_1_MOD, EP2 & EP3 share UEP2_3_MOD, EP5 & EP6 share UEP5_6_MOD,   */
-/* EP7 lives alone in UEP7_MOD. Use |= because two endpoints can share one     */
-/* register (e.g. a composite mouse on EP1-IN + keyboard on EP4-IN).           */
+/* usbfs_set_mod_bit — OR the TX(IN)/RX(OUT) enable bit for endpoint `ep` into  */
+/* the correct UEPx_MOD register. Register packing is asymmetric: EP1/EP4 share */
+/* UEP4_1_MOD, EP2/EP3 share UEP2_3_MOD, EP5/EP6 share UEP5_6_MOD, EP7 owns     */
+/* UEP7_MOD. |= preserves the other endpoint sharing the same register.        */
 /* ------------------------------------------------------------------------ */
 static void usbfs_set_mod_bit(uint8_t ep, bool is_in)
 {
@@ -326,12 +304,10 @@ bool usbfsd_init(const captured_descriptors_t *desc)
     USBFS_DevSleepStatus = 0;
     s_configured         = 0;
 
-    // DUAL-CORE IRQ ROUTING: IRQn>31 are core-allocated via NVIC->IALLOCR, and the
-    // RESET DEFAULT is Core_ID_V3F (0). The USBFS enumeration ISR runs on V5F, so
-    // without this the interrupt is delivered to V3F (which has no USBFS handler)
-    // and V5F's USBFS_IRQHandler never fires — s_configured stays 0 forever. Route
-    // USBFS_IRQn (67) to V5F before enabling it. (USBHS host works without this
-    // because it's polled.)
+    // Dual-core IRQ routing: IRQn>31 are core-allocated via NVIC->IALLOCR with a
+    // reset default of Core_ID_V3F. The USBFS ISR runs on V5F, so route USBFS_IRQn
+    // (67) to V5F before enabling it; otherwise the interrupt goes to V3F (no
+    // handler) and USBFS_IRQHandler never fires.
     NVIC_SetAllocateIRQ(USBFS_IRQn, Core_ID_V5F);
 
     NVIC_EnableIRQ(USBFS_IRQn);
@@ -340,8 +316,7 @@ bool usbfsd_init(const captured_descriptors_t *desc)
 
 void usbfsd_poll(void)
 {
-    /* Housekeeping only — the IRQ handler does the real work. Kept for API
-     * parity with the v2 driver / host-side loop. */
+    /* No-op: the IRQ handler does the work. Present for API parity. */
 }
 
 bool usbfsd_send_report(uint8_t ep_num, const uint8_t *data, uint16_t len)
@@ -350,19 +325,15 @@ bool usbfsd_send_report(uint8_t ep_num, const uint8_t *data, uint16_t len)
         return false;
     }
 
-    /* Only push to an endpoint we actually armed as an IN for the cloned device.
-     * Guards against a stale mapping after a re-enumeration with a different
-     * topology. */
+    /* Only push to an endpoint armed as an IN for the cloned device; guards
+     * against a stale mapping after re-enumeration with a different topology. */
     if (!(s_in_ep_mask & (1u << ep_num))) {
         return false;
     }
 
-    /* Don't arm an IN endpoint before the host has finished enumeration
-     * (SET_CONFIGURATION). The reference only fills EP buffers from its
-     * enumerated main loop; arming pre-config can mis-seed the DATA0/DATA1
-     * toggle across a bus reset and has no effect anyway (the host won't poll
-     * an unconfigured device). A bus reset clears s_configured, so this also
-     * closes the reset window. */
+    /* Do not arm an IN endpoint before SET_CONFIGURATION: arming pre-config can
+     * mis-seed the DATA0/DATA1 toggle across a bus reset and the host will not
+     * poll an unconfigured device anyway. A bus reset clears s_configured. */
     if (!s_configured) {
         return false;
     }
@@ -486,8 +457,7 @@ void USBFS_IRQHandler(void)
                 break;
 
             /* Any non-EP0 IN: report consumed by host. Re-NAK and flip toggle so
-             * the next usb_device_send_report sends fresh DATAx. Generalized over
-             * all cloned IN endpoints (was hardcoded to EP1). */
+             * the next usb_device_send_report sends fresh DATAx. */
             default: {
                 uint8_t ep = intst & USBFS_UIS_ENDP_MASK;
                 if (ep && (s_in_ep_mask & (1u << ep))) {
@@ -512,15 +482,14 @@ void USBFS_IRQHandler(void)
                         if ((USBFS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_CLASS) {
                             switch (USBFS_SetupReqCode) {
                             case HID_SET_REPORT:
-                                /* Vendor/class config write (Razer Synapse, HID++,
-                                 * keyboard LEDs). Append this EP0 OUT packet to the
-                                 * staging buffer; the relay replays the whole thing
+                                /* Vendor/class config write. Append this EP0 OUT
+                                 * packet to the staging buffer; the relay replays it
                                  * onto the real device's EP0. RX_LEN is this packet's
-                                 * byte count (<= s_ep0_mps). We keep consuming until
-                                 * SetupReqLen hits 0 (the host's full wLength), then
-                                 * publish. Buffer overflow truncates the copy but the
-                                 * bytes are still drained off the wire so the toggle
-                                 * stays in sync and the transfer completes. */
+                                 * byte count (<= s_ep0_mps). Consume until SetupReqLen
+                                 * reaches 0, then publish. Buffer overflow truncates
+                                 * the copy but the bytes are still drained off the
+                                 * wire so the toggle stays in sync and the transfer
+                                 * completes. */
                                 if (s_ep0_rpt_capturing) {
                                     uint16_t pk = USBFSD->RX_LEN;
                                     if (pk > s_ep0_mps) pk = s_ep0_mps;
@@ -595,11 +564,10 @@ void USBFS_IRQHandler(void)
                 if ((USBFS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_CLASS) {
                     switch (USBFS_SetupReqCode) {
                     case HID_SET_REPORT:
-                        /* Begin capturing the EP0 OUT payload that follows, but
-                         * only if the relay has drained the previous one (the
-                         * pending flag is the back-pressure gate). If still
-                         * pending, we don't latch — the bytes are dropped from
-                         * our staging buffer but the transfer is still ACKed
+                        /* Begin capturing the EP0 OUT payload, but only if the relay
+                         * has drained the previous one (pending flag is the
+                         * back-pressure gate). If still pending the bytes are dropped
+                         * from the staging buffer but the transfer is still ACKed
                          * below, so the host's control write completes. */
                         if (!s_ep0_rpt_pending) {
                             s_ep0_rpt_capturing = 1;
@@ -898,13 +866,10 @@ void USBFS_IRQHandler(void)
         USBFSD->INT_FG = USBFS_UIF_BUS_RST;
     } else if (intflag & USBFS_UIF_SUSPEND) {
         USBFSD->INT_FG = USBFS_UIF_SUSPEND;
-        // CRITICAL: do NOT call Delay_Us() here. This runs in ISR context on V5F,
-        // and Delay_Us is a non-reentrant SysTick blocking wait shared with the
-        // relay-loop foreground (usbhs_transact). When this ISR fired during a
-        // foreground Delay_Us (the host EP poll), V5F WEDGED with no trap and the
-        // millis timebase frozen — the real "no reports / hang on PC plug-in" bug.
-        // The reference's 10us settle is just to debounce the suspend line; the
-        // MIS_ST suspend bit is already valid when the IRQ fires, so read it now.
+        // Do not call Delay_Us() here: this runs in ISR context on V5F and Delay_Us
+        // is a non-reentrant SysTick wait shared with the relay-loop foreground;
+        // firing during a foreground Delay_Us wedges V5F. The MIS_ST suspend bit is
+        // already valid when the IRQ fires, so read it directly.
         if (USBFSD->MIS_ST & USBFS_UMS_SUSPEND) {
             USBFS_DevSleepStatus |= 0x02;
         } else {

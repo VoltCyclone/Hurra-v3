@@ -1,18 +1,14 @@
 /* uart.c — command-link USART transport for the CH32H417 V3F core.
  *
- * Self-contained, protocol-agnostic byte transport. INTERRUPT-DRIVEN (no DMA):
- *   RX: USART RXNE interrupt pushes each byte into a power-of-two ring; the
- *       protocol layer drains it via uart_rx_read().
- *   TX: uart_tx_write() fills a software ring and enables the TXE interrupt,
- *       which shifts one byte per TXE until the ring drains, then masks itself.
+ * Protocol-agnostic byte transport, interrupt-driven (no DMA):
+ *   RX: RXNE interrupt pushes each byte into a power-of-two ring drained by
+ *       uart_rx_read().
+ *   TX: uart_tx_write() fills a ring and enables the TXE interrupt, which sends
+ *       one byte per TXE until empty, then masks itself.
  *
- * Port/pins/baud come from board.h. Default: the on-board WCH-LinkE virtual COM
- * port on USART1 PA9(TX)/PA10(RX) AF7 (SB3/SB4). The single USART_IRQHandler
- * name comes from board.h (CMD_USART_IRQHandler) so it always matches the
- * vector-table entry in core/startup_v3f.S.
- *
- * StdPeriph symbols verified against vendor/wch/Peripheral/inc/{ch32h417.h,
- * ch32h417_usart.h, ch32h417_gpio.h, ch32h417_rcc.h}.
+ * Port/pins/baud come from board.h. Default: WCH-LinkE virtual COM on USART1
+ * PA9(TX)/PA10(RX) AF7. The IRQ handler name (CMD_USART_IRQHandler) comes from
+ * board.h to match the vector-table entry in core/startup_v3f.S.
  */
 #include "ch32h417_port.h"
 #include "board.h"
@@ -148,9 +144,7 @@ uint32_t uart_noise(void)         { return err_ne; }
 uint32_t uart_rx_byte_count(void) { return rx_total; }
 uint32_t uart_tx_byte_count(void) { return tx_total; }
 
-/* Single USART IRQ: RXNE (byte received) + TXE (ready for next TX byte). The
- * handler name comes from board.h (CMD_USART_IRQHandler) so it always matches
- * the vector-table entry in core/startup_v3f.S — default USART1_IRQHandler. */
+/* Single USART IRQ: RXNE (byte received) + TXE (ready for next TX byte). */
 void CMD_USART_IRQHandler(void) WCH_IRQ;
 void CMD_USART_IRQHandler(void)
 {

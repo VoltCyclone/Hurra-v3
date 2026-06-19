@@ -3,20 +3,18 @@
 #include <string.h>
 
 // Single instance, pinned into shared SRAM (0x20178000) by both linker scripts.
-// IMPORTANT (bench-proven 2026-06-13): 0x20178000 lands in V3F's DTCM. A core
-// can WRITE the other core's DTCM and that core reads its OWN DTCM back fine, but
-// a core READING the other core's DTCM gets STALE/garbage data. Consequences:
-//   * V3F->V5F (injection): V5F reading g_icc.v3f_to_v5f from V3F's DTCM returns
-//     garbage — V5F's ring_pop saw head!=tail forever and spun. So this direction
-//     is NOT carried in SRAM; it goes through the IPC MSG hardware mailbox
-//     (IPC->MSG[0..3], MMIO at 0xE000D000, proven coherent across both cores).
-//     g_icc.v3f_to_v5f is now a V3F-LOCAL producer FIFO that icc_pump_to_v5f()
-//     drains into the mailbox; V5F never reads it.
-//   * V5F->V3F (telemetry): a return ring would hit the SAME stale-read wall (V3F
-//     reading V5F's writes), and the 4 IPC MSG regs are taken by the injection
-//     mailbox, so bulk telemetry is not carried at all. The v5f_to_v3f ring was
-//     removed (reclaiming ~4 KB of shared SRAM per image). V5F liveness/stage
-//     instead rides the coherent IPC CH1 status bits (icc_telem_* at the bottom).
+// 0x20178000 lands in V3F's DTCM. A core can write the other core's DTCM and that
+// core reads its own DTCM back fine, but a core reading the other core's DTCM gets
+// stale data. Consequences:
+//   * V3F->V5F (injection): V5F reading g_icc.v3f_to_v5f returns garbage, so this
+//     direction goes through the IPC MSG hardware mailbox (IPC->MSG[0..3], MMIO at
+//     0xE000D000, coherent across both cores). g_icc.v3f_to_v5f is a V3F-local
+//     producer FIFO that icc_pump_to_v5f() drains into the mailbox; V5F never
+//     reads it.
+//   * V5F->V3F (telemetry): a return ring would hit the same stale-read wall and
+//     the 4 IPC MSG regs are taken by the injection mailbox, so bulk telemetry is
+//     not carried. V5F liveness/stage rides the coherent IPC CH1 status bits
+//     (icc_telem_* at the bottom).
 icc_shared_t g_icc __attribute__((section(".shared_data")));
 
 static inline void mem_fence(void) { __asm volatile("fence" ::: "memory"); }
@@ -31,15 +29,11 @@ static uint32_t s_v3f_pub_seq;   // V3F: last seq published to the mailbox
 static uint32_t s_v5f_seen_seq;  // V5F: last seq consumed from the mailbox
 
 // Configure IPC channel 0 routing on the V3F (master) core. The IPC unit is
-// core-private (0xE000D000); the CTLR routing (TxCID/RxCID/AutoEN) MUST be
-// programmed or IPC_SetFlagStatus on Bit0 never raises the cross-core IRQ on
-// V5F — the wfi/doorbell wake path silently degrades to poll latency.
-//
-// CID values + DeInit/Lock order are copied verbatim from the WCH EVT IPC
-// example (EXAM/CPU/IPC, Common/hardware.c) for the same V3F<->V5F channel 0.
-// The reference configures CTLR on V3F only; V5F just enables its NVIC + IT
-// (done in main_v5f.c). Doorbell bit direction (V3F sets Bit0, V5F clears it)
-// is our convention, not the example's ping-pong (verified on the bench).
+// core-private (0xE000D000); the CTLR routing (TxCID/RxCID/AutoEN) must be
+// programmed or IPC_SetFlagStatus on Bit0 never raises the cross-core IRQ on V5F
+// and the wfi/doorbell wake path degrades to poll latency. CTLR is configured on
+// V3F only; V5F enables its NVIC + IT (main_v5f.c). Doorbell direction: V3F sets
+// Bit0, V5F clears it.
 static void icc_ipc_config_v3f(void)
 {
     IPC_InitTypeDef ipc = {0};
@@ -67,8 +61,8 @@ void icc_init_v3f(void)
 
     icc_ipc_config_v3f();   // program IPC CH0 routing before the doorbell is used
 
-    // Init the V3F->V5F IPC MSG mailbox: clear seq + ack so the first publish is
-    // seq=1 and V5F (seeing seq!=0) consumes it. Mailbox starts free.
+    // Init the IPC MSG mailbox: clear seq + ack so the first publish is seq=1 and
+    // V5F (seeing seq!=0) consumes it. Mailbox starts free.
     s_v3f_pub_seq = 0;
     IPC->MSG[2] = 0;        // publish seq
     IPC->MSG[3] = 0;        // ack (== seq -> free)
@@ -107,16 +101,14 @@ static bool ring_pop(icc_ring_t *r, icc_record_t *out)
 }
 
 // --- V3F side ---------------------------------------------------------------
-// icc_send_to_v5f: enqueue into the V3F-LOCAL producer FIFO (V3F's own DTCM, so
-// this read/modify/write is coherent). icc_pump_to_v5f() later moves records from
-// this FIFO into the coherent IPC mailbox as it drains.
+// Enqueue into the V3F-local producer FIFO (V3F's own DTCM, so coherent).
+// icc_pump_to_v5f() later moves records from this FIFO into the IPC mailbox.
 bool icc_send_to_v5f(const icc_record_t *r)  { return ring_push(&g_icc.v3f_to_v5f, r); }
 
-// icc_pump_to_v5f: move at most one queued record from the V3F-local FIFO into the
-// IPC MSG mailbox, if the mailbox is free (V5F has acked the last publish). Call
-// this from the V3F main loop every iteration. Returns true if a record was
-// pushed into the mailbox. The mailbox is a single 8-byte slot; the local FIFO
-// (256 deep) absorbs bursts while V5F drains one record per loop.
+// Move at most one queued record from the V3F-local FIFO into the IPC MSG mailbox
+// if the mailbox is free (V5F has acked the last publish). Returns true if a
+// record was pushed. The mailbox is a single 8-byte slot; the 256-deep local FIFO
+// absorbs bursts while V5F drains one record per loop.
 bool icc_pump_to_v5f(void)
 {
     // Mailbox busy until V5F's ack (MSG[3]) catches up to our last publish seq.
@@ -139,33 +131,25 @@ bool icc_pump_to_v5f(void)
     mem_fence();                    // publish payload before bumping the seq
     IPC->MSG[2] = ++s_v3f_pub_seq;  // signal "new record" to V5F
 
-    // Wake V5F NOW that the record is actually in the coherent mailbox. The
-    // doorbell used to be rung by the producers (kmbox_cmd_inject_*) at FIFO-push
-    // time — but that is BEFORE this pump loads MSG[0..2], so V5F woke, saw an
-    // unchanged seq in icc_recv_from_v3f(), and went straight back to wfi; the
-    // record was then only picked up on the next TIM4 1 ms poll (up to ~1 ms of
-    // added injection latency, plus one spurious wakeup per pushed record during
-    // a UART burst). Ringing here — after MSG[2] is published — makes every
-    // wakeup meaningful: V5F wakes exactly when a record is visible, and the
+    // Ring the doorbell after MSG[2] is published so the wakeup is meaningful: V5F
+    // wakes exactly when a record is visible. Ringing at FIFO-push time would wake
+    // V5F before this pump loaded the mailbox, so it would see an unchanged seq and
+    // return to wfi, deferring the record to the next 1 ms TIM4 poll. The
     // single-slot mailbox rate-limits this to one doorbell per record.
     icc_ring_doorbell_v5f();
     return true;
 }
 
-// V5F->V3F bulk telemetry (report/drop counts, status flags) is DROPPED — not
-// carried at all. A lock-free SRAM ring would need BOTH cores to read the shared
-// head+tail, but cross-core DTCM reads are stale on this part (only the producer's
-// remote WRITE lands; the consumer can only read its OWN DTCM), and the 4 IPC MSG
-// registers are fully consumed by the V3F->V5F injection mailbox. The send/recv
-// API and the v5f_to_v3f ring were removed (dead no-ops). V5F liveness instead
-// rides the coherent IPC CH1 stage telemetry below (icc_telem_*), which is all
-// the V3F diagnostic UART actually consumes.
+// V5F->V3F bulk telemetry (report/drop counts, status flags) is not carried. A
+// lock-free SRAM ring would need both cores to read the shared head+tail, but
+// cross-core DTCM reads are stale on this part, and the 4 IPC MSG registers are
+// consumed by the injection mailbox. V5F liveness rides the coherent IPC CH1
+// stage telemetry below (icc_telem_*).
 
 // --- V5F side ---------------------------------------------------------------
-// icc_recv_from_v3f: read one record from the IPC mailbox if V3F published a new
-// seq since we last looked. NEVER touches g_icc.v3f_to_v5f (that lives in V3F's
-// DTCM and reads back stale on V5F — the whole reason for the mailbox). Returns
-// false when no new record is pending.
+// Read one record from the IPC mailbox if V3F published a new seq since the last
+// call. Never touches g_icc.v3f_to_v5f (V3F's DTCM, stale on V5F). Returns false
+// when no new record is pending.
 bool icc_recv_from_v3f(icc_record_t *out)
 {
     uint32_t seq = IPC->MSG[2];
@@ -191,13 +175,10 @@ void icc_ring_doorbell_v5f(void)
 }
 
 // --- V5F->V3F coherent stage telemetry (IPC CH1 status bits 8..15) -----------
-// CH1 owns STS bits [8..15] (bit = CH*8 + n = 8 + n). We use that byte as a
-// single-writer V5F->V3F register: [15:14]=heartbeat seq, [13:8]=stage code.
-// V5F is the ONLY writer (sole-writer => race-free, no lock); V3F only reads.
-// These are peripheral-bus MMIO (0xE000D000), coherent across cores — unlike the
-// 0x2017xxxx shared-SRAM writes that stall V5F. IPC->SET sets bits, IPC->CLR
-// clears them, IPC->STS reads them back (see ch32h417_ipc.c). We write the whole
-// CH1 byte each call: clear the 8 CH1 bits, then set the new value's bits.
+// CH1's byte is a single-writer V5F->V3F register: [15:14]=heartbeat seq,
+// [13:8]=stage code. V5F is the only writer (race-free, no lock); V3F only reads.
+// Peripheral-bus MMIO (0xE000D000), coherent across cores. IPC->SET sets bits,
+// IPC->CLR clears, IPC->STS reads. Each call rewrites the whole CH1 byte.
 #define ICC_TLM_CH1_SHIFT   8u                 // CH1 status bits start at bit 8
 #define ICC_TLM_CH1_MASK    (0xFFu << ICC_TLM_CH1_SHIFT)
 
@@ -205,9 +186,8 @@ void icc_telem_stage_v5f(uint8_t code)
 {
     static uint8_t s_seq;                       // V5F-local rolling heartbeat (0..3)
     uint8_t val = (uint8_t)(((++s_seq & 0x3u) << 6) | (code & 0x3Fu));
-    // Single 32-bit clear of all CH1 bits, then a single set of the new byte.
-    // SET/CLR are write-1-to-action registers, so this is two MMIO stores, no RMW
-    // race (and V5F is the only writer of CH1 regardless).
+    // Clear all CH1 bits, then set the new byte. SET/CLR are write-1-to-action,
+    // so this is two MMIO stores with no RMW.
     IPC->CLR = ICC_TLM_CH1_MASK;
     IPC->SET = ((uint32_t)val << ICC_TLM_CH1_SHIFT);
 }
@@ -217,16 +197,15 @@ uint8_t icc_telem_read_v3f(void)
     return (uint8_t)((IPC->STS >> ICC_TLM_CH1_SHIFT) & 0xFFu);
 }
 
-// IPC_CH0 doorbell ISR. The ONLY job here is to wake the core from wfi; the actual
-// mailbox read happens in the foreground (usb_merge_drain_icc -> icc_recv_from_v3f).
+// IPC_CH0 doorbell ISR. Its only job is to wake the core from wfi; the mailbox
+// read happens in the foreground (usb_merge_drain_icc -> icc_recv_from_v3f).
 //
-// STORM FIX (2026-06-18): the channel runs AutoEN=ENABLE, so the Bit0 interrupt
-// re-asserts from the MSG-mailbox-pending condition. Clearing the flag alone does
-// NOT deassert it — the IRQ immediately re-fires (~3 MHz) and starves the
-// foreground whenever the foreground is slow to drain (e.g. the ~80 ms two-board
-// descriptor send). So the ISR DISABLES its own IT bit after clearing; the
-// foreground re-arms it (icc_ipc_rearm_v5f) once it has drained the mailbox. One
-// ISR entry per doorbell, storm-proof regardless of how long the foreground takes.
+// The channel runs AutoEN=ENABLE, so the Bit0 interrupt re-asserts from the
+// MSG-mailbox-pending condition: clearing the flag alone does not deassert it and
+// the IRQ re-fires immediately, starving a foreground that is slow to drain (e.g.
+// the ~80 ms two-board descriptor send). The ISR disables its own IT bit after
+// clearing; the foreground re-arms it (icc_ipc_rearm_v5f) once drained. One ISR
+// entry per doorbell regardless of foreground duration.
 void IPC_CH0_Handler(void) WCH_IRQ;
 void IPC_CH0_Handler(void)
 {

@@ -31,10 +31,9 @@ static bool s_invert_x = false;
 static bool s_invert_y = false;
 static bool s_swap_xy  = false;
 
-// ── motion program state (Feature A) ─────────────────────────────────────────
-// Endpoint and control points are relative to the program's start. Positions
-// are tracked as fixed-point .8 (sub-count precision) so each tick can emit the
-// exact integer increment toward curve(t) with no cumulative rounding drift.
+// ── motion program state ─────────────────────────────────────────────────────
+// Endpoint and control points are relative to the program's start. Each tick
+// emits the integer increment toward curve(t), so rounding never accumulates.
 typedef enum { MOTION_NONE = 0, MOTION_LINEAR, MOTION_BEZIER } motion_kind_t;
 static struct {
 	motion_kind_t kind;
@@ -100,9 +99,9 @@ void act_click(uint8_t button_1based, uint8_t count, uint32_t delay_ms)
 	}
 }
 
-// Core mover: applies swap/invert transforms and injects. Shared by the public
-// act_move and the motion-program tick. Does NOT cancel the motion program, so
-// the tick can drive it without self-aborting.
+// Core mover: applies swap/invert transforms and injects. Shared by act_move and
+// the motion-program tick. Does not cancel the motion program, so the tick can
+// drive it without self-aborting.
 static void act_move_raw(int16_t dx, int16_t dy)
 {
 	if (s_swap_xy)  { int16_t t = dx; dx = dy; dy = t; }
@@ -115,7 +114,7 @@ static void act_move_raw(int16_t dx, int16_t dy)
 
 void act_move(int16_t dx, int16_t dy)
 {
-	// A manual move overrides any in-flight trajectory (user redirect wins).
+	// A manual move overrides any in-flight trajectory.
 	g_motion.kind = MOTION_NONE;
 	act_move_raw(dx, dy);
 }
@@ -226,7 +225,7 @@ void act_phys_mask_mouse(uint8_t code, bool enable)
 
 void act_phys_mask_key(uint8_t hid_key, bool enable)
 {
-	// Reuse the masked-key table; mode 1 = masked. act_kb_mask owns the table.
+	// Reuse the masked-key table; mode 1 = masked.
 	act_kb_mask(hid_key, enable ? 1 : 0);
 }
 
@@ -246,16 +245,15 @@ bool act_phys_key_masked(uint8_t hid_key)
 
 bool act_phys_kb_mask_active(void) { return g_masked_count != 0; }
 
-// ── motion program (Feature A) ───────────────────────────────────────────────
+// ── motion program ───────────────────────────────────────────────────────────
 // Cubic Bézier from the origin: B(t) = 3(1-t)^2 t·C1 + 3(1-t) t^2·C2 + t^3·E,
-// with the start point at (0,0) folded in (its (1-t)^3 term is zero). Evaluated
-// per-axis in fixed-point; only the integer delta from the last emitted point
-// is injected, so rounding never accumulates and the final tick lands exactly
+// with the start at (0,0) folded in (its (1-t)^3 term is zero). Only the integer
+// delta from the last emitted point is injected, so the final tick lands exactly
 // on the endpoint.
 static int32_t bezier_axis(int32_t c1, int32_t c2, int32_t e, uint32_t t_q, uint32_t one)
 {
-	// t_q, one are .16 fixed-point in [0, 65536]. Returns counts (rounded).
-	// Work in 64-bit: coefficients are small (≤ ~32767) but t^3 scaling needs room.
+	// t_q, one are .16 fixed-point in [0, 65536]. Returns rounded counts. 64-bit
+	// math: coefficients are small but the t^3 scaling needs headroom.
 	uint64_t t  = t_q;
 	uint64_t u  = one - t_q;             // (1 - t)
 	uint64_t t2 = (t * t) >> 16;
@@ -268,7 +266,7 @@ static int32_t bezier_axis(int32_t c1, int32_t c2, int32_t e, uint32_t t_q, uint
 	return (int32_t)((acc + (acc >= 0 ? (1 << 15) : -(1 << 15))) >> 16);
 }
 
-// Smoothstep ease (3t^2 - 2t^3) for automove — a human-like accel/decel profile.
+// Smoothstep ease (3t^2 - 2t^3): an accel/decel position profile for automove.
 // Returns position fraction in .16 fixed-point for input t_q in .16.
 static uint32_t ease_smoothstep(uint32_t t_q, uint32_t one)
 {
@@ -294,7 +292,7 @@ static void motion_start_common(int16_t dx, int16_t dy, uint16_t dur_ms)
 
 void act_motion_move_dur(int16_t dx, int16_t dy, uint16_t dur_ms)
 {
-	if (dur_ms == 0) { act_move(dx, dy); return; }   // immediate
+	if (dur_ms == 0) { act_move(dx, dy); return; }
 	motion_start_common(dx, dy, dur_ms);
 	g_motion.kind = MOTION_LINEAR;
 }
@@ -321,11 +319,9 @@ void act_motion_tick(void)
 	if (last) {
 		t_q = 65536u;
 	} else {
-		// t = elapsed / dur, in .16. Kept strictly 32-bit so this maps to the
-		// Cortex-M7 hardware UDIV (bounded 2–12 cy, deterministic) instead of the
-		// software __aeabi_uldivmod (data-dependent loop). Safe in 32 bits: this
-		// branch only runs when elapsed < dur_ms ≤ 65535, so elapsed ≤ 65534 and
-		// (elapsed << 16) ≤ 0xFFFE0000 — no overflow of uint32_t.
+		// t = elapsed / dur, in .16, kept strictly 32-bit to use hardware UDIV.
+		// This branch only runs when elapsed < dur_ms ≤ 65535, so
+		// (elapsed << 16) ≤ 0xFFFE0000 and does not overflow uint32_t.
 		t_q = (elapsed << 16) / g_motion.dur_ms;
 	}
 
@@ -343,9 +339,8 @@ void act_motion_tick(void)
 	int32_t step_y = py - g_motion.emit_y;
 
 	// Clamp each step to int16 for the injection path. emit_x/y advances only by
-	// what is actually emitted, so any clamped residue is carried to the next
-	// tick rather than dropped (keeps total/endpoint exact). Huge per-tick steps
-	// only occur if the loop stalls for many ms — vanishingly rare.
+	// what is actually emitted, so clamped residue carries to the next tick
+	// rather than being dropped, keeping the total and endpoint exact.
 	if (step_x >  INT16_MAX) step_x =  INT16_MAX;
 	if (step_x <  INT16_MIN) step_x =  INT16_MIN;
 	if (step_y >  INT16_MAX) step_y =  INT16_MAX;
@@ -356,8 +351,8 @@ void act_motion_tick(void)
 	if (step_x || step_y)
 		act_move_raw((int16_t)step_x, (int16_t)step_y);
 
-	// Only finish once the endpoint is fully delivered (clamped residue could
-	// otherwise leave the last counts unsent on the final tick).
+	// Finish only once the endpoint is fully delivered, so clamped residue does
+	// not leave the last counts unsent on the final tick.
 	if (last && g_motion.emit_x == g_motion.ex && g_motion.emit_y == g_motion.ey)
 		g_motion.kind = MOTION_NONE;
 }

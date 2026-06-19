@@ -1,12 +1,11 @@
-// st7789.c — trimmed ST7789 240x240 SPI driver for the V3F status display.
-// The SPI2 setup, byte primitives, and power-on register sequence are copied
-// verbatim from the wuxx EVT example doc/EVT/EXAM/SPI/SPI_LCD/Common/lcd.c
-// (SPI_HW path), with the graphics library, embedded test image, and the
-// GPIO-bitbang path removed. The panel is write-only here (no MISO readback).
+// st7789.c — ST7789 240x240 SPI driver for the V3F status display.
+// SPI2 setup, byte primitives, and the power-on register sequence are taken
+// verbatim from the WCH EVT example (doc/EVT/EXAM/SPI/SPI_LCD/Common/lcd.c,
+// SPI_HW path). Panel is write-only (no MISO readback).
 #include "st7789.h"
 #include "board.h"
 #include "ch32h417_conf.h"
-#include "debug.h"          // Delay_Ms / Delay_Init already used elsewhere
+#include "debug.h"          // Delay_Ms / Delay_Init
 #include "font5x7.h"
 
 #define LCD_W LCD_WIDTH
@@ -157,8 +156,7 @@ void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg, 
     if (scale < 1) scale = 1;
     // 5 columns + 1 spacing column; 7 rows used of an 8-row cell.
     uint16_t cell_w = (uint16_t)(6 * scale), cell_h = (uint16_t)(8 * scale);
-    // Skip glyphs that would not fully fit — avoids partial-glyph window math
-    // and matches draw_string's pre-clip behavior (it already breaks on x+cell_w>LCD_W).
+    // Skip glyphs that would not fully fit, avoiding partial-glyph window math.
     if (x + cell_w > LCD_WIDTH || y + cell_h > LCD_HEIGHT) return;
     set_window(x, y, (uint16_t)(x + cell_w - 1), (uint16_t)(y + cell_h - 1));
     uint8_t fhi = fg >> 8, flo = fg, bhi = bg >> 8, blo = bg;

@@ -1,26 +1,18 @@
 // spi_link_selftest.c — board-to-board SPI link bench harness. See header.
 // Built only under -DSPI_LINK_SELFTEST.
 //
-// TEST PROTOCOL (full-duplex echo, hardware-NSS framed):
-//   Master (board A, SPI master): every round it CLOCKS one 32-byte exchange.
-//     TX = a PING frame (TYPE=PING, SEQ=counter, payload = 4-byte counter LE).
-//     RX = whatever the slave had staged = the slave's echo of the PREVIOUS ping.
-//     Master checks: RX unpacks OK (SOF+LEN+CRC), TYPE==ECHO, and the echoed
-//     counter == the ping counter it sent one round earlier. One mismatch =>
-//     error. The very first round has no prior echo, so it's skipped in scoring.
-//   Slave (board B, SPI slave): it stages an ECHO frame, then blocks in the
-//     exchange until the master clocks it. On each completed exchange it unpacks
-//     the received PING, and re-stages ECHO(TYPE=ECHO, SEQ=ping.seq, payload =
-//     the same counter bytes) for the NEXT exchange. It scores its own CRC checks.
+// Test protocol (full-duplex echo, hardware-NSS framed):
+//   Master: each round clocks one 32-byte exchange. TX = PING(SEQ=counter,
+//     payload = 4-byte counter LE). RX = the slave's echo of the previous ping.
+//     Scored: RX unpacks OK, TYPE==ECHO, echoed counter == the ping sent one round
+//     earlier. Round 0 has no prior echo and is skipped.
+//   Slave: stages an ECHO frame, blocks until the master clocks it, unpacks the
+//     PING, and re-stages ECHO(SEQ=ping.seq, same counter) for the next exchange.
 //
-// LED READOUT (V5F = PC3), no logic analyzer needed:
-//   - healthy: slow ~1 Hz blink (toggles once per LED_HEALTHY_TOGGLE_ROUNDS good rounds)
-//   - errors / no link: fast ~8 Hz blink
-//   Both roles use the same convention, so a glance at either board tells you.
+// LED readout (V5F = PC3): healthy = slow ~1 Hz blink; errors / no link = fast
+// ~8 Hz blink. Both roles use the same convention.
 //
-// The master free-runs at a modest rate (a short delay per round) so the LED is
-// watchable and the slave always has time to re-stage. This is a correctness +
-// signal-integrity gate, NOT the 8 kHz throughput test (that comes with DMA).
+// Correctness + signal-integrity gate, not the 8 kHz throughput test.
 #include "spi_link_selftest.h"
 
 #ifdef SPI_LINK_SELFTEST
@@ -31,8 +23,7 @@
 #include "timebase_v5f.h"   // timebase_v5f_delay_ms
 #include "ch32h417_conf.h"
 
-// Frame TYPE tags for the test (high bit clear = these are test frames, distinct
-// from the real ICC record tags reused by the hot path).
+// Frame TYPE tags for the test (high bit clear; distinct from the hot-path tags).
 #define ST_TYPE_PING  0x70u
 #define ST_TYPE_ECHO  0x71u
 
@@ -52,10 +43,8 @@ static uint32_t get_u32(const uint8_t *p)
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-// Drive the LED from a rolling health view: while errors keep happening the LED
-// blinks fast; while rounds stay clean it blinks slow. `good_streak` is reset to
-// 0 by the caller on any error; the harness toggles at a cadence chosen by
-// whether we're currently in a healthy streak.
+// Drive the LED from the current health: clean rounds blink slow, errors blink
+// fast. Toggle cadence is chosen by the `healthy` flag.
 static void led_update(uint32_t round, int healthy)
 {
     uint32_t period = healthy ? LED_HEALTHY_TOGGLE_ROUNDS : LED_FAULT_TOGGLE_ROUNDS;

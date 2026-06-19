@@ -1,22 +1,11 @@
 // src/kmbox_cmd_v5f_stub.c — V5F-only stubs for the kmbox_cmd_* injection sinks.
 //
-// Why this file exists:
-//   actions.c is linked into BOTH images. It includes kmbox.h, whose shim maps
-//   kmbox_inject_* -> kmbox_cmd_inject_* (the ICC encoders). On V3F those live
-//   in kmbox_cmd.c. On V5F kmbox_cmd.c is NOT linked (it pulls in the protocol
-//   parser + UART transport, which are V3F-only), so the four kmbox_cmd_*
-//   symbols would be undefined at link time.
-//
-//   On V5F, however, actions.c's act_move / act_click / act_kb_* path is never
-//   exercised: V5F runs the *merge*, which drains injection directly from the
-//   ICC (usb_merge_drain_icc) and never goes through actions.c's command sinks.
-//   V5F only needs actions.c for the physical-mask STATE (g_phys_mask) and the
-//   act_phys_* query helpers, which do not touch kmbox_cmd_*. The four sinks are
-//   therefore reachable in the object file but never called on V5F.
-//
-//   Providing empty stubs here resolves the link minimally and safely (the
-//   symbols exist but are unreachable on V5F). This is cleaner than splitting
-//   actions.c, and keeps a single shared actions.c across both cores.
+// actions.c is linked into both images and references kmbox_cmd_inject_* via the
+// kmbox.h shim. On V3F those live in kmbox_cmd.c, but that file is not linked on
+// V5F (it pulls in the V3F-only protocol parser and UART transport). V5F drains
+// injection from the ICC in the merge path and only uses actions.c for the
+// physical-mask state, so these sinks are reachable but never called. Empty
+// stubs resolve the link while keeping a single shared actions.c across cores.
 
 #include <stdint.h>
 

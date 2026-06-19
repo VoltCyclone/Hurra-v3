@@ -1,7 +1,6 @@
-// spi_frame.h — pure (host-testable) codec for the board-to-board SPI link's
-// fixed hot-path slot. NO MMIO, NO WCH headers — stdint only. The SPI driver
-// (DMA, NSS, DATA_READY GPIO) that USES this codec lives elsewhere; this file is
-// just the wire format so it can be unit-tested on the host.
+// spi_frame.h — pure (host-testable) codec for the board-to-board SPI link's fixed
+// hot-path slot. No MMIO, no WCH headers; stdint only. The SPI driver that uses this
+// codec lives in spi_link.c. This file is just the wire format.
 //
 // Hot-path slot (fixed 32 bytes), board B (host) -> board A (device) and the
 // full-duplex return slot the other way:

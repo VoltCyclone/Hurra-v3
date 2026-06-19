@@ -3,10 +3,9 @@
 #include <stdbool.h>
 #include "desc_capture.h"
 
-// Maximum endpoints: EP0 (control) + up to 7 more
+// EP0 (control) + up to 7 additional endpoints.
 #define USB_DEV_NUM_ENDPOINTS  8
 
-// Device state
 typedef enum {
 	USB_DEV_STATE_DEFAULT,
 	USB_DEV_STATE_ADDRESS,

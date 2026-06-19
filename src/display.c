@@ -1,8 +1,8 @@
-// display.c — status->text layout (pure) + hardware render (Tasks 4/6).
+// display.c — status-to-text layout (pure) and hardware render.
 #include "display.h"
 #include <stdio.h>
 #include <string.h>
-// Hardware headers are RISC-V / embedded only — exclude from host unit tests.
+// Hardware headers are embedded-only; excluded from host unit tests.
 #ifdef __riscv
 #include "st7789.h"
 #include "board.h"
@@ -115,7 +115,7 @@ void display_render(const display_status_t *st)
     for (int r = 0; r < DISP_ROWS; r++) {
         if (!(dirty & (1u << r))) continue;
         uint16_t y = (uint16_t)(r * 8 * DISP_SCALE);
-        // Clear the whole row band, then draw text (opaque bg also covers it).
+        // Clear the row band before drawing text.
         st7789_fill_rect(0, y, LCD_WIDTH, (uint16_t)(y + 8 * DISP_SCALE), ST_BLACK);
         uint16_t fg = (st->state == DISP_STATE_RELAYING) ? ST_GREEN :
                       (st->state == DISP_STATE_ERROR ||
@@ -127,7 +127,7 @@ void display_render(const display_status_t *st)
     memcpy(prev, rows, sizeof rows);
     have_prev = true;
 }
-#else  /* !__riscv : host build — display is hardware-only, provide no-op stubs */
+#else  /* host build: display is hardware-only, no-op stubs */
 void display_init(void) { }
 void display_render(const display_status_t *st) { (void)st; }
 #endif /* __riscv */

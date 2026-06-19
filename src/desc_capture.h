@@ -55,10 +55,8 @@ typedef struct {
 
 	uint8_t  ep0_maxpkt;
 	uint8_t  dev_addr;
-	uint8_t  speed;                                 // USB_SPEED_FULL/LOW/HIGH — the
-	                                                // captured device's link speed,
-	                                                // so the clone presents at the
-	                                                // SAME speed (faithful MITM).
+	uint8_t  speed;                                 // USB_SPEED_*; clone presents at
+	                                                // the captured device's speed.
 	bool     valid;
 } captured_descriptors_t;
 

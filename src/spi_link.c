@@ -1,48 +1,38 @@
 // spi_link.c — board-to-board SPI1 link driver (polled, full-duplex). See
 // spi_link.h. SPI1 on GPIOA AF5 (board.h LINK_*): SCK PA5, NSS PA4 (hardware),
-// MISO PA6, MOSI PA7, DATA_READY PA3. (Pins chosen from what the nanoCH32H417
-// actually breaks out — the A4..A7 group is four adjacent header pins with real
-// hardware NSS; see board.h for the full rationale.)
+// MISO PA6, MOSI PA7, DATA_READY PA3. See board.h for pin-selection rationale.
 //
-// DESIGN NOTES
-//  - POLLED, not DMA. The hot-path 8 kHz sustained design wants a free-running
-//    DMA ring, but the SPI1 DMAMUX TX/RX request-source IDs are NOT enumerated in
-//    the vendored SDK (grep DMA_Request* / SPI1 in vendor/wch/Peripheral/inc —
-//    nothing). Guessing a hardware request number is the classic "DMA silently
-//    never fires" bug. So this uses TXE/RXNE polling — well-understood flags — and
-//    the DMA path can drop in later once the request IDs are confirmed on the bench.
-//  - Integrity is the SOFTWARE CRC in spi_frame.c (already host-tested, KAT
-//    0x29B1), NOT the SPI hardware CRC engine. The HW CRC is a separate
-//    bench-verify item (plan Q3); the slot already carries its own CRC16, so the
-//    link layer just moves bytes and the frame codec validates them.
-//  - Mode: CPOL=1/CPHA=2edge (Mode 3), MSB-first, 8-bit — matches the ST7789 SPI2
-//    setup so both SPI blocks on the board use one clocking convention. Master
-//    and slave MUST agree; both are set here.
+// Design notes:
+//  - Polled, not DMA: the SPI1 DMAMUX TX/RX request-source IDs are not enumerated
+//    in the vendored SDK, and guessing one yields a silently-never-firing DMA. This
+//    uses TXE/RXNE polling; a DMA path can replace it once the IDs are confirmed.
+//  - Integrity is the software CRC in spi_frame.c (host-tested, KAT 0x29B1), not the
+//    SPI hardware CRC engine. The link layer moves bytes; the frame codec validates.
+//  - Mode 3 (CPOL=1, CPHA=2edge), MSB-first, 8-bit, matching the ST7789 SPI2 setup
+//    so both SPI blocks share one clocking convention. Master and slave must agree.
 //  - CS: the master drives PA4 as a plain GPIO (one pulse per slot) so a bit-slip
-//    can't propagate past a single frame (plan §2 resync). The slave uses PA4 as
-//    the hardware NSS input (real SPI1 HW-NSS) for automatic per-frame re-sync.
+//    cannot propagate past one frame. The slave uses PA4 as the hardware NSS input
+//    for automatic per-frame re-sync.
 #include "spi_link.h"
 #include "board.h"
 #include "ch32h417_conf.h"
 #include "ch32h417_port.h"   // WCH_IRQ attribute for SPI1_IRQHandler
-#include "timebase_v5f.h"    // timebase_v5f_us() — wrap-safe µs budget for waits
+#include "timebase_v5f.h"    // wrap-safe µs budget for waits
 
-// Per-byte wait budget for the MASTER. In master mode every flag (TXE/RXNE/BSY)
-// is driven by the master's OWN clock, so a healthy slot completes in microseconds;
-// a flag that never comes means the SPI block stopped clocking (e.g. MODF auto-
-// cleared SPE/MSTR — see spi_link_master_recover). 2 ms is ~1000× the real per-byte
-// time at the bring-up prescaler, so it never trips in normal operation but bounds a
-// genuine wedge to a finite stall instead of a permanent hang (the gate-4b "frozen
-// heartbeat, counter 0x00" failure). Diagnostics live in spi_link_master_wedges.
+// Per-byte wait budget for the master. Every flag (TXE/RXNE/BSY) is driven by the
+// master's own clock, so a healthy slot completes in microseconds; a flag that
+// never comes means the block stopped clocking (e.g. MODF auto-cleared SPE/MSTR,
+// see spi_link_master_recover). 2 ms is ~1000× the real per-byte time at the
+// bring-up prescaler, so it never trips normally but bounds a wedge to a finite
+// stall. Diagnostics in spi_link_master_wedges.
 #define LINK_MASTER_WAIT_US  2000u
 
-// DIAG: incremented each time a master flag-wait times out (a wedge was caught and
-// the slot aborted). Stays 0 on a healthy link. extern-visible for the oracle/LED.
+// Incremented each time a master flag-wait times out (wedge caught, slot aborted).
+// 0 on a healthy link. extern-visible for the oracle/LED.
 volatile uint32_t spi_link_master_wedges;
 
 // Wait for `flag` to reach `want` on the master SPI, bounded by LINK_MASTER_WAIT_US.
-// Returns 1 if the flag arrived, 0 on timeout (caller aborts + recovers). Uses the
-// wrap-safe TIM9 µs counter so it is correct across the 32-bit wrap.
+// Returns 1 if the flag arrived, 0 on timeout (caller aborts + recovers). Wrap-safe.
 static int link_master_wait(uint16_t flag, FlagStatus want)
 {
     uint32_t t0 = timebase_v5f_us();
@@ -55,10 +45,9 @@ static int link_master_wait(uint16_t flag, FlagStatus want)
     return 1;
 }
 
-// SPI1 baud is f_PCLK/prescaler. Mode4 = /32. Under the V5F clock profile the
-// SPI1 PB clock is on the order of ~100 MHz, so /32 lands in the low-MHz range —
-// a deliberately SLOW, signal-integrity-safe rate for first bring-up. Raise the
-// prescaler toward the 25 MHz target (plan §4) once the wire is proven clean.
+// SPI1 baud is f_PCLK/prescaler. Mode4 = /32. The SPI1 PB clock is ~100 MHz under
+// the V5F profile, so /32 lands in the low-MHz range — a deliberately slow,
+// signal-integrity-safe rate for bring-up. Raise once the wire is proven clean.
 #define LINK_SPI_PRESCALER  SPI_BaudRatePrescaler_Mode4
 
 // ── shared pin/clock bring-up ───────────────────────────────────────────────
@@ -68,10 +57,8 @@ static void link_clocks_on(void)
     RCC_HB2PeriphClockCmd(LINK_SPI_RCC_HB2, ENABLE);  // SPI1 (HB2 bus)
 }
 
-// Configure SCK/MISO/MOSI as AF5. Direction of each pad is fixed by SPI role, but
-// on this IP the AF mux handles drive direction, so master and slave configure
-// the same three pads as AF push-pull (SCK/MOSI) / AF input (MISO). The slave's
-// MISO is the only driven output but AF_PP on both is the EVT convention.
+// Configure SCK/MISO/MOSI as AF5. The AF mux handles drive direction on this IP, so
+// master and slave configure the same pads as AF push-pull per the EVT convention.
 static void link_spi_pins_af(void)
 {
     GPIO_InitTypeDef g = {0};
@@ -106,9 +93,9 @@ static void link_spi_configure(uint16_t mode, uint16_t nss)
     SPI_Cmd(LINK_SPI, ENABLE);
 }
 
-// Blocking one-byte full-duplex shift for the SLAVE side (unbounded: the slave is
-// SUPPOSED to block until the master clocks it — there is no local timeout that
-// makes sense). Returns the byte clocked in. TXE-wait, send, RXNE-wait, receive.
+// Blocking one-byte full-duplex shift for the slave side (unbounded: the slave
+// blocks until the master clocks it, so no local timeout applies). Returns the byte
+// clocked in.
 static uint8_t link_xfer_byte(uint8_t out)
 {
     while (SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_TXE) == RESET) { }
@@ -117,10 +104,9 @@ static uint8_t link_xfer_byte(uint8_t out)
     return (uint8_t)SPI_I2S_ReceiveData(LINK_SPI);
 }
 
-// MASTER slot transfer: the master controls the clock, so load-then-receive per
-// byte is correct (SendData starts the clock; RXNE completes it). BOUNDED — every
-// wait has a finite budget; on timeout (the block stopped clocking) it aborts the
-// slot and returns 0 so the caller can recover instead of hanging forever.
+// Master slot transfer: the master controls the clock, so load-then-receive per
+// byte is correct (SendData starts the clock; RXNE completes it). Bounded: on
+// timeout it aborts the slot and returns 0 so the caller can recover.
 static int link_xfer_slot_master(const uint8_t *tx, uint8_t *rx)
 {
     for (uint32_t i = 0; i < SPI_LINK_SLOT; i++) {
@@ -133,11 +119,10 @@ static int link_xfer_slot_master(const uint8_t *tx, uint8_t *rx)
     return 1;
 }
 
-// SLAVE slot transfer: the slave does NOT control the clock, so its TX byte must
-// already be in the data register BEFORE the master clocks it out on MISO. The
-// master-style "wait TXE, then SendData" loads the byte one clock too late and
-// the slave ships stale DR contents on MISO (master sees a garbage echo). Fix:
-// PRE-LOAD byte 0, then per byte wait RXNE (read), and refill the NEXT TX byte
+// Slave slot transfer: the slave does not control the clock, so its TX byte must be
+// in the data register before the master clocks it out on MISO. Loading after the
+// clock starts (master-style) ships stale DR contents and the master sees a garbage
+// echo. Pre-load byte 0, then per byte wait RXNE (read) and refill the next TX byte
 // ahead of its clock.
 static void link_xfer_slot_slave(const uint8_t *tx, uint8_t *rx)
 {
@@ -146,9 +131,8 @@ static void link_xfer_slot_slave(const uint8_t *tx, uint8_t *rx)
     SPI_I2S_SendData(LINK_SPI, tx ? tx[0] : 0x00u);
 
     for (uint32_t i = 0; i < SPI_LINK_SLOT; i++) {
-        // Refill the NEXT outgoing byte as soon as the shift register frees up,
-        // so it's staged before the master clocks it (do this BEFORE blocking on
-        // this byte's RXNE — TXE for byte i+1 comes up as byte i finishes).
+        // Refill the next outgoing byte once the shift register frees up, before
+        // blocking on this byte's RXNE (TXE for byte i+1 comes up as byte i finishes).
         if (i + 1 < SPI_LINK_SLOT) {
             while (SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_TXE) == RESET) { }
             SPI_I2S_SendData(LINK_SPI, tx ? tx[i + 1] : 0x00u);
@@ -168,10 +152,10 @@ void spi_link_master_init(void)
     link_clocks_on();
     link_spi_pins_af();
 
-    // CS (PA4) as a plain push-pull GPIO, idle high. PA4 *is* the SPI1 hardware
-    // NSS pin, but the master drives it as a software-managed GPIO (one pulse per
-    // slot) — the slave uses PA4 as its HW-NSS input, so the master's CS edge
-    // gives the slave automatic per-frame select + bit re-alignment.
+    // CS (PA4) as a plain push-pull GPIO, idle high. PA4 is the SPI1 hardware NSS
+    // pin, but the master drives it as a software-managed GPIO (one pulse per slot);
+    // the slave uses PA4 as its HW-NSS input, so each CS edge gives the slave
+    // automatic per-frame select + bit re-alignment.
     GPIO_InitTypeDef g = {0};
     g.GPIO_Speed = GPIO_Speed_Very_High;
     g.GPIO_Mode  = GPIO_Mode_Out_PP;
@@ -191,11 +175,10 @@ void spi_link_master_init(void)
 }
 
 // Recover a wedged master. On this IP a MODF (mode fault) auto-clears SPE and MSTR,
-// silently demoting the master to a disabled slave: SendData then writes DR but
-// nothing shifts and every flag-wait times out forever. Re-asserting CS high, then
-// disabling + re-enabling the block (and re-forcing internal NSS high so it stays
-// master) restores clocking for the next slot. Cheap and idempotent — safe to call
-// after any aborted slot.
+// silently demoting the master to a disabled slave so every flag-wait times out.
+// Re-asserting CS high, disabling + re-enabling the block, and re-forcing internal
+// NSS high (so it stays master) restores clocking. Idempotent; safe after any
+// aborted slot.
 static void spi_link_master_recover(void)
 {
     link_cs_high();
@@ -209,16 +192,14 @@ void spi_link_master_exchange(const uint8_t tx[SPI_LINK_SLOT],
 {
     link_cs_low();
     if (!link_xfer_slot_master(tx, rx)) {
-        // A flag-wait timed out mid-slot: the block stopped clocking. Abort this
-        // slot and recover so the next one (and the relay heartbeat) can proceed
-        // instead of spinning forever. The dropped slot is fine — the descriptor
-        // blob is re-sent periodically and the SOF-scanner re-aligns downstream.
+        // A flag-wait timed out mid-slot: abort and recover so the next slot can
+        // proceed. The dropped slot is harmless — the blob is re-sent periodically
+        // and the SOF-scanner re-aligns downstream.
         spi_link_master_recover();
         return;
     }
-    // Drain the final RX and wait for the shift register to empty before raising CS,
-    // so the last bit fully clocks out. Bounded: if BSY never clears the block has
-    // wedged — recover rather than hang.
+    // Wait for the shift register to empty before raising CS so the last bit fully
+    // clocks out. Bounded: if BSY never clears, recover rather than hang.
     if (!link_master_wait(SPI_I2S_FLAG_BSY, RESET)) {
         spi_link_master_recover();
         return;
@@ -245,13 +226,9 @@ void spi_link_slave_init(void)
     GPIO_Init(LINK_DRDY_PORT, &g);
     GPIO_ResetBits(LINK_DRDY_PORT, LINK_DRDY_PIN);
 
-    // BRING-UP: software NSS held SELECTED (SSM=1, SSI=0). A hardware-NSS slave
-    // (SSM=0) only shifts while its NSS *pin* is driven low, but PA4 was never
-    // AF-routed to SPI1_NSS here, so it sat permanently deselected and never
-    // clocked a byte. Software-NSS-selected makes the slave always-listen and
-    // shift purely on SCK — the standard bring-up mode. (Hardware-NSS per-frame
-    // resync is a later refinement; once bytes flow we can AF-config PA4 and
-    // switch back to SPI_NSS_Hard.) The PA4 wire is unused in this mode.
+    // Software NSS held selected (SSM=1, SSI=0): the slave always-listens and shifts
+    // purely on SCK. A hardware-NSS slave (SSM=0) only shifts while its NSS pin is
+    // low, but PA4 is not AF-routed to SPI1_NSS here. PA4 is unused in this mode.
     link_spi_configure(SPI_Mode_Slave, SPI_NSS_Soft);
     SPI_NSSInternalSoftwareConfig(LINK_SPI, SPI_NSSInternalSoft_Reset); // internal NSS low = selected
 }
@@ -259,10 +236,8 @@ void spi_link_slave_init(void)
 void spi_link_slave_exchange(const uint8_t tx[SPI_LINK_SLOT],
                              uint8_t rx[SPI_LINK_SLOT])
 {
-    // Slave clocks off the master and must PRE-LOAD MISO before each clock edge —
-    // link_xfer_slot_slave primes byte 0 and refills ahead. tx must be fully
-    // staged on entry (it is). Loading TX after the clock starts (master-style)
-    // ships stale DR bytes on MISO and the master sees a garbage echo.
+    // The slave pre-loads MISO before each clock edge (link_xfer_slot_slave primes
+    // byte 0 and refills ahead). tx must be fully staged on entry.
     link_xfer_slot_slave(tx, rx);
 }
 
@@ -273,10 +248,9 @@ void spi_link_slave_set_drdy(int asserted)
 }
 
 // --- Slave -> master telemetry return slot (staged onto MISO by the RXNE ISR) --
-// Double-buffered: the publisher fills s_telem[next] then flips s_telem_cur; the
-// ISR only reads s_telem[s_telem_cur], so it never sees a torn slot. The flip is a
-// single-byte store, atomic w.r.t. the ISR because both run on the V5F core — this
-// would not hold if the publisher moved to another core.
+// Double-buffered: the publisher fills s_telem[next] then flips s_telem_cur; the ISR
+// only reads s_telem[s_telem_cur], never a torn slot. The flip is a single-byte
+// store, atomic w.r.t. the ISR since both run on the V5F core.
 static volatile uint8_t s_telem[2][SPI_LINK_SLOT];
 static volatile uint8_t s_telem_cur;     // which buffer the ISR reads
 static volatile uint8_t s_telem_idx;     // next byte to send from the current slot
@@ -291,16 +265,16 @@ void spi_link_slave_set_telem(const uint8_t slot[SPI_LINK_SLOT])
 }
 
 // ── Slave RX, interrupt-driven (stream-capable) ─────────────────────────────
-// Lock-free SPSC ring: the SPI1 RXNE ISR (single writer) pushes each clocked byte;
-// the foreground spi_link_slave_rx_byte (single reader) pops. Power-of-two size for
-// cheap masking. On overflow the ISR drops the byte (bumps a diag counter) — the
-// SOF-scanner downstream recovers alignment, so a dropped byte just costs one frame.
+// Lock-free SPSC ring: the RXNE ISR (single writer) pushes each clocked byte; the
+// foreground spi_link_slave_rx_byte (single reader) pops. Power-of-two size for
+// cheap masking. On overflow the ISR drops the byte (bumps a diag counter); the
+// SOF-scanner downstream recovers alignment, so a drop costs one frame.
 #define LINK_RX_RING_SZ   512u           // power of two
 #define LINK_RX_RING_MASK (LINK_RX_RING_SZ - 1u)
 static volatile uint8_t  s_rx_ring[LINK_RX_RING_SZ];
 static volatile uint16_t s_rx_head;      // ISR writes
 static volatile uint16_t s_rx_tail;      // foreground reads
-volatile uint32_t spi_link_rx_overflows; // diag (extern-visible if needed)
+volatile uint32_t spi_link_rx_overflows; // diag
 
 void SPI1_IRQHandler(void) WCH_IRQ;
 
@@ -317,9 +291,9 @@ void spi_link_slave_init_irq(void)
     GPIO_Init(LINK_DRDY_PORT, &g);
     GPIO_ResetBits(LINK_DRDY_PORT, LINK_DRDY_PIN);
 
-    // Slave, software-NSS held selected: always-listen, shift purely on SCK. No
-    // per-frame NSS framing needed — the downstream SOF-scanner (spi_frame_stream)
-    // provides framing from the byte stream, which is robust to any misalignment.
+    // Slave, software-NSS held selected: always-listen, shift purely on SCK. The
+    // downstream SOF-scanner (spi_frame_stream) provides framing from the byte
+    // stream, robust to misalignment, so no per-frame NSS framing is needed.
     link_spi_configure(SPI_Mode_Slave, SPI_NSS_Soft);
     SPI_NSSInternalSoftwareConfig(LINK_SPI, SPI_NSSInternalSoft_Reset);
 
@@ -327,14 +301,14 @@ void spi_link_slave_init_irq(void)
     s_rx_tail = 0;
     spi_link_rx_overflows = 0;
 
-    // Per-byte RX interrupt. IRQn>31 are core-allocated; the ISR runs on V5F, so
-    // route SPI1_IRQn to V5F before enabling (same as the USB ISRs).
+    // Per-byte RX interrupt. IRQn>31 are core-allocated; route SPI1_IRQn to V5F
+    // before enabling (same as the USB ISRs).
     SPI_I2S_ITConfig(LINK_SPI, SPI_I2S_IT_RXNE, ENABLE);
     NVIC_SetAllocateIRQ(SPI1_IRQn, Core_ID_V5F);
     NVIC_EnableIRQ(SPI1_IRQn);
 }
 
-volatile uint32_t spi_link_isr_entries;  // DIAG: ISR entry count (proves IRQ fires)
+volatile uint32_t spi_link_isr_entries;  // diag: ISR entry count
 
 void SPI1_IRQHandler(void)
 {
@@ -347,12 +321,11 @@ void SPI1_IRQHandler(void)
             s_rx_ring[s_rx_head] = b;
             s_rx_head = nh;
         } else {
-            spi_link_rx_overflows++;     // ring full — drop (SOF-scan recovers)
+            spi_link_rx_overflows++;     // ring full, drop (SOF-scan recovers)
         }
     }
-    // Stage the next telemetry byte onto MISO for the master's return slot. TXE is
-    // up whenever the shift register can accept a byte; we feed the current slot,
-    // wrapping so the slot repeats continuously. Cheap: one store per clocked byte.
+    // Stage the next telemetry byte onto MISO for the return slot, wrapping so the
+    // slot repeats continuously.
     if (s_telem_armed &&
         SPI_I2S_GetFlagStatus(LINK_SPI, SPI_I2S_FLAG_TXE) != RESET) {
         SPI_I2S_SendData(LINK_SPI, s_telem[s_telem_cur][s_telem_idx]);

@@ -1,58 +1,50 @@
 // usb_host.c — USBHS host driver (real-HID-device-facing host side).
 //
-// Runs on the V5F core. Implements the stable usb_host.h API against the
-// CH32H417 USBHS controller acting as a High-Speed USB *host* toward the
-// captured HID device (mouse/keyboard). Ported faithfully from the WCH
-// reference driver:
-//   vendor/wch/usb_reference/USBHS_Host_KM/Common/USB_Host/ch32h417_usbhs_host.c
+// Runs on the V5F core. Implements the usb_host.h API against the CH32H417 USBHS
+// controller acting as a High-Speed USB host toward the captured HID device.
+// Ported from the WCH reference driver
+// (vendor/wch/usb_reference/USBHS_Host_KM/.../ch32h417_usbhs_host.c).
 //
-// The WCH USBHS host IP is TOKEN/TRANSACTION based (NOT EHCI/schedules):
+// The WCH USBHS host IP is token/transaction based (not EHCI/schedules):
 //   - write PID + endpoint + data-toggle into the single CONTROL register,
 //     OR'd with USBHS_UH_HOST_ACTION to launch the transaction,
 //   - poll INT_FLAG for USBHS_UHIF_TRANSFER (transfer-done),
 //   - read the response PID from INT_ST (& USBHS_UH_T_TOKEN_MASK),
 //   - classify ACK / NAK / STALL / DATA0/1.
-// No QH/qTD linked lists.
 //
-// DMA convention (USBHS, unlike USBFS): program RX_DMA / TX_DMA with the RAW
-// buffer address and read/write the buffer directly. There is NO +0x20000000
-// CPU alias for USBHS (that alias is a USBFS-only quirk).
-//
-// Phase-5 scope: COMPILE/LINK into the V5F image + faithful transaction /
-// control / enumeration sequences. Hardware verification is a later bench step.
+// DMA convention (USBHS, unlike USBFS): program RX_DMA / TX_DMA with the raw
+// buffer address and read/write the buffer directly. There is no +0x20000000 CPU
+// alias for USBHS.
 
-#include "ch32h417_port.h"      // ch32h417.h (USBHSH struct, RCC), usb bit defs
-#include "debug.h"              // (delays now via timebase_v5f, not vendor Delay_*)
-#include "board.h"              // LED_GPIO_* — SysTick-free bench diag blink
-#include "icc.h"                // dbg_stage() / DBG_STAGE_ADDR — UART-readable marker
-#include "timebase_v5f.h"      // timebase_v5f_delay_us — race-free TIM9 delay
+#include "ch32h417_port.h"      // USBHSH struct, RCC, usb bit defs
+#include "debug.h"
+#include "board.h"              // LED_GPIO_*
+#include "icc.h"                // dbg_stage(), DBG_STAGE_ADDR
+#include "timebase_v5f.h"      // timebase_v5f_delay_us
 #include <string.h>
 
 #include "usb_host.h"
 
-// V5F host driver uses the TIM9-based delay (race-free), NOT the vendor Delay_Us
-// which spins on the shared SysTick0->ISR and wedges when V3F delays concurrently
-// (the "hang on PC enumerate" bug). Alias keeps the ported call sites unchanged.
+// Use the TIM9-based delay (race-free), not the vendor Delay_Us which spins on
+// the shared SysTick0->ISR and wedges when V3F delays concurrently. The alias
+// keeps the ported call sites unchanged.
 #define Delay_Us(us)  timebase_v5f_delay_us(us)
 
-// Fine-grained sub-stage markers for the usb_host_init() path (0x70..). V3F
-// reads DBG_STAGE_ADDR out of shared SRAM and prints it over the command UART,
-// so the value where V5F freezes names the exact stalling statement — readable
-// without SWD (which the running V5F has NAKed by disabling SWJ) and without
-// counting the LED blink-checkpoints by eye. See src/icc.h and main_v3f.c.
+// Sub-stage markers for the usb_host_init() path. V3F reads DBG_STAGE_ADDR out of
+// shared SRAM and prints it over the command UART, so the value where V5F freezes
+// names the stalling statement without SWD (disabled by SWJ-off) or LED counting.
 #define DBG_V5F_HOST_RCC_ENTER   0x70   // entered usbhs_rcc_init
 #define DBG_V5F_HOST_PLL_WAIT    0x71   // about to spin on USBHS PLL lock
 #define DBG_V5F_HOST_PLL_RDY     0x72   // PLL ready (or already up), before UTMI
 #define DBG_V5F_HOST_UTMI_ON     0x73   // UTMI clock enabled
-#define DBG_V5F_HOST_CLK_ON      0x74   // USBHS peripheral clock enabled (rcc done)
-#define DBG_V5F_HOST_MMIO        0x75   // rcc_init returned, before USBHSH MMIO writes
+#define DBG_V5F_HOST_CLK_ON      0x74   // USBHS peripheral clock enabled
+#define DBG_V5F_HOST_MMIO        0x75   // before USBHSH MMIO writes
 #define DBG_V5F_HOST_CFG_DONE    0x76   // all USBHSH config writes survived
 
 /* ------------------------------------------------------------------------ */
-/* Constants ported from usb_host_config.h / ch32h417_usbhs_host.h.          */
-/* The vendored host headers pull in the whole app stack (app_km.h etc.) so  */
-/* we re-declare the handful of constants we actually need here, matching    */
-/* the reference values verbatim.                                            */
+/* Constants ported from usb_host_config.h / ch32h417_usbhs_host.h. The      */
+/* vendored host headers pull in the whole app stack, so the few constants    */
+/* needed here are re-declared, matching the reference values.                */
 /* ------------------------------------------------------------------------ */
 #define ERR_SUCCESS                 0x00
 #define ERR_USB_CONNECT             0x15
@@ -99,29 +91,18 @@ static uint8_t s_dev_speed = USB_SPEED_FULL;
 /* ------------------------------------------------------------------------ */
 /* usbhs_rcc_init — port of USBHS_RCC_Init (ENABLE path).                    */
 /*                                                                           */
-/* SHARED 480M PLL COORDINATION: the USBFS *device* driver (usb_device.c,    */
-/* usbfs_rcc_init) ALSO brings up this same USBHS 480M PLL — both peripherals*/
-/* derive their clocks from it. The reference guards the PLL bring-up with a */
-/* "is the system PLL already sourced from USBHS?" check, so re-running it is */
-/* idempotent: if the PLL is already enabled/locked we do NOT tear it down,  */
-/* we just enable the UTMI + USBHS peripheral clocks. This makes init order  */
-/* between usb_device_init() and usb_host_init() irrelevant and never        */
-/* disturbs a PLL that the device side may already be running on.            */
-/*                                                                           */
-/* BENCH DIAG NOTE: the SysTick-free LED checkpoint/panic-blink helpers that */
-/* used to live here were removed. They overlaid ~half a dozen blink trains  */
-/* onto PC3, which made the LED unreadable (slow/irregular). They are        */
-/* replaced by dbg_stage() markers (0x70..0x76) that V3F reads out of shared */
-/* SRAM and prints over the command UART — a single, unambiguous oracle.     */
+/* Shared 480M PLL: the USBFS device driver (usb_device.c) brings up this     */
+/* same PLL; both peripherals derive their clocks from it. Bring-up is        */
+/* guarded by PLLRDY so re-running is idempotent: a locked PLL is not torn     */
+/* down, only the UTMI + USBHS peripheral clocks are (re)enabled. Init order   */
+/* between usb_device_init() and usb_host_init() is therefore irrelevant.      */
 /* ------------------------------------------------------------------------ */
 static void usbhs_rcc_init(void)
 {
     dbg_stage(DBG_V5F_HOST_RCC_ENTER);   /* 0x70: entered usbhs_rcc_init */
-    // GUARD FIX: test the USBHS PLL-ready bit, not SYSPLL_SEL. SYSPLL_SEL selects
-    // what feeds SYSCLK (always !=USBHS in the 400M-HSE profile), so the old guard
-    // always ran the teardown. On the host's FIRST call the PLL isn't up yet so
-    // this is equivalent, but testing PLLRDY is correct and makes a re-call skip
-    // tearing down a live PLL.
+    // Test the USBHS PLLRDY bit, not SYSPLL_SEL: SYSPLL_SEL selects what feeds
+    // SYSCLK (always != USBHS in the 400M-HSE profile), so guarding on it would
+    // always run the teardown. PLLRDY makes a re-call skip tearing down a live PLL.
     if (!(RCC->CTLR & RCC_USBHS_PLLRDY)) {
         /* PLL not yet up — bring up the 480M PLL from HSE
          * (matching usb_device.c's HSE/HSI fallback for robustness). */
@@ -131,13 +112,9 @@ static void usbhs_rcc_init(void)
         RCC_USBHSPLLReferConfig(RCC_USBHSPLLRefer_25M);
         RCC_USBHSPLLClockSourceDivConfig(RCC_USBHSPLL_IN_Div1);
         RCC_USBHS_PLLCmd(ENABLE);
-        /* BENCH DIAG: this was an UNBOUNDED spin where the V5F LED sat solid-on.
-         * The stage marker (read by V3F over UART) now localizes a stall here:
-         * if V5F freezes showing 0x71, the USBHS 480M PLL never asserts PLLRDY.
-         * The spin is bounded so a never-locking PLL advances to 0x72 rather than
-         * hanging forever (lets V3F's UART report distinguish "PLL never locked"
-         * from "hung in the spin"). SysTick-free: pure RCC reads + an iteration
-         * counter, so it depends on nothing the rest of V5F bring-up might break. */
+        /* Bounded spin on PLL lock: if V5F freezes showing 0x71 the PLL never
+         * asserts PLLRDY. The cap lets a never-locking PLL advance to 0x72 rather
+         * than hanging forever. SysTick-free (pure RCC reads + iteration count). */
         dbg_stage(DBG_V5F_HOST_PLL_WAIT);   /* 0x71: spinning on USBHS PLL lock */
         {
             uint32_t pll_wait = 0;
@@ -146,7 +123,7 @@ static void usbhs_rcc_init(void)
             }
         }
     }
-    /* PLL already up (possibly by usb_device.c) — just (re)enable our clocks. */
+    /* PLL up: (re)enable the UTMI + USBHS peripheral clocks. */
     dbg_stage(DBG_V5F_HOST_PLL_RDY);     /* 0x72: PLL phase done, before UTMI/USBHS clk */
     RCC_UTMIcmd(ENABLE);
     dbg_stage(DBG_V5F_HOST_UTMI_ON);     /* 0x73: UTMI clk enabled */
@@ -197,27 +174,15 @@ static uint8_t usbhs_transact(uint8_t endp_pid_number, uint16_t endp_tog, uint32
 
     trans_retry = 0;
     do {
-        /* NOTE: the per-transaction tracer writes to 0x2017F0E0 that used to live
-         * here (loop-top / pre-wait / post-wait) were REMOVED. 0x2017F0E0 is in
-         * V3F-side SRAM (outside every region V5F links); writing it 3x PER
-         * TRANSACTION from this hottest USB path was a cross-core store storm that
-         * intermittently stalled the V5F core on an unreturned AHB access — the
-         * no-trap wedge. Transact is called on every interrupt-IN poll, so this was
-         * the worst offender. Cross-core diagnostics now go only through the
-         * time-throttled (~2 Hz) publish in the relay loop. See src/icc.c:5-16. */
         /* Launch the transaction. */
         USBHSH->CONTROL = USBHS_UH_HOST_ACTION | pre | endp_pid | endp_tog | endp_number;
 
-        /* Clear the transfer-done flag (W1C), then wait for it to re-assert.
-         * The WCH reference spins Delay_Us(1) x DEF_WAIT_USB_TRANSFER_CNT, re-
-         * checking INT_FLAG only once per µs — up to ~1 µs detection latency on
-         * every interrupt-IN poll (the hottest USB path). Poll INT_FLAG directly
-         * and bound it with a single free-running TIM9 deadline instead: same 1 ms
-         * ceiling, but completion is seen the instant the flag sets. timebase_v5f_us()
-         * is a race-free V5F-private CNT_32 read (wrap-safe via unsigned subtract).
-         * guard is the frozen-TIM9 backstop the old for(i) form had implicitly: if
-         * CNT_32 never advances, bound the loop by instruction count so a dead timer
-         * can't hang the relay (cf. timebase_v5f_delay_us). */
+        /* Clear the transfer-done flag (W1C), then poll INT_FLAG until it
+         * re-asserts, bounded by a free-running TIM9 deadline (1 ms). Polling
+         * directly (vs the reference's Delay_Us(1) loop) sees completion the
+         * instant the flag sets. timebase_v5f_us() is a race-free V5F-private
+         * CNT_32 read (wrap-safe via unsigned subtract); guard bounds the loop by
+         * instruction count so a frozen TIM9 cannot hang the relay. */
         USBHSH->INT_FLAG = USBHS_UHIF_TRANSFER;
         {
             uint32_t t0 = timebase_v5f_us();
@@ -415,11 +380,8 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
         maxpkt = 8;   /* default EP0 size */
     }
 
-    /* Overall wall-clock deadline. Each transact() already has its own NAK
-     * retry budget; this guards against a wedged device. We approximate by
-     * tracking elapsed microseconds via the per-stage Delay_Us() calls is
-     * impractical, so we use timeout_ms as a coarse outer guard around the
-     * SETUP/DATA/STATUS stages by bounding the per-transact NAK retries. */
+    /* timeout_ms is applied as a coarse outer guard by bounding each transact()'s
+     * per-stage NAK-retry budget. */
     uint32_t nak_budget = (timeout_ms == 0) ? DEF_CTRL_TRANS_TIMEOVER_CNT
                                             : (timeout_ms * 1000u);
 
@@ -480,9 +442,8 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
             }
         }
     } else {
-        /* No data stage: status direction is determined by TX_LEN below. The
-         * reference relies on TX_LEN reflecting the SETUP packet (8) here, so
-         * a no-data control transfer's status stage is IN. Mirror that. */
+        /* No data stage: status direction is determined by TX_LEN below, which
+         * still reflects the 8-byte SETUP packet, so the status stage is IN. */
     }
 
     /* ---- STATUS stage (opposite direction, zero-length, DATA1) ---- */
@@ -504,12 +465,9 @@ int usb_host_control_transfer(uint8_t addr, uint8_t maxpkt,
     return -5;
 }
 
-/* Synchronous simplification of v2's async control path. v2 had a
- * fire-and-forget control OUT that armed DMA and returned immediately, with
- * usb_host_control_async_busy() polled until completion. On this token-based
- * IP a control transfer is naturally synchronous, so we just run it to
- * completion here and report "never busy". Callers that loop on _async_busy()
- * therefore see it finish on the first poll. */
+/* On this token-based IP a control transfer is naturally synchronous, so the
+ * fire-and-forget API runs it to completion here and reports "never busy".
+ * Callers that loop on _async_busy() see it finish on the first poll. */
 void usb_host_control_transfer_fire(uint8_t addr, uint8_t maxpkt,
     const usb_setup_t *setup, uint8_t *data)
 {
@@ -537,11 +495,10 @@ void usb_host_interrupt_init(uint8_t index, uint8_t addr, uint8_t ep,
     in_slots[index].used   = 1;
 }
 
-/* Port of USBHSH_GetEndpData, zero-copy variant: returns a pointer directly
- * into the RX DMA buffer (valid only until the next poll on any index, since
- * all interrupt-IN endpoints share USBHS_RX_Buf). timeout 0 => no NAK retry,
- * so a device with nothing to report returns immediately. */
-/* Last interrupt-IN transact status, read by the relay loop's end-to-end probe to
+/* Zero-copy variant: returns a pointer into the RX DMA buffer, valid only until
+ * the next poll on any index (all interrupt-IN endpoints share USBHS_RX_Buf).
+ * timeout 0 => no NAK retry, so a device with nothing to report returns now. */
+/* Last interrupt-IN transact status, read by the relay loop's probe to
  * distinguish a zero-length SUCCESS from a NAK (0=SUCCESS, 0x2A=NAK|TRANSFER,
  * 0x2E=STALL|TRANSFER, 0xFE=UNKNOWN/no-resp). */
 volatile uint8_t  usbh_dbg_in_last_s;
@@ -607,10 +564,9 @@ void usb_host_interrupt_out_init(uint8_t index, uint8_t addr, uint8_t ep,
     out_slots[index].used   = 1;
 }
 
-/* Port of USBHSH_SendEndpData. Synchronous: runs the OUT token to completion
- * and returns true on ACK, false on STALL/NAK-timeout/error. The "previous
- * send still in flight" case from the async v2 API cannot occur here (we block
- * until the token completes), so we never return false for that reason. */
+/* Synchronous: runs the OUT token to completion and returns true on ACK, false
+ * on STALL/NAK-timeout/error. The async "send still in flight" case cannot occur
+ * here since we block until the token completes. */
 bool usb_host_interrupt_out_send(uint8_t index, const uint8_t *data, uint16_t len)
 {
     if (index >= MAX_INTR_OUT_EPS || !out_slots[index].used) {

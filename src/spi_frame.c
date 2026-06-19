@@ -2,10 +2,9 @@
 // spi_frame.h. Host-testable: stdint only, no MMIO/WCH headers.
 #include "spi_frame.h"
 
-// CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no input/output reflection,
-// no final XOR. Matches the CH32 SPI hardware CRC so the driver can cross-check
-// the soft codec against the engine. Bitwise (no table) — the slot is 30 bytes
-// and this runs on the host test + as a fallback path, so size beats speed here.
+// CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection, no final XOR.
+// Matches the CH32 SPI hardware CRC so the driver can cross-check the soft codec.
+// Bitwise (no table): the slot is 30 bytes, so size beats speed here.
 uint16_t spi_frame_crc16(const uint8_t *data, uint32_t len)
 {
     uint16_t crc = 0xFFFFu;
@@ -32,8 +31,8 @@ spi_frame_result_t spi_frame_pack(uint8_t slot[SPI_FRAME_SLOT_SIZE],
 
     for (uint8_t i = 0; i < len; i++)
         slot[SPI_FRAME_OFF_PAY + i] = payload[i];
-    // Zero-fill the unused payload tail so the slot is deterministic per input
-    // and the CRC covers a known pattern.
+    // Zero-fill the unused payload tail so the slot is deterministic and the CRC
+    // covers a known pattern.
     for (uint8_t i = len; i < SPI_FRAME_MAX_PAYLOAD; i++)
         slot[SPI_FRAME_OFF_PAY + i] = 0x00u;
 

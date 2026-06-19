@@ -65,14 +65,13 @@ enum {
     ROW_DLINK    = 9,   // "LINK DOWN" only when stale, else blank
 };
 
-// PURE: render `st` into `rows` (DISP_ROWS NUL-terminated strings, each <=DISP_COLS
-// chars). Compares against `prev` and returns a dirty bitmask (bit r set = row r
-// changed). `prev` may be NULL (everything dirty). After the call, the caller
-// copies rows->prev. Host-testable; no hardware.
+// Render `st` into `rows` (DISP_ROWS NUL-terminated strings, each <=DISP_COLS
+// chars). Returns a dirty bitmask (bit r set = row r differs from `prev_rows`);
+// `prev_rows` may be NULL (all rows dirty). Caller copies rows into prev. Pure.
 uint32_t display_format_lines(const display_status_t *st,
                               char rows[DISP_ROWS][DISP_COLS + 1],
                               const char prev_rows[DISP_ROWS][DISP_COLS + 1]);
 
-// Hardware entry points (implemented across Tasks 4/6).
+// Hardware entry points.
 void display_init(void);
 void display_render(const display_status_t *st);

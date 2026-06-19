@@ -1,70 +1,36 @@
 // src/usb_merge.c — HID-report merge module (V5F side of the MITM).
 //
-// Ported faithfully from Hurra-v2 src/kmbox.c's merge half. The v2 file mixed
-// an i.MX-RT LPUART/DMA transport with a hardware-agnostic, HID-report-
-// descriptor-AWARE merge. Only the merge half lives here; the transport half
-// (UART link to the host PC + the protocol parser) moved to the V3F command
-// core (src/uart.c + src/hurra.c/ferrum.c + src/kmbox_cmd.c).
+// Overlays injected input onto the real device's HID reports. The injection
+// source is the ICC ring (usb_merge_drain_icc decodes records into the `inject`
+// accumulators); the transport to the host PC and the protocol parser live on
+// the V3F command core.
 //
-// What changed versus v2:
-//   * Renamed the public entry points:
-//       kmbox_cache_endpoints -> usb_merge_cache_endpoints
-//       kmbox_merge_report    -> usb_merge_report
-//   * The injection SOURCE switched from direct kmbox_inject_* calls (same
-//     core) to an ICC drain (usb_merge_drain_icc). The bodies of v2's
-//     kmbox_inject_mouse/keyboard/schedule_click_release/schedule_kb_release
-//     now run inside usb_merge_drain_icc, fed by icc_recv_from_v3f records
-//     instead of direct calls. They write the SAME `inject` accumulators.
-//   * proto_* physical-telemetry calls are stubbed to no-ops here, with
-//     proto_phys_enabled() constant-false (Phase-5: the telemetry's wire
-//     destination — the host UART — lives on V3F, not V5F). The compiler folds
-//     the constant-false predicate and eliminates the phys-capture branch, so
-//     the merge code is byte-for-byte the v2 logic. Forwarding phys-telemetry
-//     to V3F over the ICC (TELEM records) is a Phase-7 enhancement.
+// proto_* physical-telemetry calls are stubbed to no-ops with proto_phys_enabled()
+// constant-false: the telemetry's wire destination (the host UART) lives on V3F.
+// The compiler folds the constant-false predicate and eliminates the phys-capture
+// branch.
 //
-// Everything else (parse_mouse_layout, read/write_report_field, the fast/slow
-// merge paths, keyboard merge, physical masking, per-axis 16-bit handling,
-// clamping, and wheel carry) is a verbatim port — it is the anti-cheat-correct
-// path and must not be simplified.
-//
-// Task 7.1 additions:
-//   * Standalone synth-injection path restored (usb_merge_send_pending +
-//     usb_merge_send_wheel_report + usb_merge_send_keyboard_report), ported
-//     from v2 kmbox_send_pending. Emits injected motion when the physical mouse
-//     is silent, capped one-per-ms, gated by merged_this_cycle so the merge and
-//     synth paths never both emit in one frame. cached_mouse_ep (the device-side
-//     EP to send on) is the same value as main_v5f's ep_map[].dev_ep_num — both
-//     come from (interrupt_in_ep & 0x0F) of the mouse iface — so the existing
-//     usb_merge_cache_endpoints() already provides it; no setter is needed.
-//   * merged_this_cycle flag restored with v2's exact semantics: cleared at the
-//     top of usb_merge_drain_icc() (the first per-loop call, = v2 kmbox_poll_fast),
-//     set in usb_merge_report() for every protocol==2 report (+ keyboard when
-//     kb_dirty), consumed in usb_merge_send_pending() after the EP loop.
-//
-//   * humanize split (Gap 3): humanize_filter() stays on V5F, called PER EMITTED
-//     FRAME inside usb_merge_take_injection() (both the merge and synth paths).
-//     It is intentionally NOT moved to V3F's kmbox_cmd_inject_mouse: the per-
-//     frame delta is consumed here, so the filter must run per emitted frame,
-//     not per command. Moving it to V3F would filter per-command and change the
-//     jitter/sub-pixel-carry behavior. (humanize_set_level still arrives over
-//     the ICC SET_HUMAN_LEVEL tag.) This supersedes the plan's "move to V3F".
+// The injection accumulators are also fed by a standalone synth path
+// (usb_merge_send_pending) that emits injected motion when the physical mouse is
+// silent, capped one-per-ms and gated by merged_this_cycle so the merge and synth
+// paths never both emit in one frame. humanize_filter() runs per emitted frame
+// inside usb_merge_take_injection(), not per command, to preserve sub-pixel-carry
+// behavior.
 
 #include "usb_merge.h"
 #include "humanize.h"
-#include "actions.h"      // g_phys_mask + act_phys_* query helpers + PHYS_MASK_*
+#include "actions.h"      // g_phys_mask, act_phys_* helpers, PHYS_MASK_*
 #include "icc.h"
-#include "usb_device.h"   // usb_device_send_report (standalone synth path)
+#include "usb_device.h"
 #include <string.h>
 #include <stdbool.h>
 
 extern uint32_t millis(void);
 
-// ── Phase-5 proto_* physical-telemetry stubs (option a) ──────────────────────
-// On V5F there is no protocol parser and no host UART; physical-input telemetry
-// has nowhere to go. Stub the proto_* notify hooks to no-ops and force
-// proto_phys_enabled() to false so the (g_phys_mask || proto_phys_enabled())
-// capture branches compile out. The MASK half (g_phys_mask) still works — it is
-// driven from actions.c state. Phase-7: forward phys telemetry to V3F via ICC.
+// proto_* physical-telemetry stubs. V5F has no protocol parser or host UART, so
+// the notify hooks are no-ops and proto_phys_enabled() is constant-false, which
+// compiles out the (g_phys_mask || proto_phys_enabled()) capture branches. The
+// mask half (g_phys_mask) still works, driven from actions.c state.
 static inline bool proto_phys_enabled(void) { return false; }
 static inline void proto_notify_buttons(uint8_t b) { (void)b; }
 static inline void proto_notify_axes(int16_t dx, int16_t dy, int8_t w) { (void)dx; (void)dy; (void)w; }
@@ -73,7 +39,7 @@ static inline void proto_notify_phys_buttons(uint8_t b) { (void)b; }
 static inline void proto_notify_phys_axes(int16_t dx, int16_t dy, int8_t w) { (void)dx; (void)dy; (void)w; }
 static inline void proto_notify_phys_keys(uint8_t mod, const uint8_t keys[6]) { (void)mod; (void)keys; }
 
-// ── Injection accumulators (verbatim from v2 kmbox.c lines ~112-129) ─────────
+// ── Injection accumulators ───────────────────────────────────────────────────
 typedef struct {
 	int16_t  mouse_dx;
 	int16_t  mouse_dy;
@@ -95,7 +61,7 @@ typedef struct {
 
 static merge_inject_t inject;
 
-// ── Cached endpoints + parsed mouse layout (verbatim from v2 ~149-175) ───────
+// ── Cached endpoints and parsed mouse layout ─────────────────────────────────
 static uint8_t  cached_mouse_ep;
 static uint16_t cached_mouse_maxpkt;
 static uint8_t  cached_kb_ep;
@@ -122,7 +88,7 @@ static struct {
 	bool     y_is16;
 	bool     w_is16;
 } mouse_layout;
-static uint8_t cached_mouse_report_len; // actual report length from first real report
+static uint8_t cached_mouse_report_len; // length captured from the first real report
 
 void usb_merge_init(void)
 {
@@ -135,7 +101,7 @@ void usb_merge_init(void)
 	cached_mouse_report_len = 0;
 }
 
-// ── HID report-descriptor parser (verbatim from v2 kmbox.c ~392) ─────────────
+// ── HID report-descriptor parser ─────────────────────────────────────────────
 static void parse_mouse_layout(const uint8_t *rd, uint16_t rdlen)
 {
 	memset(&mouse_layout, 0, sizeof(mouse_layout));
@@ -262,7 +228,7 @@ static void parse_mouse_layout(const uint8_t *rd, uint16_t rdlen)
 	}
 }
 
-// ── Bit-field helpers (verbatim from v2 kmbox.c ~518 / ~548) ──────────────────
+// ── Bit-field helpers ─────────────────────────────────────────────────────────
 static int32_t read_report_field(const uint8_t *buf, uint8_t buf_len,
                                  uint16_t bit_off,
                                  uint8_t bit_size, uint8_t data_off)
@@ -325,7 +291,7 @@ static void write_report_field(uint8_t *buf, uint16_t buf_len, uint16_t bit_off,
 	}
 }
 
-// ── Endpoint/layout cache (ported from v2 kmbox_cache_endpoints ~580) ────────
+// ── Endpoint/layout cache ─────────────────────────────────────────────────────
 void usb_merge_cache_endpoints(const captured_descriptors_t *desc)
 {
 	cached_mouse_ep = 0;
@@ -347,7 +313,7 @@ void usb_merge_cache_endpoints(const captured_descriptors_t *desc)
 	}
 }
 
-// ── Merge implementation (verbatim from v2 ~750-1069) ────────────────────────
+// ── Merge implementation ──────────────────────────────────────────────────────
 __attribute__((cold, noinline))
 static void usb_merge_report_slow(uint8_t *report, uint8_t len,
                                   uint8_t rid, uint8_t doff);
@@ -358,21 +324,20 @@ static void usb_merge_phys_mouse(uint8_t *report, uint8_t len);
 __attribute__((cold, noinline))
 static void usb_merge_phys_keyboard(uint8_t *report, uint8_t len);
 
-// Output cadence tracking (ported verbatim from v2 kmbox.c ~760-767).
+// Output cadence tracking.
 //   last_merge_ms — when a real mouse report last rode through (injection rides
 //                   those reports via the merge path).
 //   last_synth_ms — last standalone synth frame (one-per-ms cap).
 //   merged_this_cycle — set when a real report was merged this relay-loop
 //                   iteration; consumed by usb_merge_send_pending() so the synth
-//                   path and the merge path never both emit in one frame.
+//                   and merge paths never both emit in one frame.
 static uint32_t last_merge_ms;
 static uint32_t last_synth_ms;
 static bool     merged_this_cycle;
 #define SYNTH_SILENCE_MS 2   // mouse considered idle after this many ms of no report
 
-/* Pull this frame's injected delta from the pending accumulators and run it
- * through the humanization filter. The filter delivers in-frame and owns
- * conservation (sub-pixel residual + >127 cap-carry), so we just consume. */
+/* Pull this frame's injected delta and run it through the humanization filter,
+ * which owns conservation (sub-pixel residual and >127 cap-carry). */
 static void usb_merge_take_injection(int16_t *out_dx, int16_t *out_dy)
 {
 	int16_t dx = inject.mouse_dx;
@@ -387,13 +352,13 @@ static void usb_merge_take_injection(int16_t *out_dx, int16_t *out_dy)
 void usb_merge_report(uint8_t iface_protocol, uint8_t * restrict report, uint8_t len)
 {
 	if (iface_protocol == 2) {
-		last_merge_ms = millis();   // a real mouse report is riding through now
+		last_merge_ms = millis();
 		if (__builtin_expect(cached_mouse_report_len == 0, 0))
 			cached_mouse_report_len = len;
 
-		// Feature B/C: emit physical-only telemetry (pre-merge, pre-mask) and
-		// suppress masked physical inputs — before any injection is merged in.
-		// Both off (the common case) → the predicate is false and we skip it.
+		// Emit physical-only telemetry (pre-merge, pre-mask) and suppress masked
+		// physical inputs before any injection is merged in. Both off in the
+		// common case, so the predicate is false and this is skipped.
 		if (__builtin_expect((g_phys_mask || proto_phys_enabled()) &&
 		                     mouse_layout.valid, 0))
 			usb_merge_phys_mouse(report, len);
@@ -410,10 +375,9 @@ void usb_merge_report(uint8_t iface_protocol, uint8_t * restrict report, uint8_t
 				usb_merge_take_injection(&inj_dx, &inj_dy);
 
 				// Each axis adds humanized injection onto the mouse's own delta
-				// and clamps to the report field as a hard safety bound only.
-				// The filter's per-frame cap (127) means the field clamp rarely
-				// fires; conservation is now owned by humanize_filter's internal
-				// owed accumulator.
+				// and clamps to the report field as a hard safety bound. The
+				// filter's per-frame cap (127) means the clamp rarely fires;
+				// conservation is owned by the filter's owed accumulator.
 				int32_t done_w = 0;
 				int32_t done_dx = 0, done_dy = 0;
 				if (mouse_layout.x_is16) {
@@ -482,10 +446,9 @@ void usb_merge_report(uint8_t iface_protocol, uint8_t * restrict report, uint8_t
 				int8_t w_tlm = (mouse_layout.w_byte != 0xFF)
 				             ? (int8_t)done_w : inject.mouse_wheel;
 				proto_notify_axes((int16_t)done_dx, (int16_t)done_dy, w_tlm);
-				// If the field clamp rejected part of the injected delta (e.g.
-				// 8-bit field while the real mouse is also moving), return the
-				// unfit injected portion so the filter redelivers it next frame.
-				// Real-mouse motion keeps priority; nothing injected is dropped.
+				// Return any field-clamped injected portion so the filter
+				// redelivers it next frame; real-mouse motion keeps priority and
+				// nothing injected is dropped.
 				humanize_return((int16_t)(inj_dx - done_dx),
 				                (int16_t)(inj_dy - done_dy));
 				inject.mouse_dirty = (inject.mouse_buttons != 0 ||
@@ -497,13 +460,12 @@ void usb_merge_report(uint8_t iface_protocol, uint8_t * restrict report, uint8_t
 		}
 		// A real mouse report rode through this cycle (whether or not injection
 		// was applied). The synth path checks this so it never also emits in the
-		// same frame — see usb_merge_send_pending(). Set unconditionally for
-		// protocol==2, mirroring v2 kmbox_merge_report (line ~895).
+		// same frame. Set unconditionally for protocol==2.
 		merged_this_cycle = true;
 	} else if (iface_protocol == 1) {
-		// Feature B/C (keyboard): telemetry + masking run even with nothing
-		// injected (the user may be typing on a masked key). Gated so an idle
-		// keyboard with no monitoring/mask pays only this branch test.
+		// Keyboard telemetry and masking run even with nothing injected (the user
+		// may be typing on a masked key). Gated so an idle keyboard with no
+		// monitoring/mask pays only this branch test.
 		if (__builtin_expect((proto_phys_enabled() || act_phys_kb_mask_active()) &&
 		                     len >= 8, 0))
 			usb_merge_phys_keyboard(report, len);
@@ -518,10 +480,9 @@ __attribute__((cold, noinline))
 static void usb_merge_report_slow(uint8_t *report, uint8_t len,
                                   uint8_t rid, uint8_t doff)
 {
-	// Pull humanized injection once for this frame; conservation is owned by
-	// the filter's internal owed accumulator.  Only the axes whose report ID
-	// actually arrived are applied — if X and Y live on different report IDs
-	// the caller re-enters with the other ID and the filter will emit again.
+	// Pull humanized injection once for this frame. Only the axes whose report ID
+	// arrived are applied; if X and Y live on different report IDs the caller
+	// re-enters with the other ID and the filter emits again.
 	int16_t inj_dx, inj_dy;
 	usb_merge_take_injection(&inj_dx, &inj_dy);
 	int32_t done_dx = 0, done_dy = 0, done_w = 0;
@@ -566,9 +527,9 @@ static void usb_merge_report_slow(uint8_t *report, uint8_t len,
 	}
 
 	proto_notify_axes((int16_t)done_dx, (int16_t)done_dy, (int8_t)done_w);
-	// Return any injected motion not applied this frame — either field-clamped,
-	// or (on split X/Y report-ID layouts) belonging to an axis whose report ID
-	// didn't arrive this call. The filter redelivers it; nothing is dropped.
+	// Return any injected motion not applied this frame (field-clamped, or on a
+	// split X/Y report-ID layout an axis whose report ID didn't arrive). The
+	// filter redelivers it; nothing is dropped.
 	humanize_return((int16_t)(inj_dx - done_dx), (int16_t)(inj_dy - done_dy));
 	inject.mouse_dirty = (inject.mouse_buttons != 0 ||
 	                      inject.mouse_wheel != 0 ||
@@ -601,12 +562,11 @@ static void usb_merge_keyboard(uint8_t *report, uint8_t len)
 	proto_notify_keys(&report[2]);
 }
 
-// Feature B/C (mouse): runs before injection is merged. Reads the physical
-// report fields, pushes them as TLM_PHYS_* telemetry (the user's TRUE input,
-// observed before masking), then zeroes any masked physical contribution so it
-// never reaches the downstream PC. Injected input is applied afterward by the
-// normal merge, so an injected click on a masked button still passes.
-// Only the fields whose report ID matches this report are touched.
+// Runs before injection is merged. Reads the physical report fields, pushes them
+// as TLM_PHYS_* telemetry (pre-mask), then zeroes any masked physical
+// contribution so it never reaches the downstream PC. Injected input is applied
+// afterward by the normal merge, so an injected click on a masked button still
+// passes. Only the fields whose report ID matches this report are touched.
 __attribute__((cold, noinline))
 static void usb_merge_phys_mouse(uint8_t *report, uint8_t len)
 {
@@ -629,7 +589,7 @@ static void usb_merge_phys_mouse(uint8_t *report, uint8_t len)
 		phys_w = read_report_field(report, len, mouse_layout.wheel_bit,
 		                           mouse_layout.wheel_size, doff);
 
-	// Telemetry: the true physical input, BEFORE masking (spec §5.3).
+	// Telemetry: the physical input, before masking.
 	if (proto_phys_enabled()) {
 		if (xy_here)
 			proto_notify_phys_buttons(phys_btn);
@@ -656,10 +616,10 @@ static void usb_merge_phys_mouse(uint8_t *report, uint8_t len)
 	}
 }
 
-// Feature B/C (keyboard): standard 8-byte boot report (modifier, reserved,
-// 6 keycodes). Pushes the physical modifier+keys as TLM_PHYS_KB (pre-mask),
-// then removes any masked keycodes from the outgoing report. Modifiers are not
-// individually maskable in the KMBox API, so only keycodes are filtered.
+// Standard 8-byte boot report (modifier, reserved, 6 keycodes). Pushes the
+// physical modifier+keys as TLM_PHYS_KB (pre-mask), then removes any masked
+// keycodes from the outgoing report. Modifiers are not individually maskable in
+// the KMBox API, so only keycodes are filtered.
 __attribute__((cold, noinline))
 static void usb_merge_phys_keyboard(uint8_t *report, uint8_t len)
 {
@@ -675,10 +635,9 @@ static void usb_merge_phys_keyboard(uint8_t *report, uint8_t len)
 	}
 }
 
-// ── Injection accumulation (ported from v2 kmbox_inject_* / schedule_*) ───────
-// On v2 these were public entry points called directly by actions.c on the SAME
-// core. On v3 the V3F command core encodes them as ICC records (kmbox_cmd.c);
-// usb_merge_drain_icc decodes them back into these accumulators here.
+// ── Injection accumulation ────────────────────────────────────────────────────
+// The V3F command core encodes injection as ICC records; usb_merge_drain_icc
+// decodes them into these accumulators.
 static void merge_apply_mouse(int16_t dx, int16_t dy, uint8_t buttons,
                               int8_t wheel)
 {
@@ -705,14 +664,12 @@ static void merge_schedule_click_release(uint8_t button_mask, uint32_t delay_ms)
 static void merge_schedule_kb_release(uint8_t key, uint32_t delay_ms)
 {
 	uint32_t at = millis() + delay_ms;
-	// Replace existing entry for same key
 	for (int i = 0; i < inject.kb_release_count; i++) {
 		if (inject.kb_releases[i].key == key) {
-			inject.kb_releases[i].at = at;
+			inject.kb_releases[i].at = at;   // replace existing entry for this key
 			return;
 		}
 	}
-	// Add new entry
 	if (inject.kb_release_count < MAX_KB_RELEASES) {
 		inject.kb_releases[inject.kb_release_count].key = key;
 		inject.kb_releases[inject.kb_release_count].at = at;
@@ -720,8 +677,7 @@ static void merge_schedule_kb_release(uint8_t key, uint32_t delay_ms)
 	}
 }
 
-// Run the scheduled click/key-release bookkeeping (ported from v2
-// kmbox_poll_fast's release-deadline blocks). Called once per drain.
+// Run the scheduled click/key-release bookkeeping. Called once per drain.
 static void merge_run_releases(void)
 {
 	if (__builtin_expect(inject.click_release_at != 0, 0) &&
@@ -755,18 +711,14 @@ static void merge_run_releases(void)
 void usb_merge_drain_icc(void)
 {
 	// Reset the per-cycle merge flag at the start of each relay-loop iteration.
-	// v2 cleared this in kmbox_poll_fast() (the first per-loop call, before the
-	// EP merge loop and before kmbox_send_pending()). usb_merge_drain_icc() is
-	// the v3 analog: it is called first each iteration (main_v5f.c), the EP loop
-	// then sets the flag via usb_merge_report(), and usb_merge_send_pending()
-	// consumes it after the EP loop. This preserves v2's exact set/clear order:
-	// cleared once per cycle → set in merge → consumed in send_pending.
+	// This is called first each iteration; the EP loop then sets the flag via
+	// usb_merge_report(), and usb_merge_send_pending() consumes it afterward.
 	merged_this_cycle = false;
 
 	icc_record_t r;
 	while (icc_recv_from_v3f(&r)) {
 		if (r.tag == ICC_TAG_DEV_TEMP) {
-			extern volatile int8_t g_tb_dev_temp_c;  // defined in two_board.c
+			extern volatile int8_t g_tb_dev_temp_c;  // two_board.c
 			g_tb_dev_temp_c = (int8_t)r.b[0];
 			continue;
 		}
@@ -804,10 +756,8 @@ void usb_merge_drain_icc(void)
 			humanize_set_level(r.b[0]);
 			break;
 		case ICC_TAG_PHYS_MASK:
-			// Forward-compatible: V3F currently applies phys-mask on its own
-			// g_phys_mask instance (hurra.c l_phys_mask) and does NOT yet
-			// forward over the ICC, so this record is not emitted today. When
-			// it is (Phase 7), the encoding mirrors actions.c's API:
+			// V3F currently applies phys-mask locally and does not forward over
+			// the ICC, so this record is not emitted today. Encoding:
 			//   b0=kind (0=mouse, 1=key, 2=unmask_all), b1=code, b2=enable.
 			switch (r.b[0]) {
 			case 0: act_phys_mask_mouse(r.b[1], r.b[2] != 0); break;
@@ -821,43 +771,35 @@ void usb_merge_drain_icc(void)
 			// for the merge to do on V5F. Drained so the ring stays clear.
 			break;
 		default:
-			// ICC_TAG_DEV_TEMP is intercepted above this switch; any other
-			// unrecognized tag is not the merge's concern (the relay loop handles
-			// its own protocol records before draining here).
+			// Unrecognized tags are not the merge's concern; the relay loop
+			// handles its own protocol records before draining here.
 			break;
 		}
 	}
 
-	// Mailbox is drained (every pending record consumed + acked). Re-arm the IPC
-	// doorbell IT, which the ISR disables on each fire to stay storm-proof under
-	// AutoEN (see IPC_CH0_Handler). Idempotent — safe to call every pass.
+	// Mailbox drained. Re-arm the IPC doorbell interrupt, which the ISR disables
+	// on each fire to stay storm-proof under AutoEN (see IPC_CH0_Handler).
+	// Idempotent, safe to call every pass.
 	icc_ipc_rearm_v5f();
 
-	// Release-deadline bookkeeping (v2 ran this in kmbox_poll_fast each tick).
 	merge_run_releases();
 }
 
-// ── Standalone synth-injection path (ported verbatim from v2 kmbox.c ~1071) ──
-// When V3F injects motion while the physical mouse is SILENT, the merge path
-// (which rides REAL device reports) emits nothing until the next real report.
+// ── Standalone synth-injection path ──────────────────────────────────────────
+// When V3F injects motion while the physical mouse is silent, the merge path
+// (which rides real device reports) emits nothing until the next real report.
 // usb_merge_send_pending() synthesizes a standalone mouse report in that case,
-// capped to one-per-ms, and also flushes an unconsumed wheel on a separate
-// report ID. Called once per relay-loop iteration AFTER the per-EP merge/send
-// loop (main_v5f.c), exactly where v2 main.c called kmbox_send_pending().
+// capped to one-per-ms, and flushes an unconsumed wheel on a separate report ID.
+// Call once per relay-loop iteration after the per-EP merge/send loop.
 //
 // merged_this_cycle gate: if a real mouse report was merged this cycle, the
-// synth path returns early (after the separate-report-id wheel flush) so the
-// two paths never both emit in one frame — which would flood/overwrite at the
-// 1 kHz endpoint. The mouse-silent test (SYNTH_SILENCE_MS) is the redundant
-// time-based guard for the case where merged_this_cycle is false but a real
-// report arrived very recently.
+// synth path returns early (after the separate-report-id wheel flush) so the two
+// paths never both emit in one frame, which would flood/overwrite at the 1 kHz
+// endpoint. The SYNTH_SILENCE_MS test is the time-based guard for the case where
+// merged_this_cycle is false but a real report arrived very recently.
 //
-// cached_mouse_ep is the DEVICE-side EP number the synth report is sent on. It
-// is the same value used as ep_map[].dev_ep_num in main_v5f.c — both are
-// derived from `interrupt_in_ep & 0x0F` of the mouse interface. main_v5f.c's
-// usb_merge_cache_endpoints(&desc) call already caches it (along with
-// cached_mouse_maxpkt and cached_kb_ep) from the captured descriptors, so no
-// extra setter is needed: the merge already knows which EP to send on.
+// cached_mouse_ep is the device-side EP the synth report is sent on, cached by
+// usb_merge_cache_endpoints() from the captured descriptors.
 
 __attribute__((cold, noinline))
 static void usb_merge_send_wheel_report(void);
@@ -875,10 +817,9 @@ void usb_merge_send_pending(void)
 	}
 
 	if (merged_this_cycle) return;
-	// Only synthesize a standalone mouse report when the physical mouse has
-	// gone silent — otherwise injection rides the next real report (merge),
-	// so the two paths never both emit in the same frame (which would flood /
-	// overwrite at the 1 kHz endpoint). Capped to one synth per ms.
+	// Only synthesize a standalone mouse report when the physical mouse has gone
+	// silent; otherwise injection rides the next real report via the merge path.
+	// Capped to one synth per ms.
 	uint32_t ms = millis();
 	bool mouse_silent = (uint32_t)(ms - last_merge_ms) >= SYNTH_SILENCE_MS;
 	if (inject.mouse_dirty && mouse_silent && ms != last_synth_ms &&

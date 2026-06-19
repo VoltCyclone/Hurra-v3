@@ -1,16 +1,16 @@
-// desc_xfer.h — descriptor blob chunk/reassemble codec for the SPI link (step 4b).
+// desc_xfer.h — descriptor blob chunk/reassemble codec for the SPI link.
 //
 // The captured_descriptors_t blob (~7 KB) is far larger than one 26-byte SPI
 // hot-path payload, so Board B (host) ships it as a sequence of self-describing
 // chunks and Board A (device) reassembles it before enumerating. Each chunk's
-// payload is:  [idx:u16 LE][total:u16 LE][<= DATA_PER_CHUNK data bytes].
-// The 4-byte header makes every chunk self-describing (index + total length), so
-// the receiver needs no out-of-band setup and can detect a gap or a fresh restart.
+// payload is:  [idx:u16 LE][total:u16 LE][<= DATA_PER_CHUNK data bytes]. The
+// header makes every chunk self-describing, so the receiver needs no out-of-band
+// setup and can detect a gap or a fresh restart.
 //
-// Reliability model = RESTART-ON-GAP (no ACK channel): the receiver tracks the
-// next expected index; a CRC failure (handled by the SPI frame codec before this
-// layer) or an index gap returns DESC_XFER_RESTART and the caller resets. Board B
-// re-sends the whole blob on a loop, so a reset receiver catches the next pass.
+// Reliability model is restart-on-gap (no ACK channel): the receiver tracks the
+// next expected index; a CRC failure (caught by the frame codec before this layer)
+// or an index gap returns DESC_XFER_RESTART and the caller resets. Board B re-sends
+// the whole blob on a loop, so a reset receiver catches the next pass.
 //
 // Pure, MMIO-free, host-tested (test/desc_xfer_test.c, in `make test`).
 #ifndef DESC_XFER_H

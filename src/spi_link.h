@@ -3,14 +3,14 @@
 // 32-byte hot-path slot (src/spi_frame.h) between the USB-host board (SPI master)
 // and the USB-device board (SPI slave).
 //
-// The forward path (master -> slave descriptor/report stream) is the proven one:
-// the master clocks polled full-duplex slots; the slave receives them either polled
-// (spi_link_slave_exchange, paced isolated frames) or interrupt-driven
-// (spi_link_slave_init_irq + a SOF-scanner, for the continuous descriptor burst).
-// The reverse channel (DATA_READY on PA3) is wired but currently unused.
+// Forward path (master -> slave descriptor/report stream): the master clocks polled
+// full-duplex slots; the slave receives them either polled (spi_link_slave_exchange,
+// paced isolated frames) or interrupt-driven (spi_link_slave_init_irq + SOF-scanner,
+// for the continuous descriptor burst). The reverse channel (DATA_READY on PA3)
+// signals enumeration state.
 //
-// This file touches MMIO (WCH StdPeriph), so it is NOT host-testable; its gate is
-// the bench. The wire FORMAT it carries is host-tested in test/spi_frame_test.c.
+// MMIO (WCH StdPeriph), bench-gated. The wire format it carries is host-tested in
+// test/spi_frame_test.c.
 #ifndef SPI_LINK_H
 #define SPI_LINK_H
 
@@ -37,9 +37,9 @@ void spi_link_master_exchange(const uint8_t tx[SPI_LINK_SLOT],
 // Reads the PA3 level directly — usable without enabling any interrupt.
 int  spi_link_master_drdy(void);
 
-// DIAG: count of master flag-waits that timed out (a wedge caught + slot aborted +
-// block recovered). 0 on a healthy link; a rising value localizes the gate-4b
-// "frozen heartbeat" to the master's SPI block stalling. Written by the master path.
+// Count of master flag-waits that timed out (wedge caught, slot aborted, block
+// recovered). 0 on a healthy link; a rising value localizes a frozen heartbeat to
+// the master's SPI block stalling.
 extern volatile uint32_t spi_link_master_wedges;
 
 // ── Slave (USB-device board) ────────────────────────────────────────────────
@@ -50,7 +50,7 @@ void spi_link_slave_init(void);
 
 // Blocking full-duplex exchange from the slave side: waits for the master's clock
 // and moves SPI_LINK_SLOT bytes each way (sending tx[], receiving into rx[]). The
-// slave MUST have tx staged before the master starts clocking, so the caller
+// slave must have tx staged before the master starts clocking, so the caller
 // arms the return slot (tx) here and reads the received slot from rx afterward.
 // tx/rx may alias; either may be NULL.
 void spi_link_slave_exchange(const uint8_t tx[SPI_LINK_SLOT],
@@ -59,20 +59,18 @@ void spi_link_slave_exchange(const uint8_t tx[SPI_LINK_SLOT],
 // Drive DATA_READY (PA3) to tell the master reverse-path data is pending (or not).
 void spi_link_slave_set_drdy(int asserted);
 
-// Publish a 32-byte telemetry slot for the IRQ slave to stage on MISO. The RXNE
-// ISR cycles these bytes onto the data register (one per clocked byte, repeating
-// the slot), so the master sees a continuous stream of this slot on the return
-// path. Double-buffered: the copy is atomic w.r.t. the ISR (a publish in progress
-// never yields a torn slot to the wire). Pass a slot built with spi_frame_pack.
+// Publish a 32-byte telemetry slot for the IRQ slave to stage on MISO. The RXNE ISR
+// cycles these bytes onto the data register (one per clocked byte, repeating the
+// slot), so the master sees a continuous stream on the return path. Double-buffered:
+// the copy is atomic w.r.t. the ISR. Pass a slot built with spi_frame_pack.
 void spi_link_slave_set_telem(const uint8_t slot[SPI_LINK_SLOT]);
 
 // ── Slave RX, interrupt-driven (stream-capable) ─────────────────────────────
-// The polled spi_link_slave_exchange above only reliably catches PACED ISOLATED
-// frames — it loses byte alignment under a continuous frame stream (the descriptor
-// transfer). For streaming RX, init the slave with spi_link_slave_init_irq(): the
-// SPI RXNE interrupt captures EVERY clocked byte into a ring buffer independent of
-// what the foreground is doing, and spi_link_slave_rx_byte() pops bytes for a
-// software SOF-scanner (spi_frame_stream). No master handshake, no mutual stall.
+// The polled spi_link_slave_exchange only reliably catches paced isolated frames; it
+// loses byte alignment under a continuous frame stream. For streaming RX, init the
+// slave with spi_link_slave_init_irq(): the RXNE interrupt captures every clocked
+// byte into a ring buffer, and spi_link_slave_rx_byte() pops bytes for a software
+// SOF-scanner (spi_frame_stream). No master handshake, no mutual stall.
 void spi_link_slave_init_irq(void);
 
 // Pop one received byte from the RX ring into *out. Returns 1 if a byte was

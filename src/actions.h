@@ -33,12 +33,12 @@ void act_set_invert_y(bool on);
 bool act_get_swap_xy(void);
 void act_set_swap_xy(bool on);
 
-// ── Physical-input masking (KMBox Net `mask` / `unmask_all`) ─────────────────
+// ── Physical-input masking (`mask` / `unmask_all`) ──────────────────────────
 // A masked physical input is suppressed before it reaches the downstream PC,
 // while injected input on the same control still passes. Enforced in the merge
-// path (src/kmbox.c); these only manage the mask state. The mouse-button/axis
-// bits reuse the lock-bit order (ml=0,mr=1,mm=2,ms1=3,ms2=4,mx=5,my=6) but in a
-// dedicated bitmap so they do not collide with g_lock_mask's injection gating.
+// path; these only manage the mask state. The mouse-button/axis bits reuse the
+// lock-bit order (ml=0,mr=1,mm=2,ms1=3,ms2=4,mx=5,my=6) but in a dedicated
+// bitmap so they do not collide with g_lock_mask's injection gating.
 #define PHYS_MASK_ML    0
 #define PHYS_MASK_MR    1
 #define PHYS_MASK_MM    2
@@ -55,13 +55,12 @@ void act_phys_unmask_all(void);
 bool act_phys_key_masked(uint8_t hid_key);            // queried in merge path
 bool act_phys_kb_mask_active(void);                   // any key currently masked
 
-// ── Motion program (KMBox Net `mouse_move_auto` / `mouse_move_beizer`) ───────
+// ── Motion program (`mouse_move_auto` / `mouse_move_bezier`) ─────────────────
 // A time-bounded source of injected delta: each tick emits the increment needed
-// to reach the trajectory's position at the current time, through act_move (so
-// inverts/swap and humanization apply exactly as for manual moves). Position-
-// based, so call cadence affects granularity only, never the total or endpoint.
-// Last-writer-wins: starting a new program or any plain act_move cancels the
-// in-flight one (matching a user redirecting the mouse mid-gesture).
+// to reach the trajectory's position at the current time, via act_move (so
+// inverts/swap and humanization apply as for manual moves). Position-based, so
+// call cadence affects granularity only, not the total or endpoint. Last-writer
+// -wins: a new program or any plain act_move cancels the in-flight one.
 void act_motion_move_dur(int16_t dx, int16_t dy, uint16_t dur_ms);
 void act_motion_bezier(int16_t dx, int16_t dy, uint16_t dur_ms,
                        int16_t x1, int16_t y1, int16_t x2, int16_t y2);

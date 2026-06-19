@@ -1,21 +1,18 @@
 // two_board.c — two-board role loops (host = SPI master + USBHS capture; device =
-// SPI slave + USB clone). See two_board.h and AGENTS.md.
-//
-// This is HARDWARE/MMIO bench scaffold: its gate is the bench, not a host unit
-// test. The pure pieces it leans on (spi_frame codec, desc_xfer, usb_hs_desc,
-// synth_mouse data) ARE host-tested.
+// SPI slave + USB clone). See two_board.h and AGENTS.md. Bench-gated; the pure
+// pieces it uses (spi_frame, desc_xfer, usb_hs_desc, synth_mouse) are host-tested.
 #include "two_board.h"
 
-#include "icc.h"            // dbg_stage() / DBG_V5F_* — UART-readable stage oracle
-#include "display.h"        // display_status_t, icc_status_pump_v5f
+#include "icc.h"            // dbg_stage() / DBG_V5F_* UART stage oracle
+#include "display.h"
 #include "led.h"
 #include "spi_link.h"
 #include "spi_frame.h"
-#include "spi_frame_stream.h"   // IRQ-slave byte stream -> aligned frame slots
+#include "spi_frame_stream.h"
 #include "synth_mouse.h"
-#include "desc_xfer.h"      // descriptor blob chunk/reassemble codec (step 4b)
-#include "desc_capture.h"   // capture_descriptors() — real host capture (step 4c)
-#include "usb_host.h"       // usb_host_* — real USBHS host (step 4c)
+#include "desc_xfer.h"
+#include "desc_capture.h"
+#include "usb_host.h"
 #include "usb_device.h"
 #include "usb_merge.h"
 #include "timebase_v5f.h"
@@ -23,9 +20,9 @@
 
 volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
 
-/* Per-EP poll mapping for the real host capture (Board B). Mirrors main_v5f.c's
- * ep_mapping_t: each interrupt-IN endpoint is paced by its descriptor bInterval so
- * we don't flood the bus with NAKs. */
+/* Per-EP poll mapping for the real host capture (Board B). Each interrupt-IN
+ * endpoint is paced by its descriptor bInterval to avoid flooding the bus with
+ * NAKs. */
 typedef struct {
     uint8_t  host_slot;
     uint8_t  dev_ep_num;
@@ -35,17 +32,12 @@ typedef struct {
     uint32_t next_poll_us;
 } tb_ep_map_t;
 
-/* Send a whole serialized descriptor blob over the SPI link as a run of
- * TWO_BOARD_TYPE_DESC chunks (one SPI slot each, SEQ continuous from *seq). The
- * master clocks each slot; the return slot is ignored (restart-on-gap needs no
- * ACK). Used by Board B before/between mouse frames so a freshly-reset Board A can
- * always catch a full pass. */
-// Inter-chunk pace (µs). The polled SPI slave needs time between slots to unpack
-// the frame, run desc_xfer_accept, and re-enter spi_link_slave_exchange before the
-// master's next CS edge — a back-to-back 325-slot burst out-runs it and the slave
-// catches almost nothing (gate-4b 0xE0). Pacing each chunk to the rate the link is
-// PROVEN at (cf. the 8ms mouse cadence / 2ms selftest) keeps the slave aligned.
-// ~250µs × 325 chunks ≈ 80ms per blob — a one-time enumeration cost, well inside
+/* Send a serialized descriptor blob over the SPI link as a run of
+ * TWO_BOARD_TYPE_DESC chunks (one slot each, SEQ continuous from *seq). The return
+ * slot is ignored (restart-on-gap needs no ACK). */
+// Inter-chunk pace (µs). The slave needs time between slots to unpack the frame,
+// run desc_xfer_accept, and re-arm RX before the master's next CS edge; a
+// back-to-back burst out-runs it. ~250µs × 325 chunks ≈ 80ms per blob, well inside
 // the 500ms periodic-resend cycle.
 #define DESC_CHUNK_PACE_US  250u
 static void send_descriptor_blob(const uint8_t *blob, uint16_t total, uint8_t *seq)
@@ -61,19 +53,16 @@ static void send_descriptor_blob(const uint8_t *blob, uint16_t total, uint8_t *s
             spi_link_master_exchange(tx, rx);
             timebase_v5f_delay_us(DESC_CHUNK_PACE_US);
         }
-        // DEFENSE IN DEPTH: the blob send is ~80 ms (325 chunks × ~250 µs). Keep the
-        // IPC mailbox drained throughout so the V3F->V5F doorbell is acked + re-armed
-        // and cannot back up while we're busy here. The ISR is already storm-proof
-        // (it self-disables under AutoEN), but draining here keeps injection latency
-        // low and the doorbell live. Cheap: a no-op when nothing is pending.
+        // Keep the IPC mailbox drained during the ~80 ms blob send so the V3F->V5F
+        // doorbell stays acked/re-armed and injection latency stays low. No-op when
+        // nothing is pending.
         usb_merge_drain_icc();
     }
 }
 
 /* Forward one captured report over SPI as a TWO_BOARD_TYPE_MOUSE frame. Payload
- * schema (Board A unpacks this exact layout): [dev_ep, iface_protocol, report…].
- * rx_out receives the return slot clocked by the master so the caller can feed it
- * to host_absorb_return for device->host telemetry. */
+ * layout: [dev_ep, iface_protocol, report…]. rx_out receives the return slot so
+ * the caller can feed it to host_absorb_return for device->host telemetry. */
 static void send_report_frame(uint8_t dev_ep, uint8_t protocol,
                               const uint8_t *report, uint8_t rlen, uint8_t *seq,
                               uint8_t rx_out[SPI_LINK_SLOT])
@@ -93,9 +82,9 @@ static void send_report_frame(uint8_t dev_ep, uint8_t protocol,
     }
 }
 
-/* Feed one received SPI return slot through the SOF-scanner; if it completes a
+/* Feed one received SPI return slot through the SOF-scanner; on a completed
  * TWO_BOARD_TYPE_TELEM frame, fold its fields into *disp and bump *fresh_ms when
- * the frame seq advances (the device->host liveness heartbeat). */
+ * the seq advances (device->host liveness heartbeat). */
 static void host_absorb_return(spi_frame_stream_t *rxs, const uint8_t *rx,
                                display_status_t *disp, uint8_t *last_seq,
                                bool *have_seq, uint32_t *fresh_ms, uint32_t now)
@@ -117,17 +106,16 @@ static void host_absorb_return(spi_frame_stream_t *rxs, const uint8_t *rx,
 /* ======================================================================== */
 /* Board B (USB host) = SPI MASTER.                                          */
 /*                                                                           */
-/* Step 4c: captures the REAL device on the USBHS host port, ships its       */
-/* descriptor blob to Board A over SPI, then polls the real interrupt-IN     */
-/* endpoints and forwards each captured report as an SPI mouse frame. The     */
-/* descriptor blob is re-sent periodically (restart-on-gap) so Board A can    */
-/* enumerate after an attach. SWJ is already disabled by main_v5f's host      */
-/* divert (USBHS host uses PB8/9). Build with TWO_BOARD_HOST_SYNTH to use the */
-/* synthetic source instead (isolated link test, no real device).            */
+/* Captures the device on the USBHS host port, ships its descriptor blob to  */
+/* Board A over SPI, then polls the interrupt-IN endpoints and forwards each  */
+/* captured report as an SPI mouse frame. The blob is re-sent periodically    */
+/* (restart-on-gap) so Board A can enumerate after an attach. SWJ is disabled */
+/* by main_v5f's host divert (USBHS host uses PB8/9). Build with              */
+/* TWO_BOARD_HOST_SYNTH for an isolated link test with no real device.        */
 /* ======================================================================== */
 void two_board_host_run(void)
 {
-    dbg_stage(DBG_V5F_RELAY);   // 0x58: host-role loop reached (reuse RELAY marker)
+    dbg_stage(DBG_V5F_RELAY);   // 0x58: host-role loop reached
 
     spi_link_master_init();
 
@@ -160,9 +148,9 @@ void two_board_host_run(void)
             send_report_frame(SYNTH_MOUSE_IN_EP, SYNTH_MOUSE_IFACE_PROTO,
                               report, SYNTH_MOUSE_REPORT_LEN, &seq, rx_scratch);
         }
-        /* Oracle: 0x5A = master clocking cleanly; 0xEA = the SPI master had to recover
-         * a wedged exchange (bounded-wait timeout). Distinguishes a healthy link from
-         * a marginal one without a logic analyzer. */
+        /* Oracle: 0x5A = master clocking cleanly; 0xEA = a wedged exchange was
+         * recovered (bounded-wait timeout). Distinguishes a healthy link from a
+         * marginal one without a logic analyzer. */
         if ((now - diag_ms) >= 1000u) {
             diag_ms = now;
             dbg_stage(spi_link_master_wedges ? 0xEA : 0x5A);
@@ -176,8 +164,7 @@ void two_board_host_run(void)
     usb_host_power_on();
 
     /* Wait for a device, then capture its descriptors. A failed capture re-arms
-     * the wait (device yanked / mid-glitch). Same dynamic-attach loop as the
-     * single-board host (main_v5f.c). */
+     * the wait (device yanked / mid-glitch). */
     for (;;) {
         dbg_stage(DBG_V5F_HOST_WAITING);
         while (!usb_host_device_connected()) {
@@ -189,17 +176,17 @@ void two_board_host_run(void)
         led_on();
         timebase_v5f_delay_ms(10);
         if (capture_descriptors(&desc)) break;
-        dbg_stage(0x9F);                  // capture failed — re-arm
+        dbg_stage(0x9F);                  // capture failed, re-arm
         led_off();
         timebase_v5f_delay_ms(200);
     }
     dbg_stage(DBG_V5F_DESC_OK);
 
-    /* Stamp the captured device speed so Board A clones at the SAME speed. */
+    /* Stamp the captured device speed so Board A clones at the same speed. */
     desc.speed = usb_host_device_speed();
 
     /* Host TFT telemetry: fill our own display_status_t and pump it to V3F over
-     * the IPC reverse status channel (same path as the single-board relay loop). */
+     * the IPC reverse status channel. */
     display_status_t disp = { .state = DISP_STATE_RELAYING };
     disp.vid = (uint16_t)(desc.device_desc[8]  | (desc.device_desc[9]  << 8));
     disp.pid = (uint16_t)(desc.device_desc[10] | (desc.device_desc[11] << 8));
@@ -226,7 +213,7 @@ void two_board_host_run(void)
         (void)usb_host_control_transfer(desc.dev_addr, desc.ep0_maxpkt, &sp, NULL, 2000);
     }
 
-    /* Build the interrupt-IN poll map (ported from main_v5f.c). */
+    /* Build the interrupt-IN poll map. */
     tb_ep_map_t ep_map[MAX_INTR_EPS];
     uint8_t num_eps = 0;
     for (uint8_t i = 0; i < desc.num_ifaces; i++) {
@@ -244,7 +231,7 @@ void two_board_host_run(void)
         if (iv == 0) iv = 1;
         if (iv > 255) iv = 255;
         uint32_t us = iv * 1000u;          // FS framing: bInterval is in ms
-        if (us > 300u) us -= 250u;         // small lead so we don't poll late
+        if (us > 300u) us -= 250u;         // small lead to avoid polling late
         ep_map[slot].interval_us  = us;
         ep_map[slot].next_poll_us = timebase_v5f_us();
         num_eps++;
@@ -255,17 +242,16 @@ void two_board_host_run(void)
     const uint16_t  blob_total = (uint16_t)sizeof desc;
     send_descriptor_blob(blob, blob_total, &seq);
     last_desc_ms = millis();
-    dbg_stage(DBG_V5F_RELAY);             // 0x58: relaying real reports over SPI
+    dbg_stage(DBG_V5F_RELAY);             // 0x58: relaying reports over SPI
 
     for (;;) {
         uint32_t now = millis();
 
         /* Periodic descriptor re-send so a reset/late Board A can (re)enumerate,
-         * gated on DRDY (PA3): Board A drives it high once enumerated, low from boot
-         * until then. Only re-send while low — once A is up it ignores DESC frames and
-         * the ~80 ms blocking send would stall the interrupt-IN poll (relative motion
-         * deltas then flush in one jump). Self-healing: if A resets, PA3 falls low and
-         * re-sends resume. */
+         * gated on DRDY (PA3): Board A drives it high once enumerated, low until
+         * then. Only re-send while low — once A is up the ~80 ms blocking send would
+         * stall the interrupt-IN poll (relative-motion deltas flush in one jump). If
+         * A resets, PA3 falls low and re-sends resume. */
         if (!spi_link_master_drdy() && (now - last_desc_ms) >= desc_period_ms) {
             last_desc_ms = now;
             send_descriptor_blob(blob, blob_total, &seq);
@@ -289,9 +275,9 @@ void two_board_host_run(void)
             }
         }
 
-        /* Idle poll: if we haven't clocked a report recently, send an empty
-         * TELEM_REQ so the device's MISO slot keeps flowing (else a still mouse
-         * would falsely read LINK DOWN). */
+        /* Idle poll: if no report was clocked recently, send an empty TELEM_REQ so
+         * the device's MISO slot keeps flowing (else a still mouse would falsely
+         * read LINK DOWN). */
         if ((now - poll_ms) >= 250u) {
             poll_ms = now;
             uint8_t tx[SPI_LINK_SLOT], rx[SPI_LINK_SLOT];
@@ -325,23 +311,22 @@ void two_board_host_run(void)
 /* ======================================================================== */
 /* Board A (USB device) = SPI SLAVE.                                         */
 /*                                                                           */
-/* Enumerates a synthetic boot mouse on the USBHSD device port, then receives  */
-/* SPI frames, validates them (CRC + SEQ via the codec), merges/injects, and   */
-/* forwards to the PC. A cumulative drop counter (CRC/SEQ failures) mirrors the */
-/* relay's s_drop_count; a frozen counter + dead cursor localizes the fault.   */
+/* Enumerates the clone on the USBHSD device port, then receives SPI frames, */
+/* validates them (CRC + SEQ), merges/injects, and forwards to the PC. A      */
+/* cumulative drop counter (CRC/SEQ failures) plus a dead cursor localizes a  */
+/* fault to a specific hop.                                                   */
 /* ======================================================================== */
 void two_board_device_run(void)
 {
     static captured_descriptors_t desc;   // static: large; lives for program life
 
 #if defined(TWO_BOARD_DEVICE_LOCAL)
-    /* BENCH GATE B1 (Makefile BOARD=device DEVICE_LOCAL=1): drive the USBHSD clone
-     * from a LOCAL synthetic generator, NO SPI. Isolates the USBHSD bring-up from
-     * the link. Build descriptors locally and init up front. */
+    /* DEVICE_LOCAL: drive the USBHSD clone from a local synthetic generator, no
+     * SPI, to isolate USBHSD bring-up from the link. */
     synth_mouse_build_descriptors(&desc);
     usb_merge_cache_endpoints(&desc);
     if (!usb_device_init(&desc)) {
-        led_blink_forever(9, 80, 120);    // init refused — should not happen
+        led_blink_forever(9, 80, 120);    // init refused
     }
     dbg_stage(DBG_V5F_DEV_INIT);          // 0x57: USBHSD device init done
 
@@ -351,7 +336,7 @@ void two_board_device_run(void)
         usb_merge_drain_icc();
         if ((millis() - wait_blink) >= 250u) { wait_blink = millis(); led_toggle(); }
     }
-    dbg_stage(DBG_V5F_RELAY);             // 0x58: configured — forwarding
+    dbg_stage(DBG_V5F_RELAY);             // 0x58: configured, forwarding
     led_on();
 
     uint32_t tick = 0, send_ms = millis(), hb_ms = millis();
@@ -368,12 +353,11 @@ void two_board_device_run(void)
         if ((millis() - hb_ms) >= 250u) { hb_ms = millis(); led_toggle(); }
     }
 #else
-    /* STEP 4b: descriptors are NOT built locally — they arrive over SPI from
-     * Board B. The SPI slave RX is INTERRUPT-DRIVEN: the RXNE ISR captures every
-     * clocked byte into a ring, and a software SOF-scanner (spi_frame_stream)
-     * extracts aligned 32-byte slots from the byte stream — robust to the
-     * continuous descriptor burst that the polled slave could not frame.
-     * Phase 1: receive + reassemble the blob. Phase 2: enumerate. Phase 3: relay. */
+    /* Descriptors arrive over SPI from Board B. The slave RX is interrupt-driven:
+     * the RXNE ISR captures every clocked byte into a ring, and a software
+     * SOF-scanner (spi_frame_stream) extracts aligned 32-byte slots, robust to the
+     * continuous descriptor burst. Phase 1: receive + reassemble the blob. Phase 2:
+     * enumerate. Phase 3: relay. */
     spi_link_slave_init_irq();
     static spi_frame_stream_t stream;
     spi_frame_stream_init(&stream);
@@ -420,16 +404,16 @@ void two_board_device_run(void)
         usb_merge_drain_icc();
         if ((millis() - wait_blink) >= 250u) { wait_blink = millis(); led_toggle(); }
     }
-    dbg_stage(DBG_V5F_RELAY);             // 0x58: configured — forwarding
+    dbg_stage(DBG_V5F_RELAY);             // 0x58: configured, forwarding
     led_on();
 
-    /* Signal "enumerated" to Board B by asserting DATA_READY (PA3); Board B gates its
-     * periodic descriptor re-send on this so it stops re-blasting the blob once we no
-     * longer need it. Held low from boot through Phase 1/2 by spi_link's slave init. */
+    /* Assert DATA_READY (PA3) to signal "enumerated"; Board B gates its periodic
+     * descriptor re-send on this. Held low from boot through Phase 1/2 by the slave
+     * init. */
     spi_link_slave_set_drdy(1);
 
-    /* ---- Phase 3: relay mouse reports (descriptor re-sends still arrive but the
-     * device is already enumerated, so they're ignored) ---- */
+    /* ---- Phase 3: relay mouse reports (descriptor re-sends still arrive but are
+     * ignored once enumerated) ---- */
     uint8_t  prev_seq = 0;
     bool     have_prev = false;
     uint32_t drop_count = 0;
@@ -464,8 +448,8 @@ void two_board_device_run(void)
         usb_merge_drain_icc();
         usb_device_poll();
 
-        /* Publish device->host telemetry on the SPI return slot (~every 100 ms).
-         * The IRQ slave cycles this slot onto MISO; the host SOF-scans it. */
+        /* Publish device->host telemetry on the SPI return slot every ~100 ms. The
+         * IRQ slave cycles this slot onto MISO; the host SOF-scans it. */
         static uint32_t tlm_ms;
         static uint8_t  tlm_seq;
         if ((millis() - tlm_ms) >= 100u) {

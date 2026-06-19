@@ -1,10 +1,8 @@
-// usb_device_hs.h — USBHSD (High-Speed) device backend.
+// usb_device_hs.h — USBHSD (High-Speed) device-clone backend behind the
+// usb_device.h dispatcher.
 //
-// One of the two device-clone backends behind the usb_device.h dispatcher
-// (src/usb_device.c). Implements the same operations as usb_device.h but with
-// usbhsd_* names so it can coexist with the USBFS backend (usb_device_fs.c) in one
-// image. Selected at runtime for HS clones (captured_descriptors_t.speed ==
-// USB_SPEED_HIGH). See src/usb_device_hs.c.
+// usbhsd_* names coexist with the USBFS backend (usb_device_fs.c). Selected at
+// runtime for HS clones (captured_descriptors_t.speed == USB_SPEED_HIGH).
 #ifndef USB_DEVICE_HS_H
 #define USB_DEVICE_HS_H
 

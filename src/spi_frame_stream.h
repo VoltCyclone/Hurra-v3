@@ -1,12 +1,10 @@
 // spi_frame_stream.h — SOF-scanning frame streamer.
 //
-// Turns a raw SPI byte stream (no frame boundary — the IRQ-driven slave just
-// captures whatever the master clocks) into aligned, CRC-validated 32-byte slots.
-// Feed it one received byte at a time; it emits a slot when a 32-byte window
-// starting at a SOF (0x68) marker passes spi_frame_unpack. On a window that fails
-// validation it slides forward to the next SOF candidate and keeps scanning, so it
-// self-resyncs after junk, a truncated frame, or a mid-stream desync — the failure
-// mode that broke the polled slave.
+// Turns a raw SPI byte stream (no frame boundary; the IRQ-driven slave captures
+// whatever the master clocks) into aligned, CRC-validated 32-byte slots. Feed it one
+// received byte at a time; it emits a slot when a 32-byte window starting at a SOF
+// (0x68) marker passes spi_frame_unpack. On a failed window it slides to the next SOF
+// candidate, self-resyncing after junk, a truncated frame, or a mid-stream desync.
 //
 // Pure, MMIO-free, host-tested (test/spi_frame_stream_test.c).
 #ifndef SPI_FRAME_STREAM_H

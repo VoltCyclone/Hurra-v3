@@ -1,11 +1,10 @@
 // synth_mouse.c — synthetic HID boot-mouse descriptor + report generator.
-// See synth_mouse.h. Step-3 bench scaffold; no MMIO.
+// See synth_mouse.h. Bench scaffold; no MMIO.
 #include "synth_mouse.h"
 #include <string.h>
 
-/* Standard HID boot-mouse report descriptor (3 bytes: buttons, X, Y). This is
- * the canonical USB HID spec Appendix-E boot mouse — the host treats it as a
- * plain pointing device. */
+/* HID boot-mouse report descriptor (USB HID spec Appendix E): 3 bytes of
+ * buttons, X, Y. */
 static const uint8_t k_mouse_report_desc[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
     0x09, 0x02,        // Usage (Mouse)
@@ -103,24 +102,21 @@ void synth_mouse_build_descriptors(captured_descriptors_t *out)
 
     out->ep0_maxpkt = 64;
     out->dev_addr   = 0;
-    out->speed      = 0;   // USB_SPEED_FULL — the synthetic mouse clones as a FS
-                           // device (faithful: a boot mouse is Full-Speed). The
-                           // USBHSD controller is HS-capable but presents FS here.
+    out->speed      = 0;   // USB_SPEED_FULL: a boot mouse is Full-Speed, so the
+                           // HS-capable controller presents FS here.
     out->valid      = true;
 }
 
 uint8_t synth_mouse_next_report(uint32_t tick, uint8_t *report)
 {
-    // Trace a slow circle: step around a 16-phase ring, each phase a small
-    // signed dx/dy so the cursor visibly drifts in a loop when the link is up.
-    // Integer-only (no trig on the MCU): an 8-step square-ish path is plenty to
-    // prove "the cursor moves" at the bench gate.
+    // Integer-only 8-phase loop: each phase a small signed dx/dy so the cursor
+    // drifts in a slow circle when the link is up.
     static const int8_t dx_tab[8] = {  3,  3,  0, -3, -3, -3,  0,  3 };
     static const int8_t dy_tab[8] = {  0,  3,  3,  3,  0, -3, -3, -3 };
     uint8_t phase = (uint8_t)(tick & 0x7u);
 
-    report[0] = 0x00;                       // buttons: none pressed
-    report[1] = (uint8_t)dx_tab[phase];     // dx
-    report[2] = (uint8_t)dy_tab[phase];     // dy
+    report[0] = 0x00;                       // no buttons
+    report[1] = (uint8_t)dx_tab[phase];
+    report[2] = (uint8_t)dy_tab[phase];
     return SYNTH_MOUSE_REPORT_LEN;
 }

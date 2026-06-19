@@ -1,13 +1,9 @@
 // usb_hs_desc.h — pure (host-testable) USB High-Speed descriptor helper.
 //
-// The one High-Speed-only descriptor a cloned device must synthesize: the
-// DEVICE_QUALIFIER. Kept MMIO/SDK-free so it can be unit tested on the host
-// (test/usb_hs_desc_test.c, in `make test`); the USBHSD driver in usb_device.c
-// calls it only when cloning an HS device.
-//
-// NOTE: descriptors are otherwise served VERBATIM (faithful-clone correctness) —
-// the earlier FS->HS bcdUSB/bInterval rewrites were removed in step 4a, since a
-// MITM must present the device at its real speed, not force FS up to HS.
+// Synthesizes the DEVICE_QUALIFIER, the only High-Speed-only descriptor a cloned
+// device must generate. Kept MMIO/SDK-free for host unit testing
+// (test/usb_hs_desc_test.c); the USBHSD driver calls it only when cloning an HS
+// device. All other descriptors are served verbatim from the capture.
 #ifndef USB_HS_DESC_H
 #define USB_HS_DESC_H
 
