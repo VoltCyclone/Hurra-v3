@@ -18,3 +18,39 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 def strip_ansi(s):
     """Remove ANSI SGR color codes from a string."""
     return _ANSI_RE.sub("", s)
+
+
+Probe = collections.namedtuple("Probe", "serial index id")
+
+_INDEX_RE = re.compile(r"^\s*(\d+)\s*:")
+_SERIAL_RE = re.compile(r"serial[=:\s]+(\S+)", re.IGNORECASE)
+_DEVID_RE = re.compile(r"Probing device\s+(\S+)")
+
+
+def parse_probe_list(plain, verbose):
+    """Parse `wlink list` (and `-v` fallback) into a list of Probe.
+
+    plain:   stdout/stderr of `wlink list`
+    verbose: stdout/stderr of `wlink -v list` (device ids), used only when a
+             probe has no USB serial.
+    """
+    plain = strip_ansi(plain)
+    verbose = strip_ansi(verbose)
+    dev_ids = _DEVID_RE.findall(verbose)
+    probes = []
+    n = 0
+    for line in plain.splitlines():
+        m = _INDEX_RE.match(line)
+        if not m:
+            continue
+        index = int(m.group(1))
+        sm = _SERIAL_RE.search(line)
+        if sm:
+            serial = sm.group(1)
+            dev_id = serial
+        else:
+            dev_id = dev_ids[n] if n < len(dev_ids) else str(index)
+            serial = dev_id
+        probes.append(Probe(serial=serial, index=index, id=dev_id))
+        n += 1
+    return probes

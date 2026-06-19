@@ -24,5 +24,29 @@ class TestConstants(unittest.TestCase):
         self.assertEqual(flash.CHIP, "CH32H41X")
 
 
+class TestParseProbeList(unittest.TestCase):
+    def test_plain_with_serial(self):
+        plain = "0: WCH-LinkE serial=ABC123\n1: WCH-LinkE serial=DEF456\n"
+        probes = flash.parse_probe_list(plain, "")
+        self.assertEqual([(p.index, p.serial) for p in probes],
+                         [(0, "ABC123"), (1, "DEF456")])
+
+    def test_ansi_codes_tolerated(self):
+        plain = "\x1b[32m0:\x1b[0m WCH-LinkE serial=ABC123\n"
+        probes = flash.parse_probe_list(plain, "")
+        self.assertEqual(probes[0].serial, "ABC123")
+
+    def test_fallback_to_device_id_when_no_serial(self):
+        plain = "0: WCH-LinkE\n"
+        verbose = "[DEBUG] Probing device 100000991\n"
+        probes = flash.parse_probe_list(plain, verbose)
+        self.assertEqual(probes[0].index, 0)
+        self.assertEqual(probes[0].serial, "100000991")  # id used as identifier
+        self.assertEqual(probes[0].id, "100000991")
+
+    def test_empty_means_no_probes(self):
+        self.assertEqual(flash.parse_probe_list("", ""), [])
+
+
 if __name__ == "__main__":
     unittest.main()
