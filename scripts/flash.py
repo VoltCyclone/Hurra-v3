@@ -194,3 +194,48 @@ def flash_role(runner, role, requested, *, do_build, retries, timeout,
     out["error"] = last_err
     out["duration_s"] = round(clock() - start, 2)
     return out
+
+
+def run_flash(runner, args):
+    """Top-level orchestration. Returns the full result dict incl. exit_code."""
+    roles = []
+    if args.host_serial is not None:
+        roles.append(("host", args.host_serial))
+    if args.device_serial is not None:
+        roles.append(("device", args.device_serial))
+
+    result = {"ok": False, "tool": "wlink", "probes": [],
+              "roles": {}, "exit_code": EXIT_OK}
+
+    if not roles:
+        result["error"] = ("no role requested; pass --host-serial and/or "
+                           "--device-serial (or --list to enumerate)")
+        result["exit_code"] = EXIT_USAGE
+        return result
+
+    try:
+        result["probes"] = [p._asdict() for p in discover_probes(runner)]
+    except Exception:
+        result["probes"] = []
+
+    exit_code = EXIT_OK
+    for role, serial in roles:
+        rr = flash_role(runner, role, serial, do_build=not args.no_build,
+                        retries=args.retries, timeout=args.timeout,
+                        allow_any=args.allow_any, backoff=1.0)
+        result["roles"][role] = rr
+        if not rr["flashed"]:
+            # classify: build failure vs resolution vs flash
+            if not rr["built"] and not args.no_build:
+                code = EXIT_BUILD
+            elif rr["index"] is None:
+                code = EXIT_PROBE
+            else:
+                code = EXIT_FLASH
+            exit_code = code
+            if args.fail_fast:
+                break
+
+    result["exit_code"] = exit_code
+    result["ok"] = exit_code == EXIT_OK
+    return result

@@ -215,5 +215,80 @@ class TestFlashRole(unittest.TestCase):
         self.assertIn("not found", r["error"])
 
 
+class Args:
+    def __init__(self, **kw):
+        self.host_serial = kw.get("host_serial")
+        self.device_serial = kw.get("device_serial")
+        self.no_build = kw.get("no_build", True)
+        self.retries = kw.get("retries", 2)
+        self.timeout = kw.get("timeout", 60)
+        self.fail_fast = kw.get("fail_fast", False)
+        self.allow_any = kw.get("allow_any", False)
+
+
+class TestRunFlash(unittest.TestCase):
+    def _ok_runner(self, *serials):
+        listing = "".join("%d: WCH-LinkE serial=%s\n" % (i, s)
+                          for i, s in enumerate(serials))
+        return FakeRunner([("wlink list", flash.RunResult(0, listing)),
+                           ("erase", flash.RunResult(0, "")),
+                           ("flash", flash.RunResult(0, "ok"))])
+
+    def test_both_roles_success(self):
+        runner = self._ok_runner("HOSTSER", "DEVSER")
+        res = flash.run_flash(runner, Args(host_serial="HOSTSER",
+                                           device_serial="DEVSER"))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["exit_code"], flash.EXIT_OK)
+        self.assertTrue(res["roles"]["host"]["flashed"])
+        self.assertTrue(res["roles"]["device"]["flashed"])
+
+    def test_one_role_failure_sets_flash_exit(self):
+        def runner(cmd, timeout):
+            j = " ".join(cmd)
+            if "wlink list" in j:
+                return flash.RunResult(0, "0: WCH-LinkE serial=HOSTSER\n")
+            if "erase" in j:
+                return flash.RunResult(0, "")
+            if "flash" in j:
+                return flash.RunResult(1, "chip id mismatch")
+            return flash.RunResult(0, "")
+        res = flash.run_flash(runner, Args(host_serial="HOSTSER"))
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["exit_code"], flash.EXIT_FLASH)
+
+    def test_no_roles_requested_is_usage_error(self):
+        runner = self._ok_runner("HOSTSER")
+        res = flash.run_flash(runner, Args())
+        self.assertEqual(res["exit_code"], flash.EXIT_USAGE)
+
+    def test_build_failure_exit_code(self):
+        def runner(cmd, timeout):
+            if "make merge" in " ".join(cmd):
+                return flash.RunResult(1, "compile error")
+            return flash.RunResult(0, "0: WCH-LinkE serial=HOSTSER\n")
+        res = flash.run_flash(runner, Args(host_serial="HOSTSER", no_build=False))
+        self.assertEqual(res["exit_code"], flash.EXIT_BUILD)
+
+    def test_fail_fast_skips_device(self):
+        calls = {"device": 0}
+        def runner(cmd, timeout):
+            j = " ".join(cmd)
+            if "BOARD=device" in j:
+                calls["device"] += 1
+            if "wlink list" in j:
+                return flash.RunResult(0, "0: WCH-LinkE serial=HOSTSER\n")
+            if "erase" in j:
+                return flash.RunResult(0, "")
+            if "flash" in j:
+                return flash.RunResult(1, "chip id mismatch")  # host fatal-fails
+            return flash.RunResult(0, "")
+        res = flash.run_flash(runner, Args(host_serial="HOSTSER",
+                                           device_serial="DEVSER",
+                                           fail_fast=True))
+        self.assertIsNone(res["roles"].get("device"))
+        self.assertEqual(res["exit_code"], flash.EXIT_FLASH)
+
+
 if __name__ == "__main__":
     unittest.main()
