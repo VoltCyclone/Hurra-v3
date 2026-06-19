@@ -104,6 +104,7 @@ static void link_spi_configure(uint16_t mode, uint16_t nss)
 // waits). Bytes pack MSB-first into the word (tx[2i] -> bits 15:8, tx[2i+1] ->
 // bits 7:0), keeping the on-wire byte order MSB-first as the SOF-scanner expects.
 // SPI_LINK_SLOT is fixed at 32 (even), so there is no odd trailing byte.
+#ifndef SPI_LINK_DMA
 static int link_xfer_slot_master(const uint8_t *tx, uint8_t *rx)
 {
     for (uint32_t i = 0; i < SPI_LINK_SLOT; i += 2) {
@@ -116,6 +117,120 @@ static int link_xfer_slot_master(const uint8_t *tx, uint8_t *rx)
     }
     return 1;
 }
+#endif // !SPI_LINK_DMA
+
+#ifdef SPI_LINK_DMA
+// ── DMA master slot transfer (opt-in: -DSPI_LINK_DMA) ───────────────────────
+// Full-duplex slot over DMA1 instead of the per-word TXE/RXNE poll: stage the slot,
+// kick both channels, wait on transfer-complete. Wire format matches the polled path
+// — bytes are byte-swapped into MSB-first half-words in staging, so the SOF-scanner
+// sees the same stream. CS stays in the caller (spi_link_master_exchange).
+//
+// Channels (CH32H417 RM table 10-2; DMAMUX channel N drives DMA1 channel N):
+//   TX = DMA1_Channel3, request 63 (SPI1_TX)
+//   RX = DMA1_Channel2, request 64 (SPI1_RX)
+// Otherwise unused on the V5F core (USB uses the USBHS controller's own DMA).
+//
+// CROSS-CORE HAZARD: link_master_dma_init() enables the DMA1 clock via
+// RCC_HBPeriphClockCmd, a non-atomic read-modify-write on RCC->HBPCENR — the register
+// that also holds the USBHS clock bit this core's USB host depends on. Safe only
+// because the V3F core never touches DMA1 (its display path is polled). Enabling DMA1
+// from V3F would race HBPCENR; a torn write can clear USBHS and kill USB enumeration.
+// Guard the enable (HSEM, or a boot-time-once barrier) before adding a second-core
+// DMA1 user.
+#define LINK_DMA_TX_CH      DMA1_Channel3
+#define LINK_DMA_RX_CH      DMA1_Channel2
+#define LINK_DMA_TX_MUX     DMA_MuxChannel3
+#define LINK_DMA_RX_MUX     DMA_MuxChannel2
+#define LINK_DMA_TX_REQ     63u
+#define LINK_DMA_RX_REQ     64u
+#define LINK_DMA_TC_TX      DMA1_FLAG_TC3
+#define LINK_DMA_TC_RX      DMA1_FLAG_TC2
+#define LINK_DMA_WORDS      (SPI_LINK_SLOT / 2u)
+
+// Staging buffers in uncached SRAM (.usbdma): DMA must see coherent data on the V5F
+// core, which caches normal SRAM. Half-word units, MSB-first packed.
+__attribute__((section(".usbdma"), aligned(4)))
+static volatile uint16_t s_dma_tx[LINK_DMA_WORDS];
+__attribute__((section(".usbdma"), aligned(4)))
+static volatile uint16_t s_dma_rx[LINK_DMA_WORDS];
+
+static void link_master_dma_init(void)
+{
+    RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
+
+    DMA_InitTypeDef d = {0};
+    d.DMA_PeripheralBaseAddr = (uint32_t)(uintptr_t)&LINK_SPI->DATAR;
+    d.DMA_PeripheralInc      = DMA_PeripheralInc_Disable;
+    d.DMA_MemoryInc          = DMA_MemoryInc_Enable;
+    d.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
+    d.DMA_MemoryDataSize     = DMA_MemoryDataSize_HalfWord;
+    d.DMA_Mode               = DMA_Mode_Normal;   // one slot per kick (not circular)
+    d.DMA_M2M                = DMA_M2M_Disable;
+    d.DMA_BufferSize         = LINK_DMA_WORDS;
+
+    DMA_DeInit(LINK_DMA_TX_CH);
+    d.DMA_Memory0BaseAddr = (uint32_t)(uintptr_t)s_dma_tx;
+    d.DMA_DIR             = DMA_DIR_PeripheralDST;
+    d.DMA_Priority        = DMA_Priority_High;
+    DMA_Init(LINK_DMA_TX_CH, &d);
+
+    DMA_DeInit(LINK_DMA_RX_CH);
+    d.DMA_Memory0BaseAddr = (uint32_t)(uintptr_t)s_dma_rx;
+    d.DMA_DIR             = DMA_DIR_PeripheralSRC;
+    d.DMA_Priority        = DMA_Priority_VeryHigh; // RX must drain before overrun
+    DMA_Init(LINK_DMA_RX_CH, &d);
+
+    DMA_MuxChannelConfig(LINK_DMA_TX_MUX, LINK_DMA_TX_REQ);
+    DMA_MuxChannelConfig(LINK_DMA_RX_MUX, LINK_DMA_RX_REQ);
+
+    SPI_I2S_DMACmd(LINK_SPI, SPI_I2S_DMAReq_Tx, ENABLE);
+    SPI_I2S_DMACmd(LINK_SPI, SPI_I2S_DMAReq_Rx, ENABLE);
+}
+
+static int link_xfer_slot_master_dma(const uint8_t *tx, uint8_t *rx)
+{
+    for (uint32_t i = 0; i < LINK_DMA_WORDS; i++) {
+        uint32_t b = i * 2u;
+        s_dma_tx[i] = tx ? (uint16_t)((tx[b] << 8) | tx[b + 1]) : 0x0000u;
+    }
+
+    // Re-arm both channels: disable, reload count, clear stale TC, enable. RX is
+    // enabled before TX so it is ready to capture when TX's first word starts the
+    // clock.
+    DMA_Cmd(LINK_DMA_TX_CH, DISABLE);
+    DMA_Cmd(LINK_DMA_RX_CH, DISABLE);
+    DMA_ClearFlag(DMA1, LINK_DMA_TC_TX | LINK_DMA_TC_RX);
+    DMA_SetCurrDataCounter(LINK_DMA_RX_CH, LINK_DMA_WORDS);
+    DMA_SetCurrDataCounter(LINK_DMA_TX_CH, LINK_DMA_WORDS);
+    DMA_Cmd(LINK_DMA_RX_CH, ENABLE);
+    DMA_Cmd(LINK_DMA_TX_CH, ENABLE);
+
+    // Bounded wait on both transfer-complete flags, same wedge discipline as the
+    // polled path. RX completing implies the full duplex slot clocked through.
+    uint32_t t0 = timebase_v5f_us();
+    while (!(DMA_GetFlagStatus(DMA1, LINK_DMA_TC_RX) &&
+             DMA_GetFlagStatus(DMA1, LINK_DMA_TC_TX))) {
+        if ((timebase_v5f_us() - t0) >= LINK_MASTER_WAIT_US) {
+            spi_link_master_wedges++;
+            DMA_Cmd(LINK_DMA_TX_CH, DISABLE);
+            DMA_Cmd(LINK_DMA_RX_CH, DISABLE);
+            return 0;
+        }
+    }
+
+    DMA_Cmd(LINK_DMA_TX_CH, DISABLE);
+    DMA_Cmd(LINK_DMA_RX_CH, DISABLE);
+    if (rx) {
+        for (uint32_t i = 0; i < LINK_DMA_WORDS; i++) {
+            uint16_t w = s_dma_rx[i];
+            rx[i * 2u]      = (uint8_t)(w >> 8);
+            rx[i * 2u + 1u] = (uint8_t)w;
+        }
+    }
+    return 1;
+}
+#endif // SPI_LINK_DMA
 
 // Slave slot transfer: the slave does not control the clock, so its TX word must be
 // in the data register before the master clocks it out on MISO. Loading after the
@@ -171,6 +286,10 @@ void spi_link_master_init(void)
     // high so the SPI block stays master and doesn't drop to slave on a low NSS.
     link_spi_configure(SPI_Mode_Master, SPI_NSS_Soft);
     SPI_NSSInternalSoftwareConfig(LINK_SPI, SPI_NSSInternalSoft_Set);
+
+#ifdef SPI_LINK_DMA
+    link_master_dma_init();   // arm DMA1 ch2/ch3 + SPI DMA requests once
+#endif
 }
 
 // Recover a wedged master. On this IP a MODF (mode fault) auto-clears SPE and MSTR,
@@ -190,7 +309,12 @@ void spi_link_master_exchange(const uint8_t tx[SPI_LINK_SLOT],
                               uint8_t rx[SPI_LINK_SLOT])
 {
     link_cs_low();
-    if (!link_xfer_slot_master(tx, rx)) {
+#ifdef SPI_LINK_DMA
+    int ok = link_xfer_slot_master_dma(tx, rx);
+#else
+    int ok = link_xfer_slot_master(tx, rx);
+#endif
+    if (!ok) {
         // A flag-wait timed out mid-slot: abort and recover so the next slot can
         // proceed. The dropped slot is harmless — the blob is re-sent periodically
         // and the SOF-scanner re-aligns downstream.

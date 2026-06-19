@@ -221,6 +221,13 @@ Toolchain:
 - V3F compiles with **`-march=rv32imac_zicsr -mabi=ilp32`** (soft-float); V5F
   uses the hardware FPU (`rv32imafc` / `ilp32f`).
 
+Compile-time options (pass via `EXTRADEF`):
+
+- `-DSPI_LINK_DMA` — drive the board-to-board SPI1 master exchange over DMA1
+  instead of the polled register loop, offloading the V5F core during each slot.
+  Off by default (the polled path is the validated baseline). The SPI slave stays
+  interrupt-driven either way. Example: `make all EXTRADEF=-DSPI_LINK_DMA`.
+
 Flashing goes over the **on-board WCH-LinkE** (same USB-C cable as the command
 link):
 
