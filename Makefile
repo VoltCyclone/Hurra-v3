@@ -38,11 +38,13 @@ DEFINES = -DCH32H417 -DCMD_BAUD=$(CMD_BAUD) $(PROTO_DEF)
 # relay (`make relay`), where one board does host+device itself.
 BOARD ?=
 ifeq ($(BOARD),host)
-  BOARD_DEF = -DBOARD_ROLE_HOST
+  BOARD_DEF = -DBOARD_ROLE_HOST -DDISPLAY_PRESENT
 else ifeq ($(BOARD),device)
   BOARD_DEF = -DBOARD_ROLE_DEVICE
 else ifneq ($(BOARD),)
   $(error BOARD must be 'host' or 'device' (empty = single-board relay))
+else
+  BOARD_DEF = -DDISPLAY_PRESENT
 endif
 DEFINES += $(BOARD_DEF)
 

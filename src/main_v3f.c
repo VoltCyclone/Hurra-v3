@@ -183,9 +183,12 @@ int main(void)
     led_heartbeat_start();
 
     temp_init();        // ADC1 on HCLK — independent of USBHS PLL (V5F relay-safe)
+#ifdef DISPLAY_PRESENT
     display_init();
+#endif
     display_status_t g_disp = { .state = DISP_STATE_BOOT };
     uint32_t disp_render_tick = millis();
+    (void)disp_render_tick;
 
 #if defined(V5F_STAGE_DIAG)
     // One-shot banner so a freshly-opened terminal knows the build + baud and can
@@ -244,7 +247,9 @@ int main(void)
             if (!s_seen_advance && g_disp.state != DISP_STATE_BOOT)
                 g_disp.state = DISP_STATE_NOSIGNAL;
             s_seen_advance = false;
+#ifdef DISPLAY_PRESENT
             display_render(&g_disp);
+#endif
         }
 
         // --- LED status ladder (ports v2 main.c, MINUS the overtemp tier) -
