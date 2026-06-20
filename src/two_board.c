@@ -16,6 +16,7 @@
 #include "usb_device.h"
 #include "usb_merge.h"
 #include "timebase_v5f.h"
+#include "ws2812.h"
 #include <string.h>
 
 volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
@@ -135,6 +136,7 @@ void two_board_host_run(void)
 
     send_descriptor_blob(blob, blob_total, &seq);
     uint32_t diag_ms = millis();
+    ws2812_init();
     for (;;) {
         uint32_t now = millis();
         if ((now - last_desc_ms) >= desc_period_ms) {
@@ -147,6 +149,7 @@ void two_board_host_run(void)
             synth_mouse_next_report(tick++, report);
             send_report_frame(SYNTH_MOUSE_IN_EP, SYNTH_MOUSE_IFACE_PROTO,
                               report, SYNTH_MOUSE_REPORT_LEN, &seq, rx_scratch);
+            ws2812_note_report(now);
         }
         /* Oracle: 0x5A = master clocking cleanly; 0xEA = a wedged exchange was
          * recovered (bounded-wait timeout). Distinguishes a healthy link from a
@@ -156,6 +159,7 @@ void two_board_host_run(void)
             dbg_stage(spi_link_master_wedges ? 0xEA : 0x5A);
         }
         if ((now - last_blink_ms) >= 250u) { last_blink_ms = now; led_toggle(); }
+        ws2812_service(now, 1);   /* synth source is self-relaying */
     }
 #else
     /* ---- Real USBHS host capture (SWJ already disabled by main_v5f) ---- */
@@ -244,6 +248,7 @@ void two_board_host_run(void)
     send_descriptor_blob(blob, blob_total, &seq);
     last_desc_ms = millis();
     dbg_stage(DBG_V5F_RELAY);             // 0x58: relaying reports over SPI
+    ws2812_init();
 
     for (;;) {
         uint32_t now = millis();
@@ -270,6 +275,7 @@ void two_board_host_run(void)
                 uint8_t rx[SPI_LINK_SLOT];
                 send_report_frame(ep_map[m].dev_ep_num, ep_map[m].iface_protocol,
                                   rpt, (uint8_t)ret, &seq, rx);
+                ws2812_note_report(now);
                 host_absorb_return(&rxs, rx, &disp, &last_telem_seq,
                                    &have_telem_seq, &telem_fresh_ms, now);
                 rep_count++;
@@ -305,6 +311,8 @@ void two_board_host_run(void)
         }
 
         if ((now - last_blink_ms) >= 250u) { last_blink_ms = now; led_toggle(); }
+        /* Board A drives DRDY high once enumerated downstream = "relaying". */
+        ws2812_service(now, spi_link_master_drdy());
     }
 #endif // TWO_BOARD_HOST_SYNTH
 }
@@ -419,7 +427,9 @@ void two_board_device_run(void)
     bool     have_prev = false;
     uint32_t drop_count = 0;
     hb_ms = millis();
+    ws2812_init();
     for (;;) {
+        uint32_t now = millis();
         uint8_t byte, slot[SPI_LINK_SLOT];
         while (spi_link_slave_rx_byte(&byte)) {
             if (!spi_frame_stream_push(&stream, byte, slot)) continue;
@@ -444,6 +454,7 @@ void two_board_device_run(void)
                 memcpy(rpt, &payload[2], rlen);
                 usb_merge_report(protocol, rpt, rlen);
                 usb_device_send_report(dev_ep, rpt, rlen);
+                ws2812_note_report(now);
             }
         }
         usb_merge_drain_icc();
@@ -472,6 +483,8 @@ void two_board_device_run(void)
             led_toggle();
             (void)drop_count;
         }
+        /* Clone enumerated on the PC = "relaying"; else pulse red. */
+        ws2812_service(now, usb_device_is_configured());
     }
 #endif // TWO_BOARD_DEVICE_LOCAL
 }

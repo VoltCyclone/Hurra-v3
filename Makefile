@@ -142,6 +142,7 @@ V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c \
           src/spi_frame_stream.c \
           src/usb_hs_desc.c src/synth_mouse.c src/desc_xfer.c src/two_board.c \
           src/spi_link_selftest.c core/timebase_v5f.c \
+          src/ws2812.c src/ws2812_pioc_code.c \
           core/system_ch32h417.c $(LIBSRC)
 V5F_ASM = core/startup_v5f.S
 V5F_DEF = -DCore_V5F -Dsystick2
@@ -340,6 +341,8 @@ test:
 	/tmp/hid_iface_index_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/display_rowpick_test test/display_rowpick_test.c
 	/tmp/display_rowpick_test
+	cc -std=c11 -O2 -Wall -DWS2812_HOSTTEST -Isrc -o /tmp/ws2812_test test/ws2812_test.c src/ws2812.c
+	/tmp/ws2812_test
 	python3 -m unittest test.flash_py_test
 
 .PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test build
