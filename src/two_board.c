@@ -11,6 +11,7 @@
 #include "spi_frame_stream.h"
 #include "synth_mouse.h"
 #include "desc_xfer.h"
+#include "desc_serialize.h"
 #include "desc_capture.h"
 #include "usb_host.h"
 #include "usb_device.h"
@@ -36,11 +37,14 @@ typedef struct {
 /* Send a serialized descriptor blob over the SPI link as a run of
  * TWO_BOARD_TYPE_DESC chunks (one slot each, SEQ continuous from *seq). The return
  * slot is ignored (restart-on-gap needs no ACK). */
-// Inter-chunk pace (µs). The slave needs time between slots to unpack the frame,
-// run desc_xfer_accept, and re-arm RX before the master's next CS edge; a
-// back-to-back burst out-runs it. ~250µs × 325 chunks ≈ 80ms per blob, well inside
-// the 500ms periodic-resend cycle.
-#define DESC_CHUNK_PACE_US  250u
+// Inter-chunk pace (µs). The slave RX is interrupt-driven (RXNE ISR -> lock-free
+// ring, spi_link.c), so the master no longer has to wait for the slave to unpack
+// and re-arm between slots — the ring absorbs the burst. Per-chunk device work
+// (ring drain + SOF-scan + CRC + desc_xfer_accept) is ~4-6µs at 400MHz, under one
+// slot's ~11µs wire time at 25MHz, so 40µs leaves ~5x headroom while the device
+// foreground also services usb_device_poll. Bench-gated: if spi_link_rx_overflows
+// rises off zero, raise this or LINK_RX_RING_SZ. Was 250µs (polled-slave era).
+#define DESC_CHUNK_PACE_US  40u
 static void send_descriptor_blob(const uint8_t *blob, uint16_t total, uint8_t *seq)
 {
     uint16_t nchunks = desc_xfer_chunk_count(total);
@@ -126,11 +130,17 @@ void two_board_host_run(void)
     uint32_t last_desc_ms  = millis();
     const uint32_t desc_period_ms = 500;  // periodic blob re-send (restart-on-gap)
 
+    // Descriptors ship in the compact serialized wire form (desc_serialize), not
+    // as the 7136-byte struct: a real device populates only ~200-400 bytes, so this
+    // cuts the blob ~25x and the per-attach transfer from ~80ms to a few ms. Built
+    // once after capture (desc is immutable after) and reused for every re-send.
+    static uint8_t desc_wire[DESC_WIRE_MAX_LEN];   // static: large
+
 #if defined(TWO_BOARD_HOST_SYNTH)
     /* Isolated link test: synthetic mouse, no real USB host. */
     synth_mouse_build_descriptors(&desc);
-    const uint8_t  *blob       = (const uint8_t *)&desc;
-    const uint16_t  blob_total = (uint16_t)sizeof desc;
+    const uint8_t  *blob       = desc_wire;
+    const uint16_t  blob_total = desc_serialize(&desc, desc_wire, sizeof desc_wire);
     uint32_t tick = 0, last_send_ms = millis();
     const uint32_t send_period_ms = 8;
 
@@ -242,9 +252,11 @@ void two_board_host_run(void)
         num_eps++;
     }
 
-    /* Ship the captured descriptor blob to Board A up front. */
-    const uint8_t  *blob       = (const uint8_t *)&desc;
-    const uint16_t  blob_total = (uint16_t)sizeof desc;
+    /* Serialize the captured descriptors to the compact wire form once (desc is
+     * immutable after capture; speed was just stamped above so it lands in the wire
+     * header) and ship it. Every periodic re-send reuses this buffer. */
+    const uint8_t  *blob       = desc_wire;
+    const uint16_t  blob_total = desc_serialize(&desc, desc_wire, sizeof desc_wire);
     send_descriptor_blob(blob, blob_total, &seq);
     last_desc_ms = millis();
     dbg_stage(DBG_V5F_RELAY);             // 0x58: relaying reports over SPI
@@ -386,10 +398,15 @@ void two_board_device_run(void)
             if (spi_frame_unpack(slot, &type, &seq, &payload, &len) == SPI_FRAME_OK &&
                 type == TWO_BOARD_TYPE_DESC) {
                 desc_xfer_result_t r = desc_xfer_accept(&xfer, payload, len);
-                if (r == DESC_XFER_COMPLETE && xfer.total == sizeof desc) {
-                    memcpy(&desc, xfer.buf, sizeof desc);
-                    got_blob = true;
-                    break;
+                if (r == DESC_XFER_COMPLETE) {
+                    // Reassembled blob is the compact wire form; deserialize it back
+                    // into the struct. A malformed/truncated/wrong-version blob fails
+                    // closed — drop it and keep waiting (host re-sends every 500ms).
+                    if (desc_deserialize(xfer.buf, xfer.total, &desc)) {
+                        got_blob = true;
+                        break;
+                    }
+                    desc_xfer_reset(&xfer);
                 }
             }
         }

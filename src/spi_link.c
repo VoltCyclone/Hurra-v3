@@ -19,6 +19,13 @@
 #include "ch32h417_port.h"   // WCH_IRQ attribute for SPI1_IRQHandler
 #include "timebase_v5f.h"    // wrap-safe µs budget for waits
 
+// Pin the per-word/per-byte hot path to ITCM (.fastrun), mirroring humanize.c's
+// HZ_FASTRUN. All .text already runs from ITCM via .highcode; this is defensive,
+// keeping the RXNE ISR and slave shift loop zero-wait even if a future linker/LTO
+// change reorders sections. .fastrun is already collected into the ITCM block in
+// both linker scripts. spi_link.c is firmware-only, so no host-test guard is needed.
+#define LINK_FASTRUN __attribute__((section(".fastrun")))
+
 // Per-byte wait budget for the master. Every flag (TXE/RXNE/BSY) is driven by the
 // master's own clock, so a healthy slot completes in microseconds; a flag that
 // never comes means the block stopped clocking (e.g. MODF auto-cleared SPE/MSTR,
@@ -47,11 +54,18 @@ static int link_master_wait_bit(uint16_t bit, int want_set)
     return 1;
 }
 
-// SPI1 baud is f_PCLK/prescaler. Mode1 = /4; the SPI1 PB clock is ~100 MHz under the
-// V5F profile, so this is ~25 MHz SCK. That is the upper end of the signal-integrity
-// headroom for a board-to-board jumper: if spi_link_rx_overflows or
-// spi_link_master_wedges rise off zero, drop to Mode2 (/8) or Mode3 (/16).
-#define LINK_SPI_PRESCALER  SPI_BaudRatePrescaler_Mode1
+// SPI1 baud is f_PCLK/prescaler. SPI1 is clocked off HCLK (~100 MHz, no separate APB
+// divider on this part), and the baud generator only divides by powers of two, so the
+// top two rates are /2 = ~50 MHz and /4 = ~25 MHz. Datasheet caps SCK at 75 MHz in
+// both master and slave mode (Table 3-26). Default is /2; the slave samples the
+// master's SCK against its own (uncorrelated) crystal, so build -DLINK_SPI_SLOW
+// (`make v5f SPI_LINK_FAST=0`) to drop to the safer /4 if spi_link_rx_overflows or
+// spi_link_master_wedges rise off 0 under load.
+#ifdef LINK_SPI_SLOW
+#define LINK_SPI_PRESCALER  SPI_BaudRatePrescaler_Mode1   /* /4  ~25 MHz */
+#else
+#define LINK_SPI_PRESCALER  SPI_BaudRatePrescaler_Mode0   /* /2  ~50 MHz */
+#endif
 
 // ── shared pin/clock bring-up ───────────────────────────────────────────────
 static void link_clocks_on(void)
@@ -238,6 +252,7 @@ static int link_xfer_slot_master_dma(const uint8_t *tx, uint8_t *rx)
 // echo. Pre-load word 0, then per word wait RXNE (read) and refill the next TX word
 // ahead of its clock. 16-bit words, MSB-first packing (see link_xfer_slot_master);
 // waits are unbounded since the master drives the clock.
+LINK_FASTRUN
 static void link_xfer_slot_slave(const uint8_t *tx, uint8_t *rx)
 {
     // Prime MISO with word 0 before the master's first clock edge.
@@ -392,14 +407,16 @@ void spi_link_slave_set_telem(const uint8_t slot[SPI_LINK_SLOT])
 // foreground spi_link_slave_rx_byte (single reader) pops. Power-of-two size for
 // cheap masking. On overflow the ISR drops the byte (bumps a diag counter); the
 // SOF-scanner downstream recovers alignment, so a drop costs one frame.
-#define LINK_RX_RING_SZ   512u           // power of two
+#define LINK_RX_RING_SZ   2048u          // power of two (~2KB V5F SRAM; headroom for
+                                         // the faster descriptor burst, see
+                                         // DESC_CHUNK_PACE_US in two_board.c)
 #define LINK_RX_RING_MASK (LINK_RX_RING_SZ - 1u)
 static volatile uint8_t  s_rx_ring[LINK_RX_RING_SZ];
 static volatile uint16_t s_rx_head;      // ISR writes
 static volatile uint16_t s_rx_tail;      // foreground reads
 volatile uint32_t spi_link_rx_overflows; // diag
 
-void SPI1_IRQHandler(void) WCH_IRQ;
+void SPI1_IRQHandler(void) WCH_IRQ LINK_FASTRUN;
 
 void spi_link_slave_init_irq(void)
 {
@@ -463,6 +480,7 @@ void SPI1_IRQHandler(void)
     }
 }
 
+LINK_FASTRUN
 int spi_link_slave_rx_byte(uint8_t *out)
 {
     if (s_rx_tail == s_rx_head) return 0;       // empty

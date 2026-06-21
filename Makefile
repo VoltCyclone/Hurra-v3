@@ -140,7 +140,7 @@ V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c \
           src/usb_merge.c src/desc_capture.c src/actions.c src/humanize.c \
           src/kmbox_cmd_v5f_stub.c src/led.c src/spi_link.c src/spi_frame.c \
           src/spi_frame_stream.c \
-          src/usb_hs_desc.c src/synth_mouse.c src/desc_xfer.c src/two_board.c \
+          src/usb_hs_desc.c src/synth_mouse.c src/desc_xfer.c src/desc_serialize.c src/two_board.c \
           src/spi_link_selftest.c core/timebase_v5f.c \
           src/ws2812.c src/ws2812_pioc_code.c \
           core/system_ch32h417.c $(LIBSRC)
@@ -166,6 +166,23 @@ v5f: FP_CFLAGS = -fno-math-errno
 # v5f-scoped: V3F stays pure -Os. -funroll-loops only touches GCC-bounded loops, so
 # the FIFO/field loops unroll while the unbounded poll/NAK spins are left alone.
 v5f: EXTRADEF += -funroll-loops
+# SPI link master uses DMA1 ch2/ch3 by default (frees V5F during each 32-byte slot
+# instead of per-word TXE/RXNE polling). Master-only; the slave stays IRQ-driven.
+# Cross-core-safe: only V5F compiles/calls spi_link.c, so nothing on V3F races the
+# RCC->HBPCENR RMW (see the CROSS-CORE HAZARD note in spi_link.c). Bench-gated:
+# verify spi_link_master_wedges stays 0 and USB enum holds. Escape hatch / rollback:
+# build with `make v5f SPI_LINK_DMA=0` to fall back to the polled path (no code edit).
+SPI_LINK_DMA ?= 1
+ifeq ($(SPI_LINK_DMA),1)
+v5f: EXTRADEF += -DSPI_LINK_DMA
+endif
+# SPI link SCK rate. Default /2 (~50 MHz); fall back to /4 (~25 MHz) with
+# `make v5f SPI_LINK_FAST=0` if spi_link_rx_overflows / _master_wedges rise off 0
+# under load (the slave samples SCK against its own crystal). See spi_link.c.
+SPI_LINK_FAST ?= 1
+ifneq ($(SPI_LINK_FAST),1)
+v5f: EXTRADEF += -DLINK_SPI_SLOW
+endif
 v5f: build
 	# Trailing -lm: the merge pulls humanize.c, whose humanize_filter() calls
 	# sqrtf(). With -lm only in LDBASE (before the objects) the linker has not
@@ -329,6 +346,8 @@ test:
 	/tmp/usb_hs_desc_test
 	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/desc_xfer_test test/desc_xfer_test.c src/desc_xfer.c
 	/tmp/desc_xfer_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/desc_serialize_test test/desc_serialize_test.c src/desc_serialize.c
+	/tmp/desc_serialize_test
 	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_stream_test test/spi_frame_stream_test.c src/spi_frame_stream.c src/spi_frame.c
 	/tmp/spi_frame_stream_test
 	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c
