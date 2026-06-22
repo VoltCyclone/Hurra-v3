@@ -26,6 +26,13 @@ void usb_merge_report(uint8_t iface_protocol, uint8_t *report, uint8_t len);
 // per-cycle merged_this_cycle flag consumed by send_pending.
 void usb_merge_drain_icc(void);
 
+// Decode one injection record (tag = ICC_TAG_*, b = the icc_record_t.b[] payload,
+// ≥7 readable bytes) into the injection accumulators. Shared by usb_merge_drain_icc
+// (ICC source) and the two-board SPI INJECT decode (Board A). Does not touch the
+// per-cycle merge flag, the doorbell re-arm, or release bookkeeping — the caller
+// owns those. ICC_TAG_DEV_TEMP is handled by the caller, not here.
+void usb_merge_apply_record(uint8_t tag, const uint8_t *b);
+
 // Standalone synth-injection path. When V3F injects motion while the physical
 // mouse is silent, the merge path (which rides real reports) emits nothing; this
 // synthesizes a standalone mouse report (one-per-ms cap) and flushes any
