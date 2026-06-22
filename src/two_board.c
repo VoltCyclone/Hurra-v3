@@ -374,6 +374,11 @@ void two_board_device_run(void)
         }
         usb_merge_drain_icc();
         usb_device_poll();
+        // Drain queued injection to the PC on the silent path too, matching the
+        // Phase-3 relay loop. This isolation build has no SPI command source, so it
+        // is normally a no-op, but keeping the loop faithful means a queued inject
+        // (e.g. via a local test) still flushes rather than stalling.
+        usb_merge_send_pending();
         if ((millis() - hb_ms) >= 250u) { hb_ms = millis(); led_toggle(); }
     }
 #else
@@ -479,6 +484,16 @@ void two_board_device_run(void)
         }
         usb_merge_drain_icc();
         usb_device_poll();
+
+        /* Standalone synth-injection: emit injected motion/clicks when no real
+         * report rode through this cycle (the TWO_BOARD_TYPE_MOUSE merge above only
+         * fires when a frame arrives over SPI). This is the device board's V5F: the
+         * PC command link lands on this board's V3F, so its inject accumulators are
+         * the ones usb_merge_drain_icc() populates. Without this, motion/clicks
+         * issued while the physical mouse is silent accumulate but never reach the
+         * PC. Mirrors main_v5f.c's relay loop; gated by merged_this_cycle and the
+         * one-per-ms cap inside usb_merge_send_pending(). */
+        usb_merge_send_pending();
 
         /* Publish device->host telemetry on the SPI return slot every ~100 ms. The
          * IRQ slave cycles this slot onto MISO; the host SOF-scans it. */
