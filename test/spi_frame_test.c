@@ -115,6 +115,20 @@ int main(void)
     CHECK(spi_frame_seq_gap(255, 0)  == 0); // wrap: 255 -> 0 is consecutive
     CHECK(spi_frame_seq_gap(254, 1)  == 2); // wrap: 254 ->(255,0)-> 1 = 2 lost
 
+	// INJECT frame: icc_record_t bytes survive pack/unpack with TYPE_INJECT.
+	{
+		uint8_t slot[SPI_FRAME_SLOT_SIZE];
+		// tag=INJECT_MOUSE(1), dx=+5 LE, dy=-3 LE, buttons=0, wheel=0.
+		const uint8_t pay[] = { 1, 5,0, 0xFD,0xFF, 0, 0 };
+		CHECK(spi_frame_pack(slot, 0x06 /*TWO_BOARD_TYPE_INJECT*/, 0x11, pay, sizeof pay)
+		      == SPI_FRAME_OK);
+		uint8_t type, seq, len; const uint8_t *p;
+		CHECK(spi_frame_unpack(slot, &type, &seq, &p, &len) == SPI_FRAME_OK);
+		CHECK(type == 0x06);
+		CHECK(len == sizeof pay);
+		CHECK(p[0] == 1 && p[1] == 5 && p[3] == 0xFD);
+	}
+
     printf("spi_frame_test: all passed\n");
     return 0;
 }
