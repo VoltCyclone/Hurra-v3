@@ -722,6 +722,51 @@ static void merge_run_releases(void)
 	}
 }
 
+void usb_merge_apply_record(uint8_t tag, const uint8_t *b)
+{
+	switch (tag) {
+	case ICC_TAG_INJECT_MOUSE: {
+		// b0..1=dx LE int16, b2..3=dy LE int16, b4=buttons, b5=wheel int8.
+		int16_t dx = (int16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
+		int16_t dy = (int16_t)((uint16_t)b[2] | ((uint16_t)b[3] << 8));
+		merge_apply_mouse(dx, dy, b[4], (int8_t)b[5]);
+		break;
+	}
+	case ICC_TAG_INJECT_KEYBOARD:
+		merge_apply_keyboard(b[0], &b[1]);          // b0=modifier, b1..6=keys[6]
+		break;
+	case ICC_TAG_CLICK_RELEASE: {
+		uint32_t delay_ms = (uint32_t)b[1] | ((uint32_t)b[2] << 8) |
+		                    ((uint32_t)b[3] << 16) | ((uint32_t)b[4] << 24);
+		merge_schedule_click_release(b[0], delay_ms);
+		break;
+	}
+	case ICC_TAG_KB_RELEASE: {
+		uint32_t delay_ms = (uint32_t)b[1] | ((uint32_t)b[2] << 8) |
+		                    ((uint32_t)b[3] << 16) | ((uint32_t)b[4] << 24);
+		merge_schedule_kb_release(b[0], delay_ms);
+		break;
+	}
+	case ICC_TAG_SET_HUMAN_LEVEL:
+		humanize_set_level(b[0]);
+		break;
+	case ICC_TAG_PHYS_MASK:
+		// b0=kind (0=mouse,1=key,2=unmask_all), b1=code, b2=enable.
+		switch (b[0]) {
+		case 0: act_phys_mask_mouse(b[1], b[2] != 0); break;
+		case 1: act_phys_mask_key(b[1], b[2] != 0); break;
+		case 2: act_phys_unmask_all(); break;
+		default: break;
+		}
+		break;
+	case ICC_TAG_SET_BAUD:
+		// Baud is owned by the command transport; nothing for the merge to do.
+		break;
+	default:
+		break;
+	}
+}
+
 void usb_merge_drain_icc(void)
 {
 	// Reset the per-cycle merge flag at the start of each relay-loop iteration.
@@ -736,59 +781,7 @@ void usb_merge_drain_icc(void)
 			g_tb_dev_temp_c = (int8_t)r.b[0];
 			continue;
 		}
-		switch (r.tag) {
-		case ICC_TAG_INJECT_MOUSE: {
-			// kmbox_cmd.c wire: b0..1=dx LE int16, b2..3=dy LE int16,
-			// b4=buttons, b5=wheel int8.
-			int16_t dx = (int16_t)((uint16_t)r.b[0] | ((uint16_t)r.b[1] << 8));
-			int16_t dy = (int16_t)((uint16_t)r.b[2] | ((uint16_t)r.b[3] << 8));
-			uint8_t buttons = r.b[4];
-			int8_t  wheel   = (int8_t)r.b[5];
-			merge_apply_mouse(dx, dy, buttons, wheel);
-			break;
-		}
-		case ICC_TAG_INJECT_KEYBOARD: {
-			// b0=modifier, b1..6=keys[6].
-			merge_apply_keyboard(r.b[0], &r.b[1]);
-			break;
-		}
-		case ICC_TAG_CLICK_RELEASE: {
-			// b0=button_mask, b1..4=delay_ms LE u32.
-			uint32_t delay_ms = (uint32_t)r.b[1] | ((uint32_t)r.b[2] << 8) |
-			                    ((uint32_t)r.b[3] << 16) | ((uint32_t)r.b[4] << 24);
-			merge_schedule_click_release(r.b[0], delay_ms);
-			break;
-		}
-		case ICC_TAG_KB_RELEASE: {
-			// b0=key, b1..4=delay_ms LE u32.
-			uint32_t delay_ms = (uint32_t)r.b[1] | ((uint32_t)r.b[2] << 8) |
-			                    ((uint32_t)r.b[3] << 16) | ((uint32_t)r.b[4] << 24);
-			merge_schedule_kb_release(r.b[0], delay_ms);
-			break;
-		}
-		case ICC_TAG_SET_HUMAN_LEVEL:
-			humanize_set_level(r.b[0]);
-			break;
-		case ICC_TAG_PHYS_MASK:
-			// V3F currently applies phys-mask locally and does not forward over
-			// the ICC, so this record is not emitted today. Encoding:
-			//   b0=kind (0=mouse, 1=key, 2=unmask_all), b1=code, b2=enable.
-			switch (r.b[0]) {
-			case 0: act_phys_mask_mouse(r.b[1], r.b[2] != 0); break;
-			case 1: act_phys_mask_key(r.b[1], r.b[2] != 0); break;
-			case 2: act_phys_unmask_all(); break;
-			default: break;
-			}
-			break;
-		case ICC_TAG_SET_BAUD:
-			// V3F owns the host UART; baud changes are applied there. Nothing
-			// for the merge to do on V5F. Drained so the ring stays clear.
-			break;
-		default:
-			// Unrecognized tags are not the merge's concern; the relay loop
-			// handles its own protocol records before draining here.
-			break;
-		}
+		usb_merge_apply_record(r.tag, r.b);
 	}
 
 	// Mailbox drained. Re-arm the IPC doorbell interrupt, which the ISR disables

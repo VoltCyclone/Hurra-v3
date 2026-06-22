@@ -352,6 +352,8 @@ test:
 	/tmp/spi_frame_stream_test
 	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c
 	/tmp/usb_merge_test
+	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/inject_apply_test test/inject_apply_test.c src/usb_merge.c
+	/tmp/inject_apply_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/usb_host_time_test test/usb_host_time_test.c
 	/tmp/usb_host_time_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/uart_rx_class_test test/uart_rx_class_test.c
