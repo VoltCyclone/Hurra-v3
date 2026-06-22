@@ -32,6 +32,13 @@
 // host's freshness heartbeat advances during an idle mouse.
 #define TWO_BOARD_TYPE_TELEM_REQ  0x05u
 
+// SPI frame TYPE for a host->device injection command. Payload is the raw
+// icc_record_t byte layout: payload[0]=tag (ICC_TAG_*), payload[1..]=b[]. Lets
+// Board B's V5F parser forward injection to Board A over the existing SPI link,
+// decoded by usb_merge_apply_record into the same accumulators the ICC drain
+// feeds. High bit clear = data class.
+#define TWO_BOARD_TYPE_INJECT  0x06u
+
 // Board B (USB host) main loop: never returns.
 void two_board_host_run(void);
 
