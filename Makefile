@@ -144,6 +144,16 @@ V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c \
           src/spi_link_selftest.c core/timebase_v5f.c \
           src/ws2812.c src/ws2812_pioc_code.c \
           core/system_ch32h417.c $(LIBSRC)
+# Board B (host role) parses commands on V5F: link the protocol parser, the
+# inject FIFO, and the FIFO-backed inject sinks (kmbox_cmd_host.c) in place of the
+# no-op kmbox_cmd_v5f_stub.c. usb_device_fs.c stays for now (its USBFS_IRQHandler
+# is replaced by usb_cdc_fs.c in Task 4); Board B never clones to a PC.
+ifeq ($(BOARD),host)
+  V5F_SRC := $(filter-out src/kmbox_cmd_v5f_stub.c,$(V5F_SRC)) \
+             src/inject_link.c src/kmbox_cmd_host.c $(PROTO_SRC)
+else
+  V5F_SRC += src/inject_link.c
+endif
 V5F_ASM = core/startup_v5f.S
 V5F_DEF = -DCore_V5F -Dsystick2
 # V5F claims the QingKe hardware FPU (powered on in startup_v5f.S, mstatus FS=3).
@@ -354,6 +364,8 @@ test:
 	/tmp/usb_merge_test
 	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/inject_apply_test test/inject_apply_test.c src/usb_merge.c
 	/tmp/inject_apply_test
+	cc -std=c11 -O2 -Wall -Isrc -o /tmp/inject_link_test test/inject_link_test.c src/inject_link.c src/spi_frame.c
+	/tmp/inject_link_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/usb_host_time_test test/usb_host_time_test.c
 	/tmp/usb_host_time_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/uart_rx_class_test test/uart_rx_class_test.c
