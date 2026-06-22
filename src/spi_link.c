@@ -58,9 +58,12 @@ static int link_master_wait_bit(uint16_t bit, int want_set)
 // divider on this part), and the baud generator only divides by powers of two, so the
 // top two rates are /2 = ~50 MHz and /4 = ~25 MHz. Datasheet caps SCK at 75 MHz in
 // both master and slave mode (Table 3-26). Default is /2; the slave samples the
-// master's SCK against its own (uncorrelated) crystal, so build -DLINK_SPI_SLOW
-// (`make v5f SPI_LINK_FAST=0`) to drop to the safer /4 if spi_link_rx_overflows or
-// spi_link_master_wedges rise off 0 under load.
+// master's SCK against its own (uncorrelated) crystal, which is where margin is
+// thinnest at /2. The targeted lever is HSCR.HSRXEN (high-speed RX, enabled in
+// link_spi_configure) which retimes the RX latch to recover that margin; building
+// -DLINK_SPI_SLOW (`make v5f SPI_LINK_FAST=0`) to drop to the safer /4 is the
+// fallback if spi_link_rx_overflows or spi_link_master_wedges still rise off 0
+// under load.
 #ifdef LINK_SPI_SLOW
 #define LINK_SPI_PRESCALER  SPI_BaudRatePrescaler_Mode1   /* /4  ~25 MHz */
 #else
@@ -108,6 +111,19 @@ static void link_spi_configure(uint16_t mode, uint16_t nss)
     spi.SPI_CRCPolynomial     = 7;               // unused (SW CRC); harmless default
     SPI_Init(LINK_SPI, &spi);
     SPI_Cmd(LINK_SPI, ENABLE);
+
+#ifndef LINK_SPI_SLOW
+    // High-speed RX (HSCR.HSRXEN) only at /2. At ~50 MHz the RX bit window is short
+    // enough that the round-trip + internal sample-path delay eats most of the
+    // margin, worst on the slave sampling the master's SCK against its own crystal.
+    // HSRXEN retimes the RX latch to recover it. Both ends receive in full duplex, so
+    // enable on master and slave alike. MODE1 (HSRXEN), not MODE2 (HSRXEN|HSRXEN2):
+    // the second stage targets rates near the 75 MHz ceiling and would over-delay the
+    // sample at /2. Must follow SPI_Cmd(ENABLE) — HSCR is part of the running block's
+    // config, not the SPI_Init register set. At /4 the window is wide, so it is left
+    // off (LINK_SPI_SLOW). vendor SPI_HighSpeedMode_Config writes HSCR directly.
+    SPI_HighSpeedMode_Config(LINK_SPI, SPI_HIGH_SPEED_MODE1, ENABLE);
+#endif
 }
 
 // Master slot transfer: the master controls the clock, so load-then-receive per
@@ -318,6 +334,11 @@ static void spi_link_master_recover(void)
     SPI_Cmd(LINK_SPI, DISABLE);
     SPI_NSSInternalSoftwareConfig(LINK_SPI, SPI_NSSInternalSoft_Set);
     SPI_Cmd(LINK_SPI, ENABLE);
+#ifndef LINK_SPI_SLOW
+    // HSCR survives the SPE toggle above (separate register from CTLR1/SPE), but
+    // re-assert HSRXEN so recover always leaves the /2 RX retiming in place.
+    SPI_HighSpeedMode_Config(LINK_SPI, SPI_HIGH_SPEED_MODE1, ENABLE);
+#endif
 }
 
 void spi_link_master_exchange(const uint8_t tx[SPI_LINK_SLOT],

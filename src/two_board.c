@@ -41,10 +41,13 @@ typedef struct {
 // ring, spi_link.c), so the master no longer has to wait for the slave to unpack
 // and re-arm between slots — the ring absorbs the burst. Per-chunk device work
 // (ring drain + SOF-scan + CRC + desc_xfer_accept) is ~4-6µs at 400MHz, under one
-// slot's ~11µs wire time at 25MHz, so 40µs leaves ~5x headroom while the device
-// foreground also services usb_device_poll. Bench-gated: if spi_link_rx_overflows
-// rises off zero, raise this or LINK_RX_RING_SZ. Was 250µs (polled-slave era).
-#define DESC_CHUNK_PACE_US  40u
+// slot's ~5µs wire time at 50MHz. The whole blob is ~13 slots = ~416B, which the
+// 2KB ring (LINK_RX_RING_SZ) holds ~5x over, so the pace is pure safety margin, not
+// flow control. 5µs still leaves the device foreground time to service usb_device_poll
+// between chunks. Bench-gated: if spi_link_rx_overflows rises off zero, raise this or
+// LINK_RX_RING_SZ. Was 40µs (and 250µs in the polled-slave era) — both far above what
+// the ring depth requires; the 40µs was sized before the RX ring absorbed the burst.
+#define DESC_CHUNK_PACE_US  5u
 static void send_descriptor_blob(const uint8_t *blob, uint16_t total, uint8_t *seq)
 {
     uint16_t nchunks = desc_xfer_chunk_count(total);
