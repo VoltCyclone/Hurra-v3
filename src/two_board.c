@@ -481,6 +481,15 @@ void two_board_device_run(void)
                 usb_device_send_report(dev_ep, rpt, rlen);
                 ws2812_note_report(now);
             }
+            else if (type == TWO_BOARD_TYPE_INJECT && len >= 1) {
+                // Injection forwarded from Board B's V5F parser. Payload is the
+                // raw icc_record_t bytes (payload[0]=tag, payload[1..]=b[]). Decode
+                // into the same accumulators the ICC drain feeds; usb_merge_send_pending
+                // below flushes it on the silent path. payload has >=1 byte (tag);
+                // apply_record reads up to b[6], and spi_frame guarantees the slot's
+                // 26-byte payload region is addressable, so &payload[1] is safe.
+                usb_merge_apply_record(payload[0], &payload[1]);
+            }
         }
         usb_merge_drain_icc();
         usb_device_poll();
