@@ -18,10 +18,14 @@
 #include "usb_merge.h"
 #include "timebase_v5f.h"
 #include "ws2812.h"
-#if defined(TWO_BOARD_HOST_CDC_ECHO)
 #include "usb_cdc_fs.h"
-#endif
+#include "inject_link.h"    // inject_link_init / inject_link_drain (all V5F builds)
 #include <string.h>
+#if defined(BOARD_ROLE_HOST)
+#include "proto.h"          // proto_init/feed/tick/set_tx + notify_axes/buttons
+#include "actions.h"        // act_init / act_motion_tick
+#include "hid_layout.h"     // mouse_layout_t for the catch_xy physical-report feed
+#endif
 
 volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
 
@@ -68,6 +72,11 @@ static void send_descriptor_blob(const uint8_t *blob, uint16_t total, uint8_t *s
         // doorbell stays acked/re-armed and injection latency stays low. No-op when
         // nothing is pending.
         usb_merge_drain_icc();
+        // Keep injection flowing during the blocking blob send (startup / Board A
+        // reset). Same rationale as draining the ICC mailbox here. The inject FIFO
+        // is empty on the device / single-board builds (no host-role sinks push to
+        // it), so this is a no-op there; it only carries traffic on Board B.
+        inject_link_drain(seq, spi_link_master_exchange);
     }
 }
 
@@ -113,6 +122,20 @@ static void host_absorb_return(spi_frame_stream_t *rxs, const uint8_t *rx,
         *last_seq = seq; *have_seq = true;
     }
 }
+
+#if defined(BOARD_ROLE_HOST) && !defined(TWO_BOARD_HOST_CDC_ECHO) && \
+    !defined(TWO_BOARD_HOST_SYNTH)
+/* Parser TX sink: the protocol parser writes command responses (e.g. catch_xy
+ * round-trips, version strings) back out the CDC bulk-IN ring to the control
+ * machine. Bound via proto_set_tx() before the relay loop. */
+static void cdc_tx(const uint8_t *b, uint16_t n) { cdc_fs_tx_write(b, n); }
+
+/* Layout parsed once from the captured mouse interface's report descriptor, used
+ * to decode physical X/Y/buttons out of each captured report for proto_notify_*
+ * (so catch_xy works on Board B). Separate from usb_merge's copy (which lives on
+ * Board A); this is the host side. */
+static mouse_layout_t g_host_mouse_layout;
+#endif
 
 /* ======================================================================== */
 /* Board B (USB host) = SPI MASTER.                                          */
@@ -202,6 +225,14 @@ void two_board_host_run(void)
     }
 #else
     /* ---- Real USBHS host capture (SWJ already disabled by main_v5f) ---- */
+    /* Bring up the CDC-ACM virtual COM port on the idle USBFS controller — the
+     * control machine's command/response channel — and the inject FIFO that the
+     * host-role parser sinks (kmbox_cmd_host.c) push into. Host-only: cdc_fs.c /
+     * the parser are linked only into Board B's image. */
+#if defined(BOARD_ROLE_HOST)
+    cdc_fs_init();
+    inject_link_init();
+#endif
     if (!usb_host_init())
         led_blink_forever(3, 80, 120);  // 3 pulses = USBHS 480M PLL never locked
     dbg_stage(DBG_V5F_HOST_INIT);
@@ -257,6 +288,24 @@ void two_board_host_run(void)
         (void)usb_host_control_transfer(desc.dev_addr, desc.ep0_maxpkt, &sp, NULL, 2000);
     }
 
+    /* Parse the mouse interface's HID report descriptor once for the catch_xy
+     * physical-report feed below (decodes X/Y/buttons out of each captured report
+     * for proto_notify_*). Best-effort: g_host_mouse_layout.valid stays false if
+     * no mouse interface or an unparseable descriptor, and the feed is skipped.
+     * Host-only (hid_layout linked only into Board B's image). */
+#if defined(BOARD_ROLE_HOST)
+    memset(&g_host_mouse_layout, 0, sizeof g_host_mouse_layout);
+    g_host_mouse_layout.wheel_bit = 0xFFFF;
+    for (uint8_t i = 0; i < desc.num_ifaces; i++) {
+        if (desc.ifaces[i].iface_protocol == 2 && desc.ifaces[i].interrupt_in_ep) {
+            hid_layout_parse_mouse(&g_host_mouse_layout,
+                                   desc.ifaces[i].hid_report_desc,
+                                   desc.ifaces[i].hid_report_desc_len);
+            break;
+        }
+    }
+#endif
+
     /* Build the interrupt-IN poll map. */
     tb_ep_map_t ep_map[MAX_INTR_EPS];
     uint8_t num_eps = 0;
@@ -291,6 +340,17 @@ void two_board_host_run(void)
     dbg_stage(DBG_V5F_RELAY);             // 0x58: relaying reports over SPI
     ws2812_init();
 
+    /* Bind the command parser: it runs locally on Board B's V5F (PROTO_SRC is
+     * linked into the host image), feeding from the CDC RX ring and emitting
+     * responses out the CDC TX ring via cdc_tx. act_init() resets the injection
+     * action state; the parser's act_* calls land in kmbox_cmd_host.c, which pushes
+     * into the inject FIFO drained below as TYPE_INJECT frames to Board A. */
+#if defined(BOARD_ROLE_HOST)
+    proto_init();
+    act_init();
+    proto_set_tx(cdc_tx);
+#endif
+
     for (;;) {
         uint32_t now = millis();
 
@@ -320,8 +380,56 @@ void two_board_host_run(void)
                 host_absorb_return(&rxs, rx, &disp, &last_telem_seq,
                                    &have_telem_seq, &telem_fresh_ms, now);
                 rep_count++;
+
+                /* catch_xy feed (best-effort): decode the physical mouse's X/Y/
+                 * buttons from the captured report and hand them to the parser so
+                 * a pending catch_xy resolves against real motion. Uses the layout
+                 * parsed from the captured descriptor (hid_layout, shared with the
+                 * device-side merge), so it tracks 8/16-bit axes and report IDs.
+                 * Skipped unless this is the mouse interface and the layout parsed.
+                 * Host-only: the parser + hid_layout are linked into Board B's image
+                 * (this function is also compiled, dormant, into the device image). */
+#if defined(BOARD_ROLE_HOST)
+                if (ep_map[m].iface_protocol == 2 && g_host_mouse_layout.valid) {
+                    const mouse_layout_t *ml = &g_host_mouse_layout;
+                    uint8_t rlen = (uint8_t)ret;
+                    uint8_t doff = ml->data_off;
+                    uint8_t rid  = doff ? rpt[0] : 0;
+                    if (rid == ml->report_id && rlen > doff) {
+                        int32_t dx = hid_layout_read_field(rpt, rlen, ml->x_bit,
+                                                           ml->x_size, doff);
+                        int32_t dy = hid_layout_read_field(rpt, rlen, ml->y_bit,
+                                                           ml->y_size, doff);
+                        int32_t w = 0;
+                        if (ml->wheel_bit != 0xFFFF && rid == ml->wheel_report_id)
+                            w = hid_layout_read_field(rpt, rlen, ml->wheel_bit,
+                                                      ml->wheel_size, doff);
+                        proto_notify_buttons(rpt[doff]);
+                        proto_notify_axes((int16_t)dx, (int16_t)dy, (int8_t)w);
+                    }
+                }
+#endif
             }
         }
+
+        /* ---- Command stage (after the time-critical EP poll, before telemetry) ----
+         * Ordered per the brief: feed CDC bytes to the parser, tick it, step the
+         * motion program, drain queued injection over SPI to Board A, then service
+         * the CDC endpoints. Ordering matters for EP-poll timing: the parser work
+         * runs once the latency-critical interrupt-IN forwarding for this iteration
+         * is done. Host-only (parser + CDC linked only into Board B's image). */
+#if defined(BOARD_ROLE_HOST)
+        {
+            uint8_t cbuf[64];
+            uint16_t cn;
+            while ((cn = cdc_fs_rx_read(cbuf, sizeof cbuf)) > 0)
+                proto_feed(cbuf, cn);
+        }
+        proto_tick();
+        act_motion_tick();          // unconditional; early-returns when idle
+        inject_link_drain(&seq, spi_link_master_exchange);
+        cdc_fs_poll();
+#endif
 
         /* Idle poll: if no report was clocked recently, send an empty TELEM_REQ so
          * the device's MISO slot keeps flowing (else a still mouse would falsely

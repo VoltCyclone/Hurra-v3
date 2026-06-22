@@ -44,3 +44,21 @@ void kmbox_cmd_schedule_kb_release(uint8_t key, uint32_t delay_ms)
 	b[3]=(uint8_t)(delay_ms>>16); b[4]=(uint8_t)(delay_ms>>24);
 	inject_link_push(ICC_TAG_KB_RELEASE, b);
 }
+
+// ── Link-stats / baud stubs (host role) ──────────────────────────────────────
+// On Board B the command transport is the CDC virtual COM port, not USART1, so
+// uart.c (the V3F driver) is NOT linked into the host V5F image. The protocol
+// parser (hurra.c/ferrum.c, now linked here for Board B) still references the
+// kmbox link-stats/baud shim (kmbox_cmd_set_baud + uart_current_baud / _tx_room /
+// _overrun). Provide minimal stubs so the parser links and its STATS/telemetry
+// replies stay sane over CDC:
+//   - set_baud: no-op (the CDC line rate is virtual; baud is meaningless).
+//   - current_baud: report the build-time CMD_BAUD so a STATS reply isn't zero.
+//   - tx_room: a generous constant so TinyFrame telemetry (routed to the CDC TX
+//     ring via proto_set_tx) is never gated off by a false "ring full"; the CDC
+//     driver applies real backpressure in cdc_fs_tx_write.
+//   - overrun: 0 (no UART RX path on this transport).
+void     kmbox_cmd_set_baud(uint32_t baud) { (void)baud; }
+uint32_t uart_current_baud(void) { return (uint32_t)CMD_BAUD; }
+uint16_t uart_tx_room(void) { return 256; }
+uint32_t uart_overrun(void) { return 0; }
