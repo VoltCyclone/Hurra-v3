@@ -18,6 +18,7 @@
 // behavior.
 
 #include "usb_merge.h"
+#include "hid_layout.h"   // mouse_layout_t, hid_layout_parse_mouse/read_field
 #include "humanize.h"
 #include "actions.h"      // g_phys_mask, act_phys_* helpers, PHYS_MASK_*
 #include "icc.h"
@@ -65,29 +66,7 @@ static merge_inject_t inject;
 static uint8_t  cached_mouse_ep;
 static uint16_t cached_mouse_maxpkt;
 static uint8_t  cached_kb_ep;
-static struct {
-	uint16_t x_bit;
-	uint16_t y_bit;
-	uint16_t wheel_bit;     // 0xFFFF = none
-	uint8_t  x_size;
-	uint8_t  y_size;
-	uint8_t  wheel_size;
-	uint8_t  report_id;
-	uint8_t  y_report_id;
-	uint8_t  wheel_report_id;
-	uint8_t  data_off;
-	bool     valid;
-	int16_t  x_max;
-	int16_t  y_max;
-	int16_t  w_max;
-	bool     fast_path;
-	uint8_t  x_byte;
-	uint8_t  y_byte;
-	uint8_t  w_byte;        // 0xFF = none
-	bool     x_is16;
-	bool     y_is16;
-	bool     w_is16;
-} mouse_layout;
+static mouse_layout_t mouse_layout;
 static uint8_t cached_mouse_report_len; // length captured from the first real report
 
 void usb_merge_init(void)
@@ -101,164 +80,9 @@ void usb_merge_init(void)
 	cached_mouse_report_len = 0;
 }
 
-// ── HID report-descriptor parser ─────────────────────────────────────────────
-static void parse_mouse_layout(const uint8_t *rd, uint16_t rdlen)
-{
-	memset(&mouse_layout, 0, sizeof(mouse_layout));
-	mouse_layout.wheel_bit = 0xFFFF;
-
-	uint16_t usage_page = 0;
-	uint8_t  usages[16];
-	uint8_t  num_usages = 0;
-	uint16_t usage_min = 0, usage_max = 0;
-	uint8_t  report_size = 0;
-	uint8_t  report_count = 0;
-	uint8_t  current_rid = 0;
-	uint16_t bit_pos = 0;
-
-	uint16_t i = 0;
-	while (i < rdlen) {
-		uint8_t b = rd[i];
-		if (b == 0xFE) { // long item — skip
-			if (i + 2 < rdlen) i += 3 + rd[i + 1];
-			else break;
-			continue;
-		}
-
-		uint8_t sz = b & 0x03;
-		if (sz == 3) sz = 4;
-		if (i + 1 + sz > rdlen) break;
-
-		// Read unsigned data
-		uint32_t val = 0;
-		if (sz >= 1) val = rd[i + 1];
-		if (sz >= 2) val |= (uint32_t)rd[i + 2] << 8;
-		if (sz >= 4) val |= (uint32_t)rd[i + 3] << 16 | (uint32_t)rd[i + 4] << 24;
-
-		switch (b & 0xFC) {
-		case 0x04: usage_page = (uint16_t)val; break;   // Usage Page
-		case 0x74: report_size = (uint8_t)val; break;    // Report Size
-		case 0x94: report_count = (uint8_t)val; break;   // Report Count
-		case 0x84:                                        // Report ID
-			current_rid = (uint8_t)val;
-			bit_pos = 0;
-			break;
-
-		case 0x08: // Usage
-			if (num_usages < 16) usages[num_usages++] = (uint8_t)val;
-			break;
-		case 0x18: usage_min = (uint16_t)val; break;     // Usage Minimum
-		case 0x28: usage_max = (uint16_t)val; break;     // Usage Maximum
-
-		case 0x80: { // Input
-			if (num_usages == 0 && usage_max >= usage_min) {
-				for (uint16_t u = usage_min; u <= usage_max && num_usages < 16; u++)
-					usages[num_usages++] = (uint8_t)u;
-			}
-
-			for (uint8_t f = 0; f < report_count; f++) {
-				uint8_t u = (f < num_usages) ? usages[f] :
-				            (num_usages > 0 ? usages[num_usages - 1] : 0);
-
-				if (usage_page == 0x01) { // Generic Desktop
-					if (u == 0x30) { // X
-						mouse_layout.x_bit = bit_pos;
-						mouse_layout.x_size = report_size;
-						mouse_layout.report_id = current_rid;
-					} else if (u == 0x31) { // Y
-						mouse_layout.y_bit = bit_pos;
-						mouse_layout.y_size = report_size;
-						mouse_layout.y_report_id = current_rid;
-					} else if (u == 0x38) { // Wheel
-						mouse_layout.wheel_bit = bit_pos;
-						mouse_layout.wheel_size = report_size;
-						mouse_layout.wheel_report_id = current_rid;
-					}
-				}
-				bit_pos += report_size;
-			}
-			// Clear local state after Main item
-			num_usages = 0;
-			usage_min = 0;
-			usage_max = 0;
-			break;
-		}
-		case 0xA0: // Collection
-			num_usages = 0;
-			usage_min = 0;
-			usage_max = 0;
-			break;
-		case 0xC0: // End Collection
-			num_usages = 0;
-			break;
-		}
-
-		i += 1 + sz;
-	}
-
-	mouse_layout.data_off = mouse_layout.report_id ? 1 : 0;
-	mouse_layout.valid = (mouse_layout.x_size > 0 && mouse_layout.y_size > 0);
-	mouse_layout.x_max = mouse_layout.x_size > 0 ? (int16_t)((1 << (mouse_layout.x_size - 1)) - 1) : 0;
-	mouse_layout.y_max = mouse_layout.y_size > 0 ? (int16_t)((1 << (mouse_layout.y_size - 1)) - 1) : 0;
-	mouse_layout.w_max = mouse_layout.wheel_size > 0 ? (int16_t)((1 << (mouse_layout.wheel_size - 1)) - 1) : 0;
-
-	mouse_layout.fast_path = false;
-	mouse_layout.w_byte = 0xFF;
-
-	if (mouse_layout.valid &&
-	    (mouse_layout.x_bit & 7) == 0 &&
-	    (mouse_layout.y_bit & 7) == 0 &&
-	    (mouse_layout.x_size == 8 || mouse_layout.x_size == 16) &&
-	    (mouse_layout.y_size == 8 || mouse_layout.y_size == 16) &&
-	    mouse_layout.report_id == mouse_layout.y_report_id) {
-
-		mouse_layout.x_byte = (uint8_t)(mouse_layout.x_bit / 8) + mouse_layout.data_off;
-		mouse_layout.y_byte = (uint8_t)(mouse_layout.y_bit / 8) + mouse_layout.data_off;
-		mouse_layout.x_is16 = (mouse_layout.x_size == 16);
-		mouse_layout.y_is16 = (mouse_layout.y_size == 16);
-
-		if (mouse_layout.wheel_bit != 0xFFFF &&
-		    (mouse_layout.wheel_bit & 7) == 0 &&
-		    (mouse_layout.wheel_size == 8 || mouse_layout.wheel_size == 16) &&
-		    mouse_layout.wheel_report_id == mouse_layout.report_id) {
-			mouse_layout.w_byte = (uint8_t)(mouse_layout.wheel_bit / 8) + mouse_layout.data_off;
-			mouse_layout.w_is16 = (mouse_layout.wheel_size == 16);
-		}
-		mouse_layout.fast_path = true;
-	}
-}
-
-// ── Bit-field helpers ─────────────────────────────────────────────────────────
-static int32_t read_report_field(const uint8_t *buf, uint8_t buf_len,
-                                 uint16_t bit_off,
-                                 uint8_t bit_size, uint8_t data_off)
-{
-	uint16_t abs_bit = bit_off + (uint16_t)data_off * 8;
-	uint16_t byte_idx = abs_bit >> 3;
-	uint8_t  bit_idx = abs_bit & 7;
-
-	if (__builtin_expect(bit_idx == 0, 1)) {
-		if (bit_size == 16) {
-			if (byte_idx + 2 > buf_len) return 0;
-			return (int16_t)(buf[byte_idx] | ((uint16_t)buf[byte_idx + 1] << 8));
-		}
-		if (bit_size == 8) {
-			if (byte_idx + 1 > buf_len) return 0;
-			return (int8_t)buf[byte_idx];
-		}
-	}
-
-	uint32_t raw = 0;
-	uint8_t bytes_needed = (bit_idx + bit_size + 7) >> 3;
-	if (byte_idx + bytes_needed > buf_len) return 0;
-	for (uint8_t b = 0; b < bytes_needed; b++)
-		raw |= (uint32_t)buf[byte_idx + b] << (b * 8);
-	raw = (raw >> bit_idx) & ((1u << bit_size) - 1);
-	if (raw & (1u << (bit_size - 1)))
-		raw |= ~((1u << bit_size) - 1); // sign extend
-	return (int32_t)raw;
-}
-
+// Bit-field write helper. The read side and the descriptor parser were factored
+// out to hid_layout.c (hid_layout_read_field / hid_layout_parse_mouse) so the
+// host-side catch_xy feed shares them; the write side stays here (merge-only).
 static void write_report_field(uint8_t *buf, uint16_t buf_len, uint16_t bit_off,
                                uint8_t bit_size, uint8_t data_off, int32_t value)
 {
@@ -305,7 +129,8 @@ void usb_merge_cache_endpoints(const captured_descriptors_t *desc)
 		if (desc->ifaces[i].iface_protocol == 2 && !cached_mouse_ep) {
 			cached_mouse_ep = ep;
 			cached_mouse_maxpkt = desc->ifaces[i].interrupt_in_maxpkt;
-			parse_mouse_layout(desc->ifaces[i].hid_report_desc,
+			hid_layout_parse_mouse(&mouse_layout,
+			                   desc->ifaces[i].hid_report_desc,
 			                   desc->ifaces[i].hid_report_desc_len);
 		} else if (desc->ifaces[i].iface_protocol == 1 && !cached_kb_ep) {
 			cached_kb_ep = ep;
@@ -504,7 +329,7 @@ static void usb_merge_report_slow(uint8_t *report, uint8_t len,
 		report[doff] |= inject.mouse_buttons;
 		proto_notify_buttons(report[doff]);
 
-		int32_t rx = read_report_field(report, len, mouse_layout.x_bit,
+		int32_t rx = hid_layout_read_field(report, len, mouse_layout.x_bit,
 		                               mouse_layout.x_size, doff);
 		int32_t mx = rx + inj_dx;
 		if (mx > mouse_layout.x_max) mx = mouse_layout.x_max;
@@ -514,7 +339,7 @@ static void usb_merge_report_slow(uint8_t *report, uint8_t len,
 		done_dx = mx - rx;
 
 		if (rid == mouse_layout.y_report_id) {
-			int32_t ry = read_report_field(report, len, mouse_layout.y_bit,
+			int32_t ry = hid_layout_read_field(report, len, mouse_layout.y_bit,
 			                               mouse_layout.y_size, doff);
 			int32_t my = ry + inj_dy;
 			if (my > mouse_layout.y_max) my = mouse_layout.y_max;
@@ -527,7 +352,7 @@ static void usb_merge_report_slow(uint8_t *report, uint8_t len,
 
 	if (mouse_layout.wheel_bit != 0xFFFF && inject.mouse_wheel != 0 &&
 	    rid == mouse_layout.wheel_report_id) {
-		int32_t rw = read_report_field(report, len, mouse_layout.wheel_bit,
+		int32_t rw = hid_layout_read_field(report, len, mouse_layout.wheel_bit,
 		                               mouse_layout.wheel_size, doff);
 		int32_t ww = rw + inject.mouse_wheel;
 		int32_t mw = ww;
@@ -594,13 +419,13 @@ static void usb_merge_phys_mouse(uint8_t *report, uint8_t len)
 	uint8_t phys_btn = xy_here ? report[doff] : 0;
 	int32_t phys_x = 0, phys_y = 0, phys_w = 0;
 	if (xy_here) {
-		phys_x = read_report_field(report, len, mouse_layout.x_bit,
+		phys_x = hid_layout_read_field(report, len, mouse_layout.x_bit,
 		                           mouse_layout.x_size, doff);
-		phys_y = read_report_field(report, len, mouse_layout.y_bit,
+		phys_y = hid_layout_read_field(report, len, mouse_layout.y_bit,
 		                           mouse_layout.y_size, doff);
 	}
 	if (wheel_here)
-		phys_w = read_report_field(report, len, mouse_layout.wheel_bit,
+		phys_w = hid_layout_read_field(report, len, mouse_layout.wheel_bit,
 		                           mouse_layout.wheel_size, doff);
 
 	// Telemetry: the physical input, before masking.

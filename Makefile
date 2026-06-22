@@ -137,7 +137,7 @@ v3f: build
 # src/kmbox_cmd_v5f_stub.c provides the otherwise-undefined kmbox_cmd_* sinks.
 V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c \
           src/usb_device.c src/usb_device_hs.c src/usb_device_fs.c \
-          src/usb_merge.c src/desc_capture.c src/actions.c src/humanize.c \
+          src/usb_merge.c src/hid_layout.c src/desc_capture.c src/actions.c src/humanize.c \
           src/kmbox_cmd_v5f_stub.c src/led.c src/spi_link.c src/spi_frame.c \
           src/spi_frame_stream.c \
           src/usb_hs_desc.c src/synth_mouse.c src/desc_xfer.c src/desc_serialize.c src/two_board.c \
@@ -371,9 +371,9 @@ test:
 	/tmp/desc_serialize_test
 	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_stream_test test/spi_frame_stream_test.c src/spi_frame_stream.c src/spi_frame.c
 	/tmp/spi_frame_stream_test
-	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c
+	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c src/hid_layout.c
 	/tmp/usb_merge_test
-	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/inject_apply_test test/inject_apply_test.c src/usb_merge.c
+	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/inject_apply_test test/inject_apply_test.c src/usb_merge.c src/hid_layout.c
 	/tmp/inject_apply_test
 	cc -std=c11 -O2 -Wall -Isrc -o /tmp/inject_link_test test/inject_link_test.c src/inject_link.c src/spi_frame.c
 	/tmp/inject_link_test
