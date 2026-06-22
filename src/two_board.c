@@ -18,6 +18,9 @@
 #include "usb_merge.h"
 #include "timebase_v5f.h"
 #include "ws2812.h"
+#if defined(TWO_BOARD_HOST_CDC_ECHO)
+#include "usb_cdc_fs.h"
+#endif
 #include <string.h>
 
 volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
@@ -125,6 +128,29 @@ void two_board_host_run(void)
 {
     dbg_stage(DBG_V5F_RELAY);   // 0x58: host-role loop reached
 
+#if defined(TWO_BOARD_HOST_CDC_ECHO)
+    /* ---- Isolation bring-up: CDC-ACM echo, no SPI/relay, no USBHS host. ----
+     * Brings up the CDC virtual COM port on the USBFS controller (PA11/PA12) and
+     * echoes every received byte straight back. Lets the human flash Board B and
+     * confirm enumeration + echo in isolation before integrating the command
+     * channel. main_v5f.c leaves SWJ alive in this build (USBFS uses PA11/PA12,
+     * not the PB8/9 SWJ pins), so the board stays debuggable. */
+    cdc_fs_init();
+    ws2812_init();
+    uint32_t echo_blink = millis();
+    for (;;) {
+        cdc_fs_poll();
+        uint8_t buf[64];
+        uint16_t n = cdc_fs_rx_read(buf, sizeof buf);
+        if (n) {
+            cdc_fs_tx_write(buf, n);
+            ws2812_note_report(millis());
+        }
+        uint32_t now = millis();
+        if ((now - echo_blink) >= 250u) { echo_blink = now; led_toggle(); }
+        ws2812_service(now, cdc_fs_is_configured());
+    }
+#else
     spi_link_master_init();
 
     static captured_descriptors_t desc;   // static: large
@@ -330,6 +356,7 @@ void two_board_host_run(void)
         ws2812_service(now, spi_link_master_drdy());
     }
 #endif // TWO_BOARD_HOST_SYNTH
+#endif // TWO_BOARD_HOST_CDC_ECHO
 }
 
 /* ======================================================================== */

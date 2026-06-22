@@ -146,11 +146,22 @@ V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c \
           core/system_ch32h417.c $(LIBSRC)
 # Board B (host role) parses commands on V5F: link the protocol parser, the
 # inject FIFO, and the FIFO-backed inject sinks (kmbox_cmd_host.c) in place of the
-# no-op kmbox_cmd_v5f_stub.c. usb_device_fs.c stays for now (its USBFS_IRQHandler
-# is replaced by usb_cdc_fs.c in Task 4); Board B never clones to a PC.
+# no-op kmbox_cmd_v5f_stub.c. Board B never clones a captured device to a PC.
+#
+# USBFS_IRQHandler ownership: drop src/usb_device_fs.c (the HID-clone USBFS driver)
+# so its USBFS_IRQHandler is gone, and add src/usb_cdc_fs.c, which becomes the SOLE
+# USBFS_IRQHandler in the host image (a CDC-ACM virtual COM port on the otherwise
+# idle USBFS controller). We KEEP src/usb_device.c (the speed dispatcher) and
+# src/usb_device_hs.c (which owns USBHS_IRQHandler, a different vector — no
+# conflict): main_v5f.c's single-board relay path and usb_merge.c reference the
+# usb_device_* API and would fail to link without the dispatcher. On the host image
+# those clone paths are dead code (two_board_host_run() never returns), so the
+# usbfsd_* sinks the dispatcher's FS branch needs are provided as no-op stubs in
+# usb_cdc_fs.c. (Dropping the whole usb_device*.c trio, as first scoped, breaks the
+# link on main_v5f.c / usb_merge.c usb_device_* references — verified at build.)
 ifeq ($(BOARD),host)
-  V5F_SRC := $(filter-out src/kmbox_cmd_v5f_stub.c,$(V5F_SRC)) \
-             src/inject_link.c src/kmbox_cmd_host.c $(PROTO_SRC)
+  V5F_SRC := $(filter-out src/kmbox_cmd_v5f_stub.c src/usb_device_fs.c,$(V5F_SRC)) \
+             src/inject_link.c src/kmbox_cmd_host.c src/usb_cdc_fs.c $(PROTO_SRC)
 else
   V5F_SRC += src/inject_link.c
 endif

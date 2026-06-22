@@ -205,9 +205,10 @@ int main(void)
 #if defined(BOARD_ROLE_HOST)
 	// Board B = SPI master. Captures the real device on its USBHS host port (PB8/9),
 	// which needs SWJ released like the device path — unless built with
-	// TWO_BOARD_HOST_SYNTH (synthetic source, no USB host), where SWD stays alive.
-	// Never returns. See two_board.c.
-#  if !defined(TWO_BOARD_HOST_SYNTH)
+	// TWO_BOARD_HOST_SYNTH (synthetic source, no USB host) or TWO_BOARD_HOST_CDC_ECHO
+	// (CDC-ACM isolation echo on USBFS PA11/PA12, no USBHS host), where the PB8/9 SWJ
+	// pins are unused so SWD stays alive for bring-up. Never returns. See two_board.c.
+#  if !defined(TWO_BOARD_HOST_SYNTH) && !defined(TWO_BOARD_HOST_CDC_ECHO)
 	dbg_stage(DBG_V5F_PRE_AFIO);    // 0x66: about to enable AFIO|GPIOB
 	RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOB, ENABLE);
 	dbg_stage(DBG_V5F_PRE_SWJ);     // 0x67: AFIO|GPIOB on; about to disable SWJ
