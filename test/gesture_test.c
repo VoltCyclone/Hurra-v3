@@ -208,8 +208,8 @@ int main(void) {
                 gesture_library_admit(&sh);
         }
         CHECK(gesture_library_count() == 3, "admitted 3 shapes");
-        CHECK(gesture_warmth() == GST_WARMING || gesture_warmth() == GST_WARM,
-              "3 shapes across buckets is at least WARMING");
+        CHECK(gesture_warmth() == GST_COLD,
+              "3 shapes below WARM_MIN threshold stays COLD");
 
         /* selection picks nearest raw_len */
         const gst_shape_t *sel = gesture_library_select(210.0f);
@@ -225,6 +225,20 @@ int main(void) {
             if (gesture_build_shape(mv, 20, &sh)) gesture_library_admit(&sh);
         }
         CHECK(gesture_library_count() <= GST_LIB_SHAPES, "library count never exceeds cap");
+    }
+
+    /* Regression: 1..GST_WARM_MIN-1 shapes must stay COLD (warmth gate). */
+    gesture_init(1000);
+    {
+        gst_sample_t mv[20];
+        for (int j = 0; j < 20; j++) { mv[j].dx = 2; mv[j].dy = 0; mv[j].t_us = (uint32_t)(j*1000); }
+        gst_shape_t sh;
+        int admitted = 0;
+        for (int i = 0; i < GST_WARM_MIN - 1 && admitted < GST_WARM_MIN - 1; i++) {
+            if (gesture_build_shape(mv, 20, &sh)) { gesture_library_admit(&sh); admitted++; }
+        }
+        CHECK(admitted == GST_WARM_MIN - 1, "admitted WARM_MIN-1 shapes");
+        CHECK(gesture_warmth() == GST_COLD, "below WARM_MIN stays COLD");
     }
 
     /* ── resource bound: total engine state stays bounded ── */
