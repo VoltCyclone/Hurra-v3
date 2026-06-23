@@ -50,6 +50,7 @@ static struct {
     uint16_t   work_n;                    /* knots in the working copy */
     uint16_t   work_cursor;               /* next knot index to emit   */
     float      emit_px, emit_py;          /* last emitted absolute pos */
+    uint32_t   pace_budget_us;             /* silent-path pacing time budget */
     /* ── repetition guard ── */
     uint32_t dup_ring[8];                 /* GST_DUP_WINDOW recent tuple hashes */
     uint8_t  dup_head;
@@ -247,6 +248,13 @@ static uint32_t time_at_fraction(const gst_point_t *pts, uint16_t n, float f) {
     float u = (span > 1e-9f) ? (f - pts[i].f) / span : 0.0f;
     float t = (float)pts[i].t_us + u * (float)(pts[i+1].t_us - pts[i].t_us);
     return (uint32_t)(t + 0.5f);
+}
+
+/* Real replay interval for a step, from its dt_q (.8 fixed of nominal).
+ * interval_us = dt_q * nominal_us / 256. Max 65535*~10000>>8 fits uint32. */
+static uint32_t dtq_to_us(uint16_t dt_q) {
+    uint32_t nominal = G.nominal_us ? G.nominal_us : 1000u;
+    return (uint32_t)(((uint64_t)dt_q * (uint64_t)nominal) >> 8);
 }
 
 static uint16_t us_to_dtq(uint32_t us, uint32_t nominal) {
@@ -558,6 +566,7 @@ uint32_t gesture_synth_fallback_count(void) { return G.synth_fallback_count; }
 uint32_t gesture_bucket_miss(void)          { return G.bucket_miss; }
 
 void gesture_motion_begin(int32_t tx, int32_t ty, motion_mode_t mode) {
+    G.pace_budget_us = 0;
     float R = sqrtf((float)tx * (float)tx + (float)ty * (float)ty);
     gst_warmth_t w = gesture_warmth();
     gst_sel_t    sel = gesture_select_source(mode, R);
@@ -591,4 +600,19 @@ bool gesture_motion_next(float *out_dx, float *out_dy, uint16_t *out_dt_q) {
 
 bool gesture_motion_done(void) {
     return G.src_kind == GST_SRC_NONE || G.work_cursor >= G.work_n;
+}
+
+void gesture_motion_pace_advance(uint32_t elapsed_us) {
+    uint64_t b = (uint64_t)G.pace_budget_us + (uint64_t)elapsed_us;
+    if (b > 2000000u) b = 2000000u;        /* bound catch-up after a long stall */
+    G.pace_budget_us = (uint32_t)b;
+}
+
+GST_FASTRUN
+bool gesture_motion_pace_take(float *out_dx, float *out_dy, uint16_t *out_dt_q) {
+    if (gesture_motion_done()) return false;        /* no source or exhausted */
+    uint32_t need = dtq_to_us(G.work[G.work_cursor].dt_q);  /* next step's interval */
+    if (need > G.pace_budget_us) return false;      /* not due yet */
+    G.pace_budget_us -= need;
+    return gesture_motion_next(out_dx, out_dy, out_dt_q);   /* emit exactly one step */
 }

@@ -501,6 +501,45 @@ int main(void) {
         CHECK(!(a == b && b == c), "cadence retains jitter (not constant)");
     }
 
+    /* ── Plan 3 Task 2: silent-path pacing accumulator ── */
+    {
+        gesture_init(1000);                 /* nominal 1000us */
+        warm_library_all_buckets();
+        gesture_motion_begin(200, 0, MOTION_MODE_SILENT);
+        CHECK(!gesture_motion_done(), "Task2: gesture active");
+
+        /* Sub-interval pumps must NOT release a step until enough time accrues. */
+        float dx, dy; uint16_t dtq;
+        gesture_motion_pace_advance(10);    /* 10us << one step (~hundreds of us) */
+        CHECK(!gesture_motion_pace_take(&dx, &dy, &dtq), "Task2: no step before its interval");
+
+        /* Pump a large slice and drain; total emitted must reach the target and
+         * the number of released steps must equal the shape's step count. */
+        float sx = 0, sy = 0; int steps = 0;
+        for (int tick = 0; tick < 2000 && !gesture_motion_done(); tick++) {
+            gesture_motion_pace_advance(1000);          /* 1ms per pump */
+            while (gesture_motion_pace_take(&dx, &dy, &dtq)) { sx += dx; sy += dy; steps++; }
+        }
+        CHECK(steps == GST_KNOTS_MAX - 1, "Task2: paced emission releases every step");
+        CHECK(fabsf(sx - 200.0f) < 1e-2f && fabsf(sy) < 1e-2f, "Task2: paced endpoint exact");
+        CHECK(gesture_motion_done(), "Task2: done after paced drain");
+
+        /* Catch-up: one huge pump after begin drains the whole gesture at once. */
+        gesture_init(1000); warm_library_all_buckets();
+        gesture_motion_begin(200, 0, MOTION_MODE_SILENT);
+        gesture_motion_pace_advance(2000000);           /* 2s: far exceeds total */
+        int caught = 0; float cx = 0;
+        while (gesture_motion_pace_take(&dx, &dy, &dtq)) { cx += dx; caught++; }
+        CHECK(caught == GST_KNOTS_MAX - 1, "Task2: starvation catch-up drains backlog");
+        CHECK(fabsf(cx - 200.0f) < 1e-2f, "Task2: catch-up still conserves endpoint");
+
+        /* next() (ride-along) is unchanged: a fresh begin still streams via next(). */
+        gesture_init(1000); warm_library_all_buckets();
+        gesture_motion_begin(200, 0, MOTION_MODE_SILENT);
+        int n2 = 0; while (gesture_motion_next(&dx, &dy, &dtq)) n2++;
+        CHECK(n2 == GST_KNOTS_MAX - 1, "Task2: ride-along next() still emits n-1 steps");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
