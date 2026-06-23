@@ -379,7 +379,12 @@ static const gst_shape_t *library_morph_partner(const gst_shape_t *primary,
 }
 
 /* Force work[n-1] to exactly (tx,ty); fold half the correction into the
- * penultimate knot so the final step is a small corrective submovement. */
+ * penultimate knot so the final step is a small corrective submovement.
+ * Precondition: G.work_n >= 1 (in practice always GST_KNOTS_MAX, since every
+ * source fills a full 48-knot working copy). Callers must not invoke this with
+ * G.work_n == 0 — `last` would underflow. Both current callers (replay_begin,
+ * synth_begin) guarantee work_n > 0 before calling; a future caller (Plan 3/4)
+ * reusing this helper must uphold the same. */
 static void endpoint_true(int32_t tx, int32_t ty) {
     uint16_t last = (uint16_t)(G.work_n - 1u);
     float ex = (float)tx - G.work[last].ux;
