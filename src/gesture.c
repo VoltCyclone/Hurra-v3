@@ -55,6 +55,8 @@ static struct {
     uint8_t  dup_head;
     uint8_t  dup_n;   /* populated ring slots, saturates at GST_DUP_WINDOW */
     uint32_t dup_rejected;                /* diagnostic */
+    /* ── source diagnostics ── */
+    uint32_t replay_count, synth_fallback_count, bucket_miss;
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -521,10 +523,33 @@ static bool synth_begin(int32_t tx, int32_t ty) {
     return true;
 }
 
+gst_sel_t gesture_select_source(motion_mode_t mode, float target_len) {
+    (void)mode;
+    if (gesture_warmth() == GST_COLD) return GST_SEL_SYNTH;
+    uint8_t want = gesture_length_bucket(target_len);
+    for (uint8_t i = 0; i < G.lib_n; i++)
+        if (G.lib_bucket[i] == want) return GST_SEL_REPLAY;
+    return GST_SEL_SYNTH;                  /* warm, but no same-bucket shape */
+}
+
+uint32_t gesture_replay_count(void)         { return G.replay_count; }
+uint32_t gesture_synth_fallback_count(void) { return G.synth_fallback_count; }
+uint32_t gesture_bucket_miss(void)          { return G.bucket_miss; }
+
 void gesture_motion_begin(int32_t tx, int32_t ty, motion_mode_t mode) {
-    (void)mode;                           /* selector arrives in Task 6 */
-    if (replay_begin(tx, ty)) { G.src_kind = GST_SRC_REPLAY; return; }
-    if (synth_begin(tx, ty))  { G.src_kind = GST_SRC_SYNTH;  return; }
+    float R = sqrtf((float)tx * (float)tx + (float)ty * (float)ty);
+    gst_warmth_t w = gesture_warmth();
+    gst_sel_t    sel = gesture_select_source(mode, R);
+
+    /* Warm library but no same-bucket shape → record the miss (selector returned synth). */
+    if (sel == GST_SEL_SYNTH && w != GST_COLD) G.bucket_miss++;
+
+    if (sel == GST_SEL_REPLAY && replay_begin(tx, ty)) {
+        G.src_kind = GST_SRC_REPLAY; G.replay_count++; return;
+    }
+    if (synth_begin(tx, ty)) {
+        G.src_kind = GST_SRC_SYNTH; G.synth_fallback_count++; return;
+    }
     G.src_kind = GST_SRC_NONE;
     G.work_n = 0; G.work_cursor = 0;
 }
