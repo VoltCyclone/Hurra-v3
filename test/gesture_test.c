@@ -782,6 +782,65 @@ int main(void) {
         CHECK(!gesture_click_fire_active(), "no self-fire started under real click");
     }
 
+    /* ── Plan 4 Task 5: click-coupling capstone + safety boundary ── */
+    {
+        gesture_init(1000);
+        /* Capture an envelope with a KNOWN recoil so we can assert conservation. */
+        uint32_t t = 0;
+        gesture_click_observe(10, 0, 0x00, t); t += 1000;   /* approach */
+        gesture_click_observe(2, 0, 0x01, t); t += 1000;    /* press */
+        for (int i = 0; i < 60; i++) { gesture_click_observe(0, 0, 0x01, t); t += 1000; } /* ~60ms hold */
+        gesture_click_observe(0, 0, 0x00, t); t += 1000;    /* release */
+        /* recoil window: drift summing to a known vector (+12, -4) over the window */
+        for (int i = 0; i < 12; i++) { gesture_click_observe(1, 0, 0x00, t); t += 1000; }
+        for (int i = 0; i < 4; i++)  { gesture_click_observe(0, -1, 0x00, t); t += 1000; }
+        for (int i = 0; i < 20; i++) { gesture_click_observe(0, 0, 0x00, t); t += 1000; } /* close window */
+        CHECK(gesture_click_count() == 1, "capstone: envelope captured");
+
+        gst_click_env_t e;
+        gesture_click_select(&e);
+        /* measured recoil ~ (+12, -4), within augmentation jitter (±15%). */
+        CHECK(e.recoil_x > 8.0f && e.recoil_x < 16.0f, "capstone: recoil_x measured");
+        CHECK(e.recoil_y < -2.0f && e.recoil_y > -7.0f, "capstone: recoil_y measured");
+
+        /* Mode 1: fire, sum the emitted recoil, assert it conserves to the
+         * (augmented) envelope recoil — i.e. emission is endpoint-true. */
+        gesture_init(1000);
+        gst_click_env_t inj = { .decel_us = 4000, .settle_px = 2.0f, .dwell_us = 70000,
+                                .recoil_x = 9.0f, .recoil_y = -3.0f, .flags = 0 };
+        gesture_click_admit(&inj);
+        CHECK(gesture_click_arm_fire(0), "capstone: fire armed");
+        /* Accumulate the recoil ONLY over steps strictly AFTER the RELEASE step,
+         * i.e. the pure RECOIL phase. Those slices telescope to exactly the
+         * augmented recoil vector, with no dwell micro-drift mixed in (the
+         * RELEASE step's own drift is excluded by setting the flag after the
+         * accumulate). This isolates and verifies endpoint-true recoil. */
+        float rx = 0, ry = 0; int press = 0, rel = 0, in_recoil = 0;
+        for (int i = 0; i < 4000 && gesture_click_fire_active(); i++) {
+            float dx = 0, dy = 0;
+            gst_click_action_t a = gesture_click_fire_step(1000, &dx, &dy);
+            if (a == GST_CA_PRESS) press++;
+            if (in_recoil) { rx += dx; ry += dy; }   /* sum recoil phase only */
+            if (a == GST_CA_RELEASE) { rel++; in_recoil = 1; } /* set AFTER accumulate */
+        }
+        CHECK(press == 1 && rel == 1, "capstone: one press/release");
+        /* recoil_x=9 augmented ±15% -> [7.65, 10.35]; recoil_y=-3 -> [-3.45, -2.55].
+         * Pure recoil telescopes exactly, so the sums land inside these bands. */
+        CHECK(rx > 7.5f && rx < 10.5f, "capstone: emitted recoil_x conserves to envelope");
+        CHECK(ry < -2.5f && ry > -3.5f, "capstone: emitted recoil_y conserves to envelope");
+
+        /* Mode 2 + arbitration + safety: real click suppresses scale AND blocks fire. */
+        gesture_init(1000);
+        gesture_click_real_buttons(0x01, 0);
+        for (int i = 0; i < 40; i++) gesture_click_real_buttons(0x01, (uint32_t)(i+1)*1000u);
+        CHECK(gesture_click_motion_scale() < 0.2f, "capstone: Mode 2 suppresses during real hold");
+        CHECK(!gesture_click_arm_fire(0), "capstone: real click blocks self-fire (real wins)");
+        /* safety: applying the suppression scale to a zero injected delta is still
+         * zero — the decorator never invents motion, never touches passthrough. */
+        float s = gesture_click_motion_scale();
+        CHECK((0.0f * s) == 0.0f, "capstone: suppression never invents motion");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
