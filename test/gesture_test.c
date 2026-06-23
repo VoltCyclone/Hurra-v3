@@ -614,7 +614,7 @@ int main(void) {
         }
         CHECK(n == GST_KNOTS_MAX - 1, "Task5: all steps released");
         uint32_t imn = 0xffffffffu, imx = 0;
-        for (int k = 1; k < n; k++) { if (iv[k] < imn) imn = iv[k]; if (iv[k] > imx) imx = iv[k]; }
+        for (int k = 0; k < n; k++) { if (iv[k] < imn) imn = iv[k]; if (iv[k] > imx) imx = iv[k]; }
         CHECK(imx > imn + imn / 4u, "Task5: realized cadence varies (not flattened to uniform)");
 
         /* (3) Cross-rate: the SAME captured-at-1000 shape replayed at nominal
@@ -628,6 +628,7 @@ int main(void) {
             gesture_init(nominals[r]);
             for (int c = 0; c < GST_WARM_MIN; c++) gesture_library_admit(&sh);
             gesture_motion_begin((int32_t)sh.raw_len, 0, MOTION_MODE_SILENT);
+            CHECK(!gesture_motion_done(), "Task5: cross-rate run replay active");
             uint32_t dur = 0;
             for (int tick = 0; tick < 200000 && !gesture_motion_done(); tick++) {
                 gesture_motion_pace_advance(50); dur += 50;
