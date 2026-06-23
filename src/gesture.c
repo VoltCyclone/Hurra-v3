@@ -53,6 +53,7 @@ static struct {
     /* ── repetition guard ── */
     uint32_t dup_ring[8];                 /* GST_DUP_WINDOW recent tuple hashes */
     uint8_t  dup_head;
+    uint8_t  dup_n;   /* populated ring slots, saturates at GST_DUP_WINDOW */
     uint32_t dup_rejected;                /* diagnostic */
 } G;
 
@@ -401,12 +402,13 @@ static uint32_t replay_tuple_hash(uint8_t a_slot, uint8_t b_slot, float theta, f
     return h;
 }
 static bool dup_seen(uint32_t h) {
-    for (int i = 0; i < GST_DUP_WINDOW; i++) if (G.dup_ring[i] == h) return true;
+    for (uint8_t i = 0; i < G.dup_n; i++) if (G.dup_ring[i] == h) return true;
     return false;
 }
 static void dup_record(uint32_t h) {
     G.dup_ring[G.dup_head] = h;
     G.dup_head = (uint8_t)((G.dup_head + 1u) % GST_DUP_WINDOW);
+    if (G.dup_n < GST_DUP_WINDOW) G.dup_n++;
 }
 
 uint32_t gesture_dup_rejected(void) { return G.dup_rejected; }
