@@ -104,6 +104,22 @@ bool gesture_capture_get(uint16_t age, gst_sample_t *out) {
     return true;
 }
 
+uint16_t gesture_cadence_count(void) {
+    uint16_t cc = gesture_capture_count();
+    return (cc >= 2u) ? (uint16_t)(cc - 1u) : 0u;
+}
+
+bool gesture_cadence_get(uint16_t age, uint32_t *out_dt_us) {
+    if (age >= gesture_cadence_count()) return false;
+    gst_sample_t newer, older;
+    /* interval[age] spans capture samples (age) and (age+1); both valid since
+     * age+1 <= capture_count-1. t_us is monotonic over a single ring window. */
+    if (!gesture_capture_get(age, &newer))      return false;
+    if (!gesture_capture_get((uint16_t)(age + 1u), &older)) return false;
+    *out_dt_us = newer.t_us - older.t_us;       /* unsigned, single-wrap safe */
+    return true;
+}
+
 uint16_t gesture_reconstruct(const gst_sample_t *samples, uint16_t n,
                              gst_point_t *out, uint16_t out_cap) {
     if (n == 0 || out_cap == 0) return 0;

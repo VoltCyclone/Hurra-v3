@@ -477,6 +477,30 @@ int main(void) {
         CHECK(gesture_synth_fallback_count() >= 1, "Task6: bucket miss fell through to synth");
     }
 
+    /* ── Plan 3 Task 1: cadence view over the capture ring ── */
+    {
+        gesture_init(1000);
+        CHECK(gesture_cadence_count() == 0, "empty ring: no intervals");
+        uint32_t dt;
+        CHECK(!gesture_cadence_get(0, &dt), "empty ring: get fails");
+
+        /* Push samples with deliberately jittered timestamps: gaps 1000, 1500, 800. */
+        gesture_capture_push(1, 0, 1000);
+        gesture_capture_push(1, 0, 2000);   /* +1000 */
+        gesture_capture_push(1, 0, 3500);   /* +1500 */
+        gesture_capture_push(1, 0, 4300);   /* +800  */
+        CHECK(gesture_cadence_count() == 3, "4 samples -> 3 intervals");
+        CHECK(gesture_cadence_get(0, &dt) && dt == 800u,  "age 0 = newest interval (800)");
+        CHECK(gesture_cadence_get(1, &dt) && dt == 1500u, "age 1 = 1500");
+        CHECK(gesture_cadence_get(2, &dt) && dt == 1000u, "age 2 = oldest interval (1000)");
+        CHECK(!gesture_cadence_get(3, &dt), "age past count fails");
+
+        /* Variance is retained, not flattened (the whole point). */
+        uint32_t a, b, c;
+        gesture_cadence_get(0, &a); gesture_cadence_get(1, &b); gesture_cadence_get(2, &c);
+        CHECK(!(a == b && b == c), "cadence retains jitter (not constant)");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

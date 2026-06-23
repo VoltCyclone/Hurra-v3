@@ -120,3 +120,11 @@ gst_sel_t gesture_select_source(motion_mode_t mode, float target_len);
 uint32_t  gesture_replay_count(void);
 uint32_t  gesture_synth_fallback_count(void);
 uint32_t  gesture_bucket_miss(void);
+
+/* ── cadence view (real device report-rate jitter) ─────────────────────
+ * Derived from the capture ring's t_us timestamps — no new clock, no new
+ * storage, and humanize's EWMA/PIT path is untouched. Unlike that EWMA, raw
+ * intervals are NOT outlier-rejected: the variance and coalescing are the
+ * human/hardware signal the silent-path cadence reproduces. */
+uint16_t gesture_cadence_count(void);                       /* 0 if < 2 samples */
+bool     gesture_cadence_get(uint16_t age, uint32_t *out_dt_us); /* age 0 = newest */
