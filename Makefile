@@ -387,6 +387,8 @@ test:
 	/tmp/display_rowpick_test
 	cc -std=c11 -O2 -Wall -DWS2812_HOSTTEST -Isrc -o /tmp/ws2812_test test/ws2812_test.c src/ws2812.c
 	/tmp/ws2812_test
+	cc -std=c11 -O2 -DGESTURE_HOSTTEST -Isrc -o /tmp/gesture_test test/gesture_test.c src/gesture.c -lm
+	/tmp/gesture_test
 	python3 -m unittest test.flash_py_test
 
 .PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test build
