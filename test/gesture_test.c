@@ -739,6 +739,49 @@ int main(void) {
         CHECK(inj_dx == 0.0f && inj_dy == 0.0f, "suppression never invents motion");
     }
 
+    /* ── Plan 4 Task 4: Mode 1 self-fire sequence ── */
+    {
+        gesture_init(1000);
+        /* Capture an envelope so fire uses measured timing (dwell ~80ms). */
+        uint32_t t = 0;
+        gesture_click_observe(1, 0, 0x01, t); t += 1000;
+        for (int i = 0; i < 78; i++) { gesture_click_observe(0, 0, 0x01, t); t += 1000; }
+        gesture_click_observe(0, 0, 0x00, t); t += 1000;
+        for (int i = 0; i < 40; i++) { gesture_click_observe(2, 1, 0x00, t); t += 1000; }
+        CHECK(gesture_click_count() >= 1, "envelope captured for fire");
+
+        CHECK(gesture_click_arm_fire(0), "fire arms when no real click");
+        CHECK(gesture_click_fire_active(), "fire is active after arm");
+
+        int presses = 0, releases = 0; float rx = 0, ry = 0; int drift_steps = 0;
+        uint32_t press_at = 0, release_at = 0, elapsed = 0;
+        for (int i = 0; i < 4000 && gesture_click_fire_active(); i++) {
+            float dx = 0, dy = 0;
+            gst_click_action_t a = gesture_click_fire_step(1000, &dx, &dy);
+            if (a == GST_CA_PRESS)   { presses++;   press_at = elapsed; }
+            if (a == GST_CA_RELEASE) { releases++;  release_at = elapsed; }
+            if (a == GST_CA_NONE && (dx != 0 || dy != 0)) drift_steps++;
+            rx += dx; ry += dy;
+            elapsed += 1000;
+        }
+        CHECK(presses == 1 && releases == 1, "exactly one press and one release");
+        CHECK(release_at > press_at, "release after press");
+        CHECK(release_at - press_at >= 50000 && release_at - press_at <= 110000,
+              "dwell between press and release ~80ms");
+        CHECK(drift_steps > 0, "micro-drift emitted during dwell (not frozen)");
+        CHECK(!gesture_click_fire_active(), "sequence completes");
+
+        /* Arbitration: a real click blocks arming a self-fire (real wins). */
+        gesture_init(1000);
+        gesture_click_observe(1, 0, 0x01, 0);
+        for (int i = 0; i < 80; i++) gesture_click_observe(0,0,0x01,(uint32_t)(i+1)*1000u);
+        gesture_click_observe(0,0,0x00,82000); for (int i=0;i<40;i++) gesture_click_observe(1,0,0x00,83000u+(uint32_t)i*1000u);
+        gesture_click_real_buttons(0x01, 200000);    /* real click currently down */
+        CHECK(gesture_click_real_active(), "real click active");
+        CHECK(!gesture_click_arm_fire(0), "self-fire refused while real click active");
+        CHECK(!gesture_click_fire_active(), "no self-fire started under real click");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
