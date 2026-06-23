@@ -799,9 +799,11 @@ int main(void) {
 
         gst_click_env_t e;
         gesture_click_select(&e);
-        /* measured recoil ~ (+12, -4), within augmentation jitter (±15%). */
-        CHECK(e.recoil_x > 8.0f && e.recoil_x < 16.0f, "capstone: recoil_x measured");
-        CHECK(e.recoil_y < -2.0f && e.recoil_y > -7.0f, "capstone: recoil_y measured");
+        /* measured recoil ~ (+12, -4), within augmentation jitter (±15%).
+         * Observed deterministic: recoil_x=12.6064, recoil_y=-4.5601.
+         * Tight bands: observed ± 0.5 slack. */
+        CHECK(e.recoil_x > 12.1f && e.recoil_x < 13.1f, "capstone: recoil_x measured");
+        CHECK(e.recoil_y < -4.0f && e.recoil_y > -5.1f, "capstone: recoil_y measured");
 
         /* Mode 1: fire, sum the emitted recoil, assert it conserves to the
          * (augmented) envelope recoil — i.e. emission is endpoint-true. */
