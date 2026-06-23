@@ -361,6 +361,7 @@ static bool replay_begin(int32_t tx, int32_t ty) {
     float theta = atan2f(Vy, Vx);
     float c = cosf(theta), sn = sinf(theta);
     uint16_t n = A->n;
+    if (n > GST_KNOTS_MAX) n = GST_KNOTS_MAX;   /* defensive: G.work is GST_KNOTS_MAX */
     for (uint16_t i = 0; i < n; i++) {
         float x = A->knots[i].ux * R, y = A->knots[i].uy * R;
         G.work[i].ux   = x * c - y * sn;
