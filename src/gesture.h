@@ -54,3 +54,10 @@ typedef struct {
 
 uint16_t gesture_reconstruct(const gst_sample_t *samples, uint16_t n,
                              gst_point_t *out, uint16_t out_cap);
+
+/* ── resample ──────────────────────────────────────────────────────────
+ * Resample a reconstructed polyline to exactly GST_KNOTS_MAX knots, evenly
+ * spaced in path-length fraction, via centripetal Catmull-Rom. dt_q is left
+ * 0 here; gesture_normalize_temporal (Task 6) fills the temporal field. Returns
+ * GST_KNOTS_MAX, or 0 when n < 2. */
+uint16_t gesture_resample(const gst_point_t *pts, uint16_t n, gst_knot_t *out);

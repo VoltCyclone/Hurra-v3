@@ -77,6 +77,34 @@ int main(void) {
         CHECK(pts[0].f == 0.0f && pts[1].f == 0.0f, "zero-length fractions are 0");
     }
 
+    /* ── Task 4: resample ── */
+    {
+        /* A diagonal ramp, 5 points. Resampled to GST_KNOTS_MAX knots that
+         * still start at origin-ish and end exactly at the last point. */
+        gst_point_t pts[5];
+        for (int i = 0; i < 5; i++) {
+            pts[i].x = (float)(i * 10);   /* 0,10,20,30,40 */
+            pts[i].y = (float)(i * 10);
+            pts[i].t_us = (uint32_t)(i * 1000);
+            pts[i].f = (float)i / 4.0f;
+        }
+        gst_knot_t kn[GST_KNOTS_MAX];
+        uint16_t nk = gesture_resample(pts, 5, kn);
+        CHECK(nk == GST_KNOTS_MAX, "resample emits fixed knot count");
+        CHECK(fabsf(kn[0].f - 0.0f) < 1e-4f, "first knot fraction 0");
+        CHECK(fabsf(kn[GST_KNOTS_MAX-1].f - 1.0f) < 1e-4f, "last knot fraction 1");
+        /* endpoint exactness */
+        CHECK(fabsf(kn[GST_KNOTS_MAX-1].ux - 40.0f) < 1e-2f, "endpoint x preserved");
+        CHECK(fabsf(kn[GST_KNOTS_MAX-1].uy - 40.0f) < 1e-2f, "endpoint y preserved");
+        /* monotonic along a straight ramp: ux strictly non-decreasing */
+        int mono = 1;
+        for (int i = 1; i < GST_KNOTS_MAX; i++)
+            if (kn[i].ux < kn[i-1].ux - 1e-3f) mono = 0;
+        CHECK(mono, "resampled knots monotonic on a straight ramp");
+
+        CHECK(gesture_resample(pts, 1, kn) == 0, "too-few points returns 0");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
