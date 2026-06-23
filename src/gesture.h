@@ -33,3 +33,10 @@ typedef struct {
 /* Initialize/clear all gesture state. nominal_interval_us is the device's
  * measured nominal report interval, used as the dt scaling reference. */
 void gesture_init(uint32_t nominal_interval_us);
+
+/* ── capture ring ──────────────────────────────────────────────────────
+ * Read-only FIFO of raw report samples. Never mutates the real input path;
+ * callers push a copy of each observed delta. */
+void     gesture_capture_push(int16_t dx, int16_t dy, uint32_t t_us);
+uint16_t gesture_capture_count(void);            /* 0..GST_CAP_RING       */
+bool     gesture_capture_get(uint16_t age, gst_sample_t *out); /* age 0=newest */

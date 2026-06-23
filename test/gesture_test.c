@@ -26,6 +26,30 @@ int main(void) {
     gesture_init(1000);
     CHECK(1, "gesture_init runs");
 
+    /* ── Task 2: capture ring ── */
+    gesture_init(1000);
+    CHECK(gesture_capture_count() == 0, "ring starts empty");
+
+    gesture_capture_push(3, -1, 1000);
+    gesture_capture_push(5,  2, 2000);
+    CHECK(gesture_capture_count() == 2, "ring counts pushes");
+
+    gst_sample_t s;
+    CHECK(gesture_capture_get(0, &s) && s.dx == 5 && s.dy == 2 && s.t_us == 2000,
+          "age 0 is most recent");
+    CHECK(gesture_capture_get(1, &s) && s.dx == 3 && s.dy == -1,
+          "age 1 is older");
+    CHECK(!gesture_capture_get(2, &s), "age past count fails");
+
+    /* Overflow: pushing > GST_CAP_RING keeps the newest GST_CAP_RING and
+     * saturates the count. */
+    gesture_init(1000);
+    for (int i = 0; i < GST_CAP_RING + 50; i++)
+        gesture_capture_push((int16_t)i, 0, (uint32_t)(i * 1000));
+    CHECK(gesture_capture_count() == GST_CAP_RING, "count saturates at ring size");
+    gesture_capture_get(0, &s);
+    CHECK(s.dx == (int16_t)(GST_CAP_RING + 49), "newest survives overflow");
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
