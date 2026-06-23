@@ -188,6 +188,56 @@ int main(void) {
         CHECK(gesture_length_bucket(800.0f) == 2, "len 800 -> long");
     }
 
+    /* ── Task 8: library + warmth ── */
+    {
+        gesture_init(1000);
+        CHECK(gesture_warmth() == GST_COLD, "empty library is COLD");
+        CHECK(gesture_library_count() == 0, "empty library count 0");
+        CHECK(gesture_library_select(100.0f) == NULL, "select on empty is NULL");
+
+        /* Admit one shape per bucket by synthesizing gestures of each length. */
+        gesture_init(1000);
+        const int lens[3] = { 40, 200, 800 };  /* short, medium, long */
+        for (int b = 0; b < 3; b++) {
+            gst_sample_t mv[64];
+            int steps = lens[b] / 4;            /* 4 px/sample */
+            if (steps > 64) steps = 64;
+            for (int i = 0; i < steps; i++) { mv[i].dx = 4; mv[i].dy = 0; mv[i].t_us = (uint32_t)(i*1000); }
+            gst_shape_t sh;
+            if (gesture_build_shape(mv, (uint16_t)steps, &sh))
+                gesture_library_admit(&sh);
+        }
+        CHECK(gesture_library_count() == 3, "admitted 3 shapes");
+        CHECK(gesture_warmth() == GST_WARMING || gesture_warmth() == GST_WARM,
+              "3 shapes across buckets is at least WARMING");
+
+        /* selection picks nearest raw_len */
+        const gst_shape_t *sel = gesture_library_select(210.0f);
+        CHECK(sel != NULL, "select returns a shape");
+        CHECK(gesture_length_bucket(sel->raw_len) == 1, "nearest to 210 is medium bucket");
+
+        /* FIFO eviction: overflow one bucket and confirm count caps. */
+        gesture_init(1000);
+        for (int i = 0; i < GST_LIB_SHAPES + 10; i++) {
+            gst_sample_t mv[20];
+            for (int j = 0; j < 20; j++) { mv[j].dx = 2; mv[j].dy = 0; mv[j].t_us = (uint32_t)(j*1000); }
+            gst_shape_t sh;
+            if (gesture_build_shape(mv, 20, &sh)) gesture_library_admit(&sh);
+        }
+        CHECK(gesture_library_count() <= GST_LIB_SHAPES, "library count never exceeds cap");
+    }
+
+    /* ── resource bound: total engine state stays bounded ── */
+    /* lib pool 32*592 ~= 19KB + cap ring 256*8 = 2KB + bookkeeping. */
+    printf("INFO sizeof(gst_shape_t)=%zu pool=%zu cap=%zu\n",
+           sizeof(gst_shape_t),
+           sizeof(gst_shape_t) * GST_LIB_SHAPES,
+           sizeof(gst_sample_t) * GST_CAP_RING);
+    /* gst_knot_t is 16 B (3 floats + uint16 padded to 4), so shape ~780 B and
+     * pool ~25 KB — bounded and well within V5F RAM (the earlier "19 KB" figure
+     * miscounted the float trio as 12 B incl. dt_q). */
+    CHECK(sizeof(gst_shape_t) * GST_LIB_SHAPES <= 26000, "library pool <= 26KB");
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

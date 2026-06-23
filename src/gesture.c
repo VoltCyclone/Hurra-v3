@@ -14,6 +14,11 @@ static struct {
     gst_sample_t cap[GST_CAP_RING];
     uint16_t cap_head;   /* index where the NEXT push will write */
     uint16_t cap_count;  /* valid samples, saturates at GST_CAP_RING */
+    /* shared-pool FIFO library of shapes */
+    gst_shape_t lib[GST_LIB_SHAPES];     /* shared 32-slot pool (~19 KB) */
+    uint8_t     lib_bucket[GST_LIB_SHAPES];
+    uint8_t     lib_n;                   /* valid shapes 0..GST_LIB_SHAPES */
+    uint8_t     lib_head;                /* next write slot (global FIFO)  */
 } G;
 
 void gesture_init(uint32_t nominal_interval_us) {
@@ -227,5 +232,55 @@ bool gesture_build_shape(const gst_sample_t *samples, uint16_t n,
     float c = (pts[np-1].x - pts[0].x) * (pts[1].y - pts[0].y)
             - (pts[np-1].y - pts[0].y) * (pts[1].x - pts[0].x);
     out->flags = (c < 0.0f) ? 1u : 0u;
+    return true;
+}
+
+void gesture_library_admit(const gst_shape_t *shape) {
+    uint8_t slot = G.lib_head;
+    G.lib[slot] = *shape;
+    G.lib_bucket[slot] = gesture_length_bucket(shape->raw_len);
+    G.lib_head = (uint8_t)((G.lib_head + 1u) % GST_LIB_SHAPES);
+    if (G.lib_n < GST_LIB_SHAPES) G.lib_n++;
+}
+
+uint8_t gesture_library_count(void) { return G.lib_n; }
+
+gst_warmth_t gesture_warmth(void) {
+    if (G.lib_n == 0) return GST_COLD;
+    bool seen[GST_LEN_BUCKETS] = { false, false, false };
+    for (uint8_t i = 0; i < G.lib_n; i++) seen[G.lib_bucket[i]] = true;
+    if (G.lib_n >= GST_WARM_MIN && seen[0] && seen[1] && seen[2]) return GST_WARM;
+    return GST_WARMING;
+}
+
+const gst_shape_t *gesture_library_select(float target_len) {
+    if (G.lib_n == 0) return NULL;
+    uint8_t want = gesture_length_bucket(target_len);
+    const gst_shape_t *best = NULL;
+    float best_d = 1e30f;
+    /* First pass: same bucket. Second pass: any bucket if none in-bucket. */
+    for (int pass = 0; pass < 2 && best == NULL; pass++) {
+        for (uint8_t i = 0; i < G.lib_n; i++) {
+            if (pass == 0 && G.lib_bucket[i] != want) continue;
+            float d = fabsf(G.lib[i].raw_len - target_len);
+            if (d < best_d) { best_d = d; best = &G.lib[i]; }
+        }
+    }
+    return best;
+}
+
+bool gesture_capture_build_and_admit(uint16_t window) {
+    if (window > G.cap_count) window = G.cap_count;
+    if (window < 4) return false;
+    static gst_sample_t buf[GST_CAP_RING];
+    /* Copy newest `window` samples oldest-first into buf. */
+    for (uint16_t i = 0; i < window; i++) {
+        gst_sample_t s;
+        gesture_capture_get((uint16_t)(window - 1u - i), &s);
+        buf[i] = s;
+    }
+    gst_shape_t sh;
+    if (!gesture_build_shape(buf, window, &sh)) return false;
+    gesture_library_admit(&sh);
     return true;
 }

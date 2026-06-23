@@ -82,3 +82,12 @@ void gesture_normalize_temporal(gst_shape_t *shape, const gst_point_t *pts,
 uint8_t gesture_length_bucket(float raw_len); /* 0 short / 1 medium / 2 long */
 bool    gesture_build_shape(const gst_sample_t *samples, uint16_t n,
                             gst_shape_t *out);
+
+/* ── library + warmth ──────────────────────────────────────────────────*/
+typedef enum { GST_COLD = 0, GST_WARMING = 1, GST_WARM = 2 } gst_warmth_t;
+
+void                gesture_library_admit(const gst_shape_t *shape);
+uint8_t             gesture_library_count(void);
+gst_warmth_t        gesture_warmth(void);
+const gst_shape_t  *gesture_library_select(float target_len);
+bool                gesture_capture_build_and_admit(uint16_t window);
