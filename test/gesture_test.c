@@ -677,6 +677,38 @@ int main(void) {
         CHECK(gesture_click_count() == GST_CLK_RING, "ring count caps at GST_CLK_RING");
     }
 
+    /* ── Plan 4 Task 2: click envelope capture ── */
+    {
+        gesture_init(1000);
+        uint32_t t = 0;
+        /* Approach: speeding up then decelerating into the click. */
+        int16_t approach[6] = { 8, 12, 16, 10, 5, 2 };
+        for (int i = 0; i < 6; i++) { gesture_click_observe(approach[i], 0, 0, t); t += 1000; }
+        /* Press (left=bit0), hold ~80ms with tiny drift, then release. */
+        gesture_click_observe(1, 0, 0x01, t); t += 1000;          /* button down */
+        for (int i = 0; i < 78; i++) { gesture_click_observe((int16_t)(i & 1), 0, 0x01, t); t += 1000; }
+        gesture_click_observe(0, 0, 0x00, t); t += 1000;          /* release at ~80ms after press */
+        /* Recoil window: small drift after release. */
+        for (int i = 0; i < 40; i++) { gesture_click_observe(1, 0, 0x00, t); t += 1000; }
+
+        CHECK(gesture_click_count() == 1, "one envelope captured from a click cycle");
+        gst_click_env_t e;
+        CHECK(gesture_click_select(&e), "captured envelope is selectable");
+        /* dwell measured ~79-80ms (79 hold reports @1ms + the down report). */
+        CHECK(e.dwell_us >= 60000 && e.dwell_us <= 100000, "measured dwell ~80ms");
+        /* recoil_x positive (drifted +x after release), bounded. */
+        CHECK(e.recoil_x > 0.0f && e.recoil_x < 60.0f, "recoil vector measured");
+
+        /* A mere button tap with no prior motion still yields a plausible dwell. */
+        gesture_init(1000);
+        uint32_t t2 = 5000;
+        gesture_click_observe(0, 0, 0x01, t2); t2 += 1000;
+        for (int i = 0; i < 30; i++) { gesture_click_observe(0, 0, 0x01, t2); t2 += 1000; }
+        gesture_click_observe(0, 0, 0x00, t2); t2 += 1000;
+        for (int i = 0; i < 40; i++) { gesture_click_observe(0, 0, 0x00, t2); t2 += 1000; }
+        CHECK(gesture_click_count() == 1, "tap with ~31ms dwell captured");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
