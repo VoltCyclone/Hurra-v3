@@ -163,3 +163,12 @@ uint32_t gesture_click_admitted(void);                /* diagnostic */
  * completed press→release→recoil cycle that passes the quality gate, an
  * envelope is admitted. Never mutates the real report (passthrough sacred). */
 void gesture_click_observe(int16_t dx, int16_t dy, uint8_t buttons, uint32_t t_us);
+
+/* ── Mode 2: aim-assist suppression around a real click ────────────────
+ * Feed the real button state each report; the injected-motion scale ramps to
+ * a micro-drift floor during a real hold and back after release. Multiply the
+ * source's injected delta by gesture_click_motion_scale(). Never emits a
+ * button; never touches the real report. */
+void  gesture_click_real_buttons(uint8_t buttons, uint32_t t_us);
+float gesture_click_motion_scale(void);   /* [GST_C2_FLOOR, 1.0]            */
+bool  gesture_click_real_active(void);     /* true while a real button held  */

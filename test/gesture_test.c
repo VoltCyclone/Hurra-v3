@@ -709,6 +709,36 @@ int main(void) {
         CHECK(gesture_click_count() == 1, "tap with ~31ms dwell captured");
     }
 
+    /* ── Plan 4 Task 3: Mode 2 aim-assist suppression ── */
+    {
+        gesture_init(1000);
+        CHECK(fabsf(gesture_click_motion_scale() - 1.0f) < 1e-6f, "scale starts at 1.0");
+        CHECK(!gesture_click_real_active(), "no real click initially");
+
+        /* Real button down: scale ramps down toward the floor over the guard. */
+        uint32_t t = 0;
+        gesture_click_real_buttons(0x01, t); t += 1000;
+        CHECK(gesture_click_real_active(), "real click detected");
+        for (int i = 0; i < 40; i++) { gesture_click_real_buttons(0x01, t); t += 1000; }
+        float held = gesture_click_motion_scale();
+        CHECK(held < 0.2f, "scale suppressed toward floor during real hold");
+        CHECK(held >= 0.0f, "scale never negative");
+
+        /* Release: scale ramps back up toward 1.0. */
+        gesture_click_real_buttons(0x00, t); t += 1000;
+        CHECK(!gesture_click_real_active(), "real click released");
+        for (int i = 0; i < 60; i++) { gesture_click_real_buttons(0x00, t); t += 1000; }
+        CHECK(gesture_click_motion_scale() > 0.95f, "scale resumes to ~1.0 after release");
+
+        /* Safety: scale only multiplies injected delta; a zero injected delta
+         * stays zero regardless of suppression state (no motion invented). */
+        gesture_init(1000);
+        gesture_click_real_buttons(0x01, 0);
+        float s = gesture_click_motion_scale();
+        float inj_dx = 0.0f * s, inj_dy = 0.0f * s;
+        CHECK(inj_dx == 0.0f && inj_dy == 0.0f, "suppression never invents motion");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

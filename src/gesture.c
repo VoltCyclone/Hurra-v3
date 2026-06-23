@@ -23,6 +23,9 @@
 
 #define GST_CLK_RECOIL_WIN_US 30000u   /* drift window measured after release */
 #define GST_CLK_PEAK_DECAY    0.85f    /* per-report decay of the speed peak  */
+#define GST_C2_FLOOR     0.05f     /* injected-motion floor during real hold (micro-drift) */
+#define GST_C2_GUARD_US  15000.0f  /* ramp-down time on real button-down  */
+#define GST_C2_RESUME_US 25000.0f  /* ramp-up time after real release      */
 /* capture state-machine phases */
 #define GST_CC_IDLE   0u
 #define GST_CC_HOLD   1u
@@ -84,6 +87,12 @@ static struct {
     float    cc_peak_at_press;           /* peak speed latched at press (for vclass) */
     uint32_t cc_decel_us;               /* peak_t→press, latched at press */
     uint32_t cc_dwell_us;               /* press→release, latched at release */
+    /* ── Mode 2 aim-assist (Plan 4) ── */
+    uint8_t  c2_prev_buttons;            /* last real button bits          */
+    bool     c2_real_down;               /* a real button is currently held */
+    float    c2_scale;                   /* current injected-motion scale  */
+    uint32_t c2_last_t;                  /* last real-report timestamp     */
+    bool     c2_have_t;                  /* c2_last_t valid                */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -102,6 +111,7 @@ void gesture_init(uint32_t nominal_interval_us) {
     G.rng_c = seed ^ 0x8BADF00Du; G.rng_ctr = 1u;
     if (!G.rng_a) G.rng_a = 0xCAFEBABEu;   /* only a is guarded; warm-up restores liveness */
     for (int i = 0; i < 16; i++) (void)gst_sfc32();
+    G.c2_scale = 1.0f;                    /* required: memset zeroed it; 0 would suppress all injection */
 }
 
 uint32_t gesture_rand_u32(void) { return gst_sfc32(); }
@@ -756,3 +766,28 @@ bool gesture_motion_pace_take(float *out_dx, float *out_dy, uint16_t *out_dt_q) 
     G.pace_budget_us -= need;
     return gesture_motion_next(out_dx, out_dy, out_dt_q);   /* emit exactly one step */
 }
+
+void gesture_click_real_buttons(uint8_t buttons, uint32_t t_us) {
+    uint32_t dt = (G.c2_have_t && t_us >= G.c2_last_t) ? (t_us - G.c2_last_t) : 0u;
+    G.c2_last_t = t_us; G.c2_have_t = true;
+
+    bool down_now = (buttons != 0u);
+    G.c2_real_down = down_now;
+    G.c2_prev_buttons = buttons;
+
+    float span = 1.0f - GST_C2_FLOOR;
+    if (down_now) {
+        /* ramp scale 1.0 → floor over the guard window */
+        G.c2_scale -= ((float)dt / GST_C2_GUARD_US) * span;
+        if (G.c2_scale < GST_C2_FLOOR) G.c2_scale = GST_C2_FLOOR;
+    } else {
+        /* ramp scale floor → 1.0 over the resume window */
+        G.c2_scale += ((float)dt / GST_C2_RESUME_US) * span;
+        if (G.c2_scale > 1.0f) G.c2_scale = 1.0f;
+    }
+}
+
+GST_FASTRUN
+float gesture_click_motion_scale(void) { return G.c2_scale; }
+
+bool gesture_click_real_active(void) { return G.c2_real_down; }
