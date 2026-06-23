@@ -15,6 +15,13 @@ bool     humanize_pending(void);   /* true while owed motion remains to emit */
  * passthrough keeps priority; only the injected overflow comes back. */
 void     humanize_return(int16_t dx, int16_t dy);
 
+/* Quantize an injected float delta to an int16 report field for the record-
+ * replay engine's per-step emit. Carries the sub-pixel residual across calls
+ * and the >HZ_MAX_PER_FRAME field-clamp overflow (redelivered as headroom
+ * opens), reusing the same conservation machinery as humanize_filter. Operates
+ * on the injected delta only; never touches real-mouse passthrough. */
+void     humanize_inject_emit(float dx, float dy, int16_t *out_dx, int16_t *out_dy);
+
 /* ── Adaptive feed-rate (measured poll interval) ────────────────────────
  * Record the arrival of a real mouse report, timestamped from the free-running
  * 1 MHz counter (microseconds). Pass mouse reports only. Builds an EWMA of the
