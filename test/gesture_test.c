@@ -641,6 +641,42 @@ int main(void) {
               "Task5: cross-rate -> ~2x duration at 2x nominal (dt_q rate-normalized)");
     }
 
+    /* ── Plan 4 Task 1: click envelope ring ── */
+    {
+        gesture_init(1000);
+        CHECK(gesture_click_count() == 0, "click ring starts empty");
+        gst_click_env_t e;
+        CHECK(!gesture_click_select(&e), "select on empty ring fails");
+
+        gst_click_env_t env = { .decel_us = 5000, .settle_px = 2.0f, .dwell_us = 80000,
+                                .recoil_x = 1.5f, .recoil_y = -0.5f, .flags = 0 };
+        gesture_click_admit(&env);
+        CHECK(gesture_click_count() == 1, "admit stores one envelope");
+        CHECK(gesture_click_admitted() == 1, "admitted counter increments");
+
+        /* Quality gate: implausible dwell rejected (both bounds reachable now
+         * that dwell_us is uint32_t). */
+        gst_click_env_t bad = env; bad.dwell_us = 5; /* 5us: far below human */
+        gesture_click_admit(&bad);
+        CHECK(gesture_click_count() == 1, "sub-min dwell rejected");
+        gst_click_env_t bad2 = env; bad2.dwell_us = 5000000; /* 5s: far above max */
+        gesture_click_admit(&bad2);
+        CHECK(gesture_click_count() == 1, "over-max dwell rejected");
+
+        /* select returns a (augmented) copy near the stored values. */
+        CHECK(gesture_click_select(&e), "select returns an envelope");
+        CHECK(e.dwell_us > 60000 && e.dwell_us < 100000, "selected dwell near source (augmented)");
+
+        /* FIFO eviction: overflow the ring, count caps. */
+        gesture_init(1000);
+        for (int i = 0; i < GST_CLK_RING + 8; i++) {
+            gst_click_env_t f = { .decel_us = 4000, .settle_px = 1.0f, .dwell_us = 70000,
+                                  .recoil_x = 0.0f, .recoil_y = 0.0f, .flags = 0 };
+            gesture_click_admit(&f);
+        }
+        CHECK(gesture_click_count() == GST_CLK_RING, "ring count caps at GST_CLK_RING");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
