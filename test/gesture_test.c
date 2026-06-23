@@ -753,7 +753,7 @@ int main(void) {
         CHECK(gesture_click_arm_fire(0), "fire arms when no real click");
         CHECK(gesture_click_fire_active(), "fire is active after arm");
 
-        int presses = 0, releases = 0; float rx = 0, ry = 0; int drift_steps = 0;
+        int presses = 0, releases = 0, drift_steps = 0;
         uint32_t press_at = 0, release_at = 0, elapsed = 0;
         for (int i = 0; i < 4000 && gesture_click_fire_active(); i++) {
             float dx = 0, dy = 0;
@@ -761,7 +761,6 @@ int main(void) {
             if (a == GST_CA_PRESS)   { presses++;   press_at = elapsed; }
             if (a == GST_CA_RELEASE) { releases++;  release_at = elapsed; }
             if (a == GST_CA_NONE && (dx != 0 || dy != 0)) drift_steps++;
-            rx += dx; ry += dy;
             elapsed += 1000;
         }
         CHECK(presses == 1 && releases == 1, "exactly one press and one release");
