@@ -19,6 +19,7 @@
 #define GST_AUG_MORPH_HI   0.70f      /* morph weight on A, upper bound   */
 #define GST_AUG_TWARP      0.08f      /* ± per-knot dt random-walk bound  */
 #define GST_DUP_WINDOW     8          /* recent tuple hashes tracked       */
+#define GST_CAD_DROP_MULT  4u         /* clamp a captured dt above this*nominal (dropout) */
 
 #ifdef GESTURE_HOSTTEST
 static uint32_t gst_hw_entropy(void) { return 0x12345678u; }   /* deterministic */
@@ -542,7 +543,25 @@ static bool synth_begin(int32_t tx, int32_t ty) {
         G.work[i].ux   = x * c - y * sn;
         G.work[i].uy   = x * sn + y * c;
         G.work[i].f    = fi;
-        G.work[i].dt_q = 256u;                       /* one nominal interval (Plan-3 refines) */
+        /* Cadence: reproduce the device's recent real inter-report jitter in
+         * forward order (preserves short-range correlation + coalescing). Knot 0
+         * has no predecessor (dt_q 0); fall back to one nominal when no cadence. */
+        if (i == 0) {
+            G.work[i].dt_q = 0u;
+        } else {
+            uint16_t cc = gesture_cadence_count();
+            if (cc == 0u) {
+                G.work[i].dt_q = 256u;               /* cold boot: flat one-nominal */
+            } else {
+                /* oldest-first mapping so emission walks the captured run forward */
+                uint16_t age = (uint16_t)((cc - 1u) - (uint16_t)((i - 1u) % cc));
+                uint32_t cad = 0u;
+                (void)gesture_cadence_get(age, &cad);
+                uint32_t cap = (G.nominal_us ? G.nominal_us : 1000u) * GST_CAD_DROP_MULT;
+                if (cad > cap) cad = cap;            /* clamp dropouts, keep coalescing */
+                G.work[i].dt_q = us_to_dtq(cad, G.nominal_us);
+            }
+        }
     }
     G.work_n = n;
     endpoint_true(tx, ty);
