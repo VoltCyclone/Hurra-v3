@@ -158,3 +158,8 @@ void     gesture_click_admit(const gst_click_env_t *env);
 uint8_t  gesture_click_count(void);
 bool     gesture_click_select(gst_click_env_t *out);  /* augmented copy; false if empty */
 uint32_t gesture_click_admitted(void);                /* diagnostic */
+
+/* Feed one real report (a copy) to the click-capture state machine. On a
+ * completed press→release→recoil cycle that passes the quality gate, an
+ * envelope is admitted. Never mutates the real report (passthrough sacred). */
+void gesture_click_observe(int16_t dx, int16_t dy, uint8_t buttons, uint32_t t_us);

@@ -21,6 +21,14 @@
 #define GST_DUP_WINDOW     8          /* recent tuple hashes tracked       */
 #define GST_CAD_DROP_MULT  4u         /* clamp a captured dt above this*nominal (dropout) */
 
+#define GST_CLK_RECOIL_WIN_US 30000u   /* drift window measured after release */
+#define GST_CLK_PEAK_DECAY    0.85f    /* per-report decay of the speed peak  */
+#define GST_CLK_MOVE_EPS      1.0f     /* speed below this ≈ not moving        */
+/* capture state-machine phases */
+#define GST_CC_IDLE   0u
+#define GST_CC_HOLD   1u
+#define GST_CC_RECOIL 2u
+
 #ifdef GESTURE_HOSTTEST
 static uint32_t gst_hw_entropy(void) { return 0x12345678u; }   /* deterministic */
 #else
@@ -64,6 +72,18 @@ static struct {
     uint8_t  clk_head;                    /* next write slot (FIFO)        */
     uint8_t  clk_n;                       /* valid envelopes 0..GST_CLK_RING */
     uint32_t clk_admitted;                /* diagnostic                    */
+    /* ── click capture state machine (Plan 4) ── */
+    uint8_t  cc_state;                    /* GST_CC_IDLE/HOLD/RECOIL        */
+    uint8_t  cc_prev_buttons;            /* last observed button bits      */
+    uint8_t  cc_button;                  /* latched button index this cycle */
+    uint32_t cc_press_t;                 /* timestamp of button-down       */
+    float    cc_settle_px;               /* accumulated drift during hold  */
+    float    cc_recoil_x, cc_recoil_y;   /* accumulated drift after release */
+    uint32_t cc_recoil_until;            /* end of the recoil window       */
+    float    cc_peak_speed;              /* recent rolling speed peak      */
+    uint32_t cc_peak_t;                  /* timestamp of that peak         */
+    uint32_t cc_decel_us;               /* peak_t→press, latched at press */
+    uint32_t cc_dwell_us;               /* press→release, latched at release */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -406,6 +426,68 @@ bool gesture_click_select(gst_click_env_t *out) {
     e.recoil_y  = e.recoil_y  * (1.0f + gesture_rand_range(-0.15f, 0.15f));
     *out = e;
     return true;
+}
+
+/* Lowest set button bit → index 0..2 (left/right/middle), else 0. */
+static uint8_t clk_button_index(uint8_t buttons) {
+    if (buttons & 0x01u) return 0u;
+    if (buttons & 0x02u) return 1u;
+    if (buttons & 0x04u) return 2u;
+    return 0u;
+}
+
+GST_FASTRUN
+void gesture_click_observe(int16_t dx, int16_t dy, uint8_t buttons, uint32_t t_us) {
+    float speed = sqrtf((float)dx * (float)dx + (float)dy * (float)dy);
+
+    /* Rolling speed peak (for decel_us): instantaneous attack, decayed memory. */
+    if (speed >= G.cc_peak_speed) { G.cc_peak_speed = speed; G.cc_peak_t = t_us; }
+    else { G.cc_peak_speed *= GST_CLK_PEAK_DECAY; }
+
+    bool down_now = (buttons != 0u);
+    bool was_down = (G.cc_prev_buttons != 0u);
+
+    if (!was_down && down_now) {
+        /* press edge */
+        G.cc_button = clk_button_index(buttons);
+        G.cc_press_t = t_us;
+        G.cc_decel_us = (t_us >= G.cc_peak_t) ? (t_us - G.cc_peak_t) : 0u;
+        G.cc_settle_px = 0.0f;
+        G.cc_state = GST_CC_HOLD;
+    } else if (was_down && down_now && G.cc_state == GST_CC_HOLD) {
+        /* hold: accumulate residual drift */
+        G.cc_settle_px += speed;
+    } else if (was_down && !down_now && G.cc_state == GST_CC_HOLD) {
+        /* release edge: measure dwell, open the recoil window */
+        uint32_t dwell = (t_us >= G.cc_press_t) ? (t_us - G.cc_press_t) : 0u;
+        if (dwell >= GST_CLK_DWELL_MIN_US && dwell <= GST_CLK_DWELL_MAX_US) {
+            G.cc_dwell_us = dwell;
+            G.cc_recoil_x = 0.0f; G.cc_recoil_y = 0.0f;
+            G.cc_recoil_until = t_us + GST_CLK_RECOIL_WIN_US;
+            G.cc_state = GST_CC_RECOIL;
+        } else {
+            G.cc_state = GST_CC_IDLE;         /* implausible: drop this cycle */
+        }
+    } else if (G.cc_state == GST_CC_RECOIL) {
+        /* accumulate post-release drift until the window closes, then admit */
+        if (t_us < G.cc_recoil_until) {
+            G.cc_recoil_x += (float)dx;
+            G.cc_recoil_y += (float)dy;
+        } else {
+            gst_click_env_t env;
+            env.decel_us  = G.cc_decel_us;
+            env.settle_px = G.cc_settle_px;
+            env.dwell_us  = G.cc_dwell_us;    /* uint32: no narrowing needed */
+            env.recoil_x  = G.cc_recoil_x;
+            env.recoil_y  = G.cc_recoil_y;
+            uint8_t vclass = (G.cc_peak_speed < 5.0f) ? 0u : (G.cc_peak_speed < 20.0f ? 1u : 2u);
+            env.flags = (uint8_t)((vclass & 0x03u) | ((G.cc_button & 0x03u) << 2));
+            gesture_click_admit(&env);
+            G.cc_state = GST_CC_IDLE;
+        }
+    }
+
+    G.cc_prev_buttons = buttons;
 }
 
 bool gesture_capture_build_and_admit(uint16_t window) {
