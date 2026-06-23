@@ -121,3 +121,24 @@ uint16_t gesture_resample(const gst_point_t *pts, uint16_t n, gst_knot_t *out) {
     out[GST_KNOTS_MAX-1].ux = pts[n-1].x; out[GST_KNOTS_MAX-1].uy = pts[n-1].y;
     return GST_KNOTS_MAX;
 }
+
+bool gesture_normalize_spatial(gst_shape_t *shape) {
+    if (shape->n < 2) return false;
+    float ex = shape->knots[shape->n - 1].ux;
+    float ey = shape->knots[shape->n - 1].uy;
+    float len = sqrtf(ex * ex + ey * ey);
+    if (len < 1.0f) return false;             /* too short to define a direction */
+
+    float ang = -atan2f(ey, ex);              /* rotate endpoint onto +X */
+    float c = cosf(ang), s = sinf(ang);
+    float inv = 1.0f / len;
+    for (uint16_t i = 0; i < shape->n; i++) {
+        float x = shape->knots[i].ux, y = shape->knots[i].uy;
+        float rx = (x * c - y * s) * inv;
+        float ry = (x * s + y * c) * inv;
+        shape->knots[i].ux = rx;
+        shape->knots[i].uy = ry;
+    }
+    shape->raw_len = len;
+    return true;
+}

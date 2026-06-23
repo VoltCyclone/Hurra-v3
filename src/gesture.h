@@ -61,3 +61,9 @@ uint16_t gesture_reconstruct(const gst_sample_t *samples, uint16_t n,
  * 0 here; gesture_normalize_temporal (Task 6) fills the temporal field. Returns
  * GST_KNOTS_MAX, or 0 when n < 2. */
 uint16_t gesture_resample(const gst_point_t *pts, uint16_t n, gst_knot_t *out);
+
+/* ── spatial normalization ─────────────────────────────────────────────
+ * Rotate the knot set so its endpoint is +X and scale so |endpoint| == 1.
+ * Stores raw_len = original endpoint magnitude for replay rate-conversion.
+ * Returns false (knots untouched) for a degenerate sub-unit gesture. */
+bool gesture_normalize_spatial(gst_shape_t *shape);

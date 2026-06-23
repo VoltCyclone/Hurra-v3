@@ -105,6 +105,35 @@ int main(void) {
         CHECK(gesture_resample(pts, 1, kn) == 0, "too-few points returns 0");
     }
 
+    /* ── Task 5: spatial normalization ── */
+    {
+        gst_shape_t sh;
+        memset(&sh, 0, sizeof(sh));
+        sh.n = GST_KNOTS_MAX;
+        /* Build a straight gesture heading up-and-right, endpoint (30,40), |.|=50. */
+        for (int i = 0; i < GST_KNOTS_MAX; i++) {
+            float t = (float)i / (float)(GST_KNOTS_MAX - 1);
+            sh.knots[i].ux = 30.0f * t;
+            sh.knots[i].uy = 40.0f * t;
+            sh.knots[i].f  = t;
+        }
+        CHECK(gesture_normalize_spatial(&sh), "normalize succeeds on real gesture");
+        CHECK(fabsf(sh.raw_len - 50.0f) < 1e-2f, "raw_len is original magnitude");
+        /* endpoint becomes unit +X */
+        CHECK(fabsf(sh.knots[GST_KNOTS_MAX-1].ux - 1.0f) < 1e-3f, "endpoint ux=1");
+        CHECK(fabsf(sh.knots[GST_KNOTS_MAX-1].uy - 0.0f) < 1e-3f, "endpoint uy=0");
+        /* start stays at origin */
+        CHECK(fabsf(sh.knots[0].ux) < 1e-3f && fabsf(sh.knots[0].uy) < 1e-3f,
+              "start at origin");
+
+        /* degenerate: tiny gesture rejected */
+        gst_shape_t tiny;
+        memset(&tiny, 0, sizeof(tiny));
+        tiny.n = GST_KNOTS_MAX;
+        tiny.knots[GST_KNOTS_MAX-1].ux = 0.3f;
+        CHECK(!gesture_normalize_spatial(&tiny), "sub-unit gesture rejected");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
