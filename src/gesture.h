@@ -107,3 +107,6 @@ typedef enum { MOTION_MODE_AIMED = 0, MOTION_MODE_SILENT = 1 } motion_mode_t;
 void gesture_motion_begin(int32_t tx, int32_t ty, motion_mode_t mode);
 bool gesture_motion_next(float *out_dx, float *out_dy, uint16_t *out_dt_q);
 bool gesture_motion_done(void);
+
+/* Count of replay re-rolls forced by the repetition guard (diagnostic). */
+uint32_t gesture_dup_rejected(void);
