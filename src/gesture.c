@@ -12,6 +12,13 @@
 #define GST_SRC_REPLAY 1u
 #define GST_SRC_SYNTH  2u
 
+/* ── replay augmentation tunables ── */
+#define GST_AUG_SCALE_JIT  0.04f      /* ± fractional scale jitter        */
+#define GST_AUG_ROT_JIT    0.02618f   /* ± rotation jitter, rad (~1.5°)   */
+#define GST_AUG_MORPH_LO   0.30f      /* morph weight on A, lower bound   */
+#define GST_AUG_MORPH_HI   0.70f      /* morph weight on A, upper bound   */
+#define GST_AUG_TWARP      0.08f      /* ± per-knot dt random-walk bound  */
+
 #ifdef GESTURE_HOSTTEST
 static uint32_t gst_hw_entropy(void) { return 0x12345678u; }   /* deterministic */
 #else
@@ -348,9 +355,38 @@ bool gesture_capture_build_and_admit(uint16_t window) {
     return true;
 }
 
-/* Materialize a rotated+scaled working copy of the nearest library shape.
- * No augmentation here (Task 3). The shape's endpoint is unit +X, so
- * scale·rotate lands the final knot exactly on V. */
+/* Pick a same-bucket shape other than `primary`, uniformly at random (reservoir).
+ * NULL when the bucket holds only the primary. */
+static const gst_shape_t *library_morph_partner(const gst_shape_t *primary,
+                                                float target_len) {
+    uint8_t want = gesture_length_bucket(target_len);
+    const gst_shape_t *pick = NULL; uint32_t seen = 0;
+    for (uint8_t i = 0; i < G.lib_n; i++) {
+        if (G.lib_bucket[i] != want) continue;
+        if (&G.lib[i] == primary)    continue;
+        seen++;
+        if ((gst_sfc32() % seen) == 0u) pick = &G.lib[i];
+    }
+    return pick;
+}
+
+/* Force work[n-1] to exactly (tx,ty); fold half the correction into the
+ * penultimate knot so the final step is a small corrective submovement. */
+static void endpoint_true(int32_t tx, int32_t ty) {
+    uint16_t last = (uint16_t)(G.work_n - 1u);
+    float ex = (float)tx - G.work[last].ux;
+    float ey = (float)ty - G.work[last].uy;
+    if (G.work_n >= 3) {
+        G.work[last - 1].ux += ex * 0.5f;
+        G.work[last - 1].uy += ey * 0.5f;
+    }
+    G.work[last].ux = (float)tx;
+    G.work[last].uy = (float)ty;
+}
+
+/* Materialize an augmented working copy: optional morph-blend with a same-bucket
+ * partner, ±8% per-knot time-warp, scale + rotation jitter, then endpoint trueing
+ * so Σ emitted == V exactly. */
 static bool replay_begin(int32_t tx, int32_t ty) {
     float Vx = (float)tx, Vy = (float)ty;
     float R = sqrtf(Vx * Vx + Vy * Vy);
@@ -358,21 +394,39 @@ static bool replay_begin(int32_t tx, int32_t ty) {
     const gst_shape_t *A = gesture_library_select(R);
     if (!A) return false;
 
-    float theta = atan2f(Vy, Vx);
+    const gst_shape_t *B = library_morph_partner(A, R);
+    float alpha = B ? gesture_rand_range(GST_AUG_MORPH_LO, GST_AUG_MORPH_HI) : 1.0f;
+    float theta = atan2f(Vy, Vx) + gesture_rand_range(-GST_AUG_ROT_JIT, GST_AUG_ROT_JIT);
+    float s     = R * (1.0f + gesture_rand_range(-GST_AUG_SCALE_JIT, GST_AUG_SCALE_JIT));
     float c = cosf(theta), sn = sinf(theta);
+
     uint16_t n = A->n;
     if (n > GST_KNOTS_MAX) n = GST_KNOTS_MAX;   /* defensive: G.work is GST_KNOTS_MAX */
+    float walk = 1.0f;
     for (uint16_t i = 0; i < n; i++) {
-        float x = A->knots[i].ux * R, y = A->knots[i].uy * R;
-        G.work[i].ux   = x * c - y * sn;
-        G.work[i].uy   = x * sn + y * c;
-        G.work[i].f    = A->knots[i].f;
-        G.work[i].dt_q = A->knots[i].dt_q;
+        float ux = alpha * A->knots[i].ux + (1.0f - alpha) * (B ? B->knots[i].ux : 0.0f);
+        float uy = alpha * A->knots[i].uy + (1.0f - alpha) * (B ? B->knots[i].uy : 0.0f);
+        float x = ux * s, y = uy * s;
+        G.work[i].ux = x * c - y * sn;
+        G.work[i].uy = x * sn + y * c;
+        G.work[i].f  = A->knots[i].f;
+
+        /* time-warp: bounded slow random walk around 1.0. */
+        walk += gesture_rand_range(-0.02f, 0.02f);
+        if (walk < 1.0f - GST_AUG_TWARP) walk = 1.0f - GST_AUG_TWARP;
+        if (walk > 1.0f + GST_AUG_TWARP) walk = 1.0f + GST_AUG_TWARP;
+        float ad = (float)A->knots[i].dt_q;
+        float bd = B ? (float)B->knots[i].dt_q : ad;
+        float dq = (alpha * ad + (1.0f - alpha) * bd) * walk;
+        if (dq < 0.0f) dq = 0.0f;
+        if (dq > 65535.0f) dq = 65535.0f;
+        G.work[i].dt_q = (uint16_t)(dq + 0.5f);
     }
-    G.work_n      = n;
-    G.work_cursor = 1;                    /* knot 0 is the origin (0,0) */
-    G.emit_px     = G.work[0].ux;
-    G.emit_py     = G.work[0].uy;
+    G.work_n = n;
+    endpoint_true(tx, ty);
+    G.work_cursor = 1;
+    G.emit_px = G.work[0].ux;
+    G.emit_py = G.work[0].uy;
     return true;
 }
 
