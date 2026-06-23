@@ -331,6 +331,56 @@ int main(void) {
         CHECK(!gesture_motion_next(&dx, &dy, &dtq), "Task2: next when idle returns false");
     }
 
+    /* ── Plan 2 Task 3: augmentation (jitter + morph + time-warp + trueing) ── */
+    {
+        gesture_init(1000);
+        warm_library_all_buckets();
+
+        /* (A) Endpoint is EXACT despite jitter (trueing). */
+        gesture_motion_begin(60, 25, MOTION_MODE_SILENT);
+        float sx = 0, sy = 0, dx, dy; uint16_t dtq;
+        while (gesture_motion_next(&dx, &dy, &dtq)) { sx += dx; sy += dy; }
+        CHECK(fabsf(sx - 60.0f) < 1e-2f && fabsf(sy - 25.0f) < 1e-2f,
+              "Task3: endpoint trueing lands exactly on target");
+
+        /* (B) Two begins to the same target differ mid-path (jitter active). */
+        float ax[GST_KNOTS_MAX]; int an = 0;
+        gesture_motion_begin(60, 25, MOTION_MODE_SILENT);
+        while (gesture_motion_next(&dx, &dy, &dtq)) ax[an++] = dx;
+        float bx[GST_KNOTS_MAX]; int bn = 0;
+        gesture_motion_begin(60, 25, MOTION_MODE_SILENT);
+        while (gesture_motion_next(&dx, &dy, &dtq)) bx[bn++] = dx;
+        int differ = 0;
+        for (int i = 0; i < an && i < bn; i++) if (fabsf(ax[i] - bx[i]) > 1e-4f) differ = 1;
+        CHECK(differ, "Task3: jitter makes repeated gestures non-identical");
+    }
+
+    /* ── Plan 2 Task 3: morph keeps endpoint, blends micro-structure ── */
+    {
+        gesture_init(1000);
+        warm_library_all_buckets();
+        /* Add two distinct medium shapes (same bucket ~len 180, opposite curvature)
+         * so the medium bucket has morph partners. */
+        gst_sample_t a[60], b[60];
+        for (int i = 0; i < 60; i++) {
+            a[i].dx = 3; a[i].dy = (int16_t)((i < 30) ?  1 : -1); a[i].t_us = (uint32_t)(i*1000);
+            b[i].dx = 3; b[i].dy = (int16_t)((i < 30) ? -1 :  1); b[i].t_us = (uint32_t)(i*1000);
+        }
+        gst_shape_t sa, sb;
+        CHECK(gesture_build_shape(a, 60, &sa), "Task3: shape A built");
+        CHECK(gesture_build_shape(b, 60, &sb), "Task3: shape B built");
+        gesture_library_admit(&sa);
+        gesture_library_admit(&sb);
+
+        gesture_motion_begin(180, 10, MOTION_MODE_SILENT);
+        float sx = 0, sy = 0, dx, dy; uint16_t dtq; int steps = 0; uint32_t dtsum = 0;
+        while (gesture_motion_next(&dx, &dy, &dtq)) { sx += dx; sy += dy; dtsum += dtq; steps++; }
+        CHECK(fabsf(sx - 180.0f) < 1e-2f && fabsf(sy - 10.0f) < 1e-2f,
+              "Task3: morphed gesture still lands on target");
+        CHECK(steps == GST_KNOTS_MAX - 1, "Task3: morphed gesture full step count");
+        CHECK(dtsum > 0, "Task3: time-warped dt_q sequence is non-trivial");
+    }
+
     /* ── resource bound: total engine state stays bounded ── */
     /* lib pool 32*780 ~= 25KB + cap ring 256*8 = 2KB + bookkeeping. */
     printf("INFO sizeof(gst_shape_t)=%zu pool=%zu cap=%zu\n",
