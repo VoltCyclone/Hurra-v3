@@ -8,6 +8,17 @@
 #define GST_FASTRUN __attribute__((section(".fastrun")))
 #endif
 
+#ifdef GESTURE_HOSTTEST
+static uint32_t gst_hw_entropy(void) { return 0x12345678u; }   /* deterministic */
+#else
+extern uint32_t timebase_v5f_us(void);   /* TIM9 1 MHz, started pre-gesture */
+static uint32_t gst_hw_entropy(void) {
+    uint32_t cyc = timebase_v5f_us();
+    uint32_t uid = *(volatile uint32_t *)0x1FFFF704;   /* WCH device-info word */
+    return cyc ^ uid;
+}
+#endif
+
 /* All engine state lives in this single static struct (no dynamic alloc). */
 static struct {
     uint32_t nominal_us;
@@ -19,11 +30,34 @@ static struct {
     uint8_t     lib_bucket[GST_LIB_SHAPES];
     uint8_t     lib_n;                   /* valid shapes 0..GST_LIB_SHAPES */
     uint8_t     lib_head;                /* next write slot (global FIFO)  */
+    /* ── PRNG (SFC32), seeded in gesture_init ── */
+    uint32_t rng_a, rng_b, rng_c, rng_ctr;
 } G;
+
+static inline uint32_t gst_sfc32(void) {
+    uint32_t t = G.rng_a + G.rng_b + G.rng_ctr++;
+    G.rng_a = G.rng_b ^ (G.rng_b >> 9);
+    G.rng_b = G.rng_c + (G.rng_c << 3);
+    G.rng_c = ((G.rng_c << 21) | (G.rng_c >> 11)) + t;
+    return t;
+}
 
 void gesture_init(uint32_t nominal_interval_us) {
     memset(&G, 0, sizeof(G));
     G.nominal_us = nominal_interval_us ? nominal_interval_us : 1000u;
+    uint32_t seed = gst_hw_entropy();
+    G.rng_a = seed ^ 0xCAFEBABEu; G.rng_b = seed ^ 0xDEADBEEFu;
+    G.rng_c = seed ^ 0x8BADF00Du; G.rng_ctr = 1u;
+    if (!G.rng_a) G.rng_a = 0xCAFEBABEu;   /* only a is guarded; warm-up restores liveness */
+    for (int i = 0; i < 16; i++) (void)gst_sfc32();
+}
+
+uint32_t gesture_rand_u32(void) { return gst_sfc32(); }
+
+float gesture_rand_range(float lo, float hi) {
+    /* top 24 bits → [0,1), then affine to [lo,hi). */
+    float u = (float)(gst_sfc32() >> 8) * (1.0f / 16777216.0f);
+    return lo + u * (hi - lo);
 }
 
 GST_FASTRUN

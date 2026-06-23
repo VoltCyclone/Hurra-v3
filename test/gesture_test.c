@@ -269,6 +269,24 @@ int main(void) {
         CHECK(gesture_warmth() == GST_COLD, "below WARM_MIN stays COLD");
     }
 
+    /* ── Plan 2 Task 1: PRNG determinism + range ── */
+    {
+        gesture_init(1000);
+        uint32_t a0 = gesture_rand_u32();
+        uint32_t a1 = gesture_rand_u32();
+        gesture_init(1000);                     /* same deterministic seed */
+        CHECK(gesture_rand_u32() == a0 && gesture_rand_u32() == a1,
+              "PRNG is deterministic across re-init");
+        CHECK(a0 != a1, "PRNG advances between draws");
+
+        int in_band = 1;
+        for (int i = 0; i < 2000; i++) {
+            float r = gesture_rand_range(-1.5f, 1.5f);
+            if (r < -1.5f || r >= 1.5f) in_band = 0;
+        }
+        CHECK(in_band, "rand_range stays within [lo, hi)");
+    }
+
     /* ── resource bound: total engine state stays bounded ── */
     /* lib pool 32*780 ~= 25KB + cap ring 256*8 = 2KB + bookkeeping. */
     printf("INFO sizeof(gst_shape_t)=%zu pool=%zu cap=%zu\n",

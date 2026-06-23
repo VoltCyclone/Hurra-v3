@@ -91,3 +91,9 @@ uint8_t             gesture_library_count(void);
 gst_warmth_t        gesture_warmth(void);
 const gst_shape_t  *gesture_library_select(float target_len);
 bool                gesture_capture_build_and_admit(uint16_t window);
+
+/* ── PRNG (test hooks) ─────────────────────────────────────────────────
+ * SFC32, seeded in gesture_init. Deterministic (0x12345678) under
+ * GESTURE_HOSTTEST so augmentation/selection tests are reproducible. */
+uint32_t gesture_rand_u32(void);
+float    gesture_rand_range(float lo, float hi);   /* uniform [lo, hi) */
