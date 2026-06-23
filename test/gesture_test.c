@@ -415,6 +415,31 @@ int main(void) {
         CHECK(gesture_dup_rejected() >  before, "Task4: guard re-rolls on repeated targets");
     }
 
+    /* ── Plan 2 Task 5: synth min-jerk fallback ── */
+    {
+        gesture_init(1000);                    /* empty library → synth path */
+        gesture_motion_begin(100, 0, MOTION_MODE_SILENT);
+        CHECK(!gesture_motion_done(), "Task5: synth gesture active");
+
+        float sx = 0, sy = 0, dx, dy; uint16_t dtq; int steps = 0;
+        float vs[GST_KNOTS_MAX]; int vn = 0;
+        while (gesture_motion_next(&dx, &dy, &dtq)) {
+            vs[vn++] = sqrtf(dx*dx + dy*dy);
+            sx += dx; sy += dy; steps++;
+        }
+        CHECK(fabsf(sx - 100.0f) < 1e-2f && fabsf(sy) < 1e-2f, "Task5: synth endpoint exact");
+        CHECK(steps == GST_KNOTS_MAX - 1, "Task5: synth full step count");
+
+        /* Corrective-submovement signature: a clean spline decreases monotonically
+         * after its single peak; a ballistic+corrective profile re-accelerates. */
+        int pk = 0; float vmax = 0.0f;
+        for (int i = 0; i < vn; i++) if (vs[i] > vmax) { vmax = vs[i]; pk = i; }
+        int secondary_rise = 0;
+        for (int i = pk + 2; i < vn; i++)
+            if (vs[i] > vs[i-1] + 0.02f * vmax) secondary_rise = 1;
+        CHECK(secondary_rise, "Task5: synth re-accelerates after main peak (not a clean spline)");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

@@ -470,9 +470,61 @@ static bool replay_begin(int32_t tx, int32_t ty) {
     return true;
 }
 
+/* Normalized min-jerk position, tau in [0,1]: 10t³ − 15t⁴ + 6t⁵
+ * (zero velocity and acceleration at both ends). */
+static float minjerk(float tau) {
+    float t3 = tau * tau * tau;
+    return t3 * (10.0f - 15.0f * tau + 6.0f * tau * tau);
+}
+
+/* Ballistic primary (undershoots to g1) + corrective submovement to V, with a
+ * small lateral bow. The segment junction yields a velocity dip + re-accel. */
+static bool synth_begin(int32_t tx, int32_t ty) {
+    float Vx = (float)tx, Vy = (float)ty;
+    float R = sqrtf(Vx * Vx + Vy * Vy);
+    if (R < 1.0f) { G.work_n = 0; return false; }
+    float theta = atan2f(Vy, Vx);
+    float c = cosf(theta), sn = sinf(theta);
+
+    uint16_t n = GST_KNOTS_MAX;
+    uint16_t split = (uint16_t)(n * 7u / 10u);     /* ~70% of knots in the primary */
+    if (split < 2)      split = 2;
+    if (split > n - 2)  split = (uint16_t)(n - 2);
+    float g1      = R * gesture_rand_range(0.80f, 0.90f);          /* primary undershoot:
+                                                                      10–20% corrective,
+                                                                      always a detectable
+                                                                      re-acceleration */
+    float lat_amp = R * gesture_rand_range(-0.03f, 0.03f);         /* lateral bow */
+
+    for (uint16_t i = 0; i < n; i++) {
+        float fi = (float)i / (float)(n - 1);
+        float along;
+        if (i <= split) {
+            float tau = (float)i / (float)split;
+            along = g1 * minjerk(tau);
+        } else {
+            float tau = (float)(i - split) / (float)(n - 1 - split);
+            along = g1 + (R - g1) * minjerk(tau);
+        }
+        float lateral = lat_amp * sinf(3.14159265f * fi);          /* 0 at both ends */
+        float x = along, y = lateral;
+        G.work[i].ux   = x * c - y * sn;
+        G.work[i].uy   = x * sn + y * c;
+        G.work[i].f    = fi;
+        G.work[i].dt_q = 256u;                       /* one nominal interval (Plan-3 refines) */
+    }
+    G.work_n = n;
+    endpoint_true(tx, ty);
+    G.work_cursor = 1;
+    G.emit_px = G.work[0].ux;
+    G.emit_py = G.work[0].uy;
+    return true;
+}
+
 void gesture_motion_begin(int32_t tx, int32_t ty, motion_mode_t mode) {
-    (void)mode;                           /* mode used by the selector in Task 6 */
+    (void)mode;                           /* selector arrives in Task 6 */
     if (replay_begin(tx, ty)) { G.src_kind = GST_SRC_REPLAY; return; }
+    if (synth_begin(tx, ty))  { G.src_kind = GST_SRC_SYNTH;  return; }
     G.src_kind = GST_SRC_NONE;
     G.work_n = 0; G.work_cursor = 0;
 }
