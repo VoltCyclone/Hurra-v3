@@ -161,6 +161,33 @@ int main(void) {
         CHECK(sh.total_us >= 1000 && sh.total_us <= 1048, "total_us .8 fixed");
     }
 
+    /* ── Task 7: quality gates + builder ── */
+    {
+        gesture_init(1000);
+        /* A clean medium rightward gesture, 20 samples, ~2px/sample => len ~40. */
+        gst_sample_t mv[20];
+        for (int i = 0; i < 20; i++) { mv[i].dx = 2; mv[i].dy = 0; mv[i].t_us = (uint32_t)(i*1000); }
+        gst_shape_t sh;
+        CHECK(gesture_build_shape(mv, 20, &sh), "clean gesture admitted");
+        CHECK(sh.n == GST_KNOTS_MAX, "built shape has full knots");
+        CHECK(fabsf(sh.knots[GST_KNOTS_MAX-1].ux - 1.0f) < 1e-3f, "built shape normalized");
+        CHECK(gesture_length_bucket(sh.raw_len) == 0 || gesture_length_bucket(sh.raw_len) == 1,
+              "bucket classifies (short/medium for len~40)");
+
+        /* too few samples rejected */
+        CHECK(!gesture_build_shape(mv, 3, &sh), "too-few samples rejected");
+
+        /* a near-still twitch rejected (len below GST_MIN_LEN) */
+        gst_sample_t twitch[8] = {{1,0,0},{0,0,1000},{-1,0,2000},{0,0,3000},
+                                  {1,0,4000},{0,0,5000},{0,0,6000},{0,0,7000}};
+        CHECK(!gesture_build_shape(twitch, 8, &sh), "tiny twitch rejected");
+
+        /* bucket boundaries */
+        CHECK(gesture_length_bucket(40.0f)  == 0, "len 40 -> short");
+        CHECK(gesture_length_bucket(200.0f) == 1, "len 200 -> medium");
+        CHECK(gesture_length_bucket(800.0f) == 2, "len 800 -> long");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

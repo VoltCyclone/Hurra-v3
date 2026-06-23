@@ -177,3 +177,55 @@ void gesture_normalize_temporal(gst_shape_t *shape, const gst_point_t *pts,
     uint32_t total = (n > 0) ? (pts[n-1].t_us - pts[0].t_us) : 0u;
     shape->total_us = us_to_dtq(total, G.nominal_us);
 }
+
+uint8_t gesture_length_bucket(float raw_len) {
+    if (raw_len < 80.0f)  return 0;
+    if (raw_len < 400.0f) return 1;
+    return 2;
+}
+
+/* Count submovements as velocity-magnitude local minima between local maxima
+ * along the reconstructed path (a coarse ballistic+correction proxy). */
+static uint8_t count_submovements(const gst_point_t *pts, uint16_t n) {
+    if (n < 3) return 1;
+    uint8_t subs = 1;
+    float prev_v = 0.0f; int rising = 1;
+    for (uint16_t i = 1; i < n; i++) {
+        float dx = pts[i].x - pts[i-1].x, dy = pts[i].y - pts[i-1].y;
+        float v = sqrtf(dx*dx + dy*dy);
+        if (rising && v < prev_v * 0.5f) { subs++; rising = 0; }
+        else if (!rising && v > prev_v * 2.0f) { rising = 1; }
+        prev_v = v;
+    }
+    return subs;
+}
+
+bool gesture_build_shape(const gst_sample_t *samples, uint16_t n,
+                         gst_shape_t *out) {
+    if (n < 4) return false;
+    static gst_point_t pts[GST_CAP_RING];
+    uint16_t np = gesture_reconstruct(samples, n, pts, GST_CAP_RING);
+    if (np < 2) return false;
+
+    memset(out, 0, sizeof(*out));
+    out->n = gesture_resample(pts, np, out->knots);
+    if (out->n == 0) return false;
+
+    /* total path length for the min-length gate (pre-normalization). */
+    float total_len = 0.0f;
+    for (uint16_t i = 1; i < np; i++) {
+        float dx = pts[i].x - pts[i-1].x, dy = pts[i].y - pts[i-1].y;
+        total_len += sqrtf(dx*dx + dy*dy);
+    }
+    if (total_len < GST_MIN_LEN) return false;
+
+    if (!gesture_normalize_spatial(out)) return false;
+    gesture_normalize_temporal(out, pts, np);
+
+    out->submv = count_submovements(pts, np);
+    /* flags bit0: curvature sign from the cross product of first/last segments. */
+    float c = (pts[np-1].x - pts[0].x) * (pts[1].y - pts[0].y)
+            - (pts[np-1].y - pts[0].y) * (pts[1].x - pts[0].x);
+    out->flags = (c < 0.0f) ? 1u : 0u;
+    return true;
+}

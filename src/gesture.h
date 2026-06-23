@@ -74,3 +74,11 @@ bool gesture_normalize_spatial(gst_shape_t *shape);
  * (.8 fixed of nominal). Knot 0 dt_q is 0. */
 void gesture_normalize_temporal(gst_shape_t *shape, const gst_point_t *pts,
                                 uint16_t n);
+
+/* ── quality-gated shape builder ───────────────────────────────────────*/
+#define GST_LEN_BUCKETS 3
+#define GST_MIN_LEN     8.0f   /* counts; shorter gestures are rejected */
+
+uint8_t gesture_length_bucket(float raw_len); /* 0 short / 1 medium / 2 long */
+bool    gesture_build_shape(const gst_sample_t *samples, uint16_t n,
+                            gst_shape_t *out);
