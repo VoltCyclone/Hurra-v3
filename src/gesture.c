@@ -246,7 +246,7 @@ void gesture_library_admit(const gst_shape_t *shape) {
 uint8_t gesture_library_count(void) { return G.lib_n; }
 
 gst_warmth_t gesture_warmth(void) {
-    if (G.lib_n == 0) return GST_COLD;
+    if (G.lib_n < GST_WARM_MIN) return GST_COLD;
     bool seen[GST_LEN_BUCKETS] = { false, false, false };
     for (uint8_t i = 0; i < G.lib_n; i++) seen[G.lib_bucket[i]] = true;
     if (G.lib_n >= GST_WARM_MIN && seen[0] && seen[1] && seen[2]) return GST_WARM;
