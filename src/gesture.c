@@ -15,7 +15,7 @@ static struct {
     uint16_t cap_head;   /* index where the NEXT push will write */
     uint16_t cap_count;  /* valid samples, saturates at GST_CAP_RING */
     /* shared-pool FIFO library of shapes */
-    gst_shape_t lib[GST_LIB_SHAPES];     /* shared 32-slot pool (~19 KB) */
+    gst_shape_t lib[GST_LIB_SHAPES];     /* shared 32-slot pool (~25 KB) */
     uint8_t     lib_bucket[GST_LIB_SHAPES];
     uint8_t     lib_n;                   /* valid shapes 0..GST_LIB_SHAPES */
     uint8_t     lib_head;                /* next write slot (global FIFO)  */

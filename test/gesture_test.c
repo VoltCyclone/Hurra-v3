@@ -242,7 +242,7 @@ int main(void) {
     }
 
     /* ── resource bound: total engine state stays bounded ── */
-    /* lib pool 32*592 ~= 19KB + cap ring 256*8 = 2KB + bookkeeping. */
+    /* lib pool 32*780 ~= 25KB + cap ring 256*8 = 2KB + bookkeeping. */
     printf("INFO sizeof(gst_shape_t)=%zu pool=%zu cap=%zu\n",
            sizeof(gst_shape_t),
            sizeof(gst_shape_t) * GST_LIB_SHAPES,
