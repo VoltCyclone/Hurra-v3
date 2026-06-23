@@ -148,6 +148,45 @@ int main(void) {
         CHECK(labs(s - 3000L*4) <= 2, "conservation holds with interval feed");
     }
 
+    /* ── Plan 3 Task 4: injected emit quantization (sub-pixel + clamp carry) ── */
+    {
+        /* (A) Sub-pixel carry: a stream of 0.4-count steps must accumulate into
+         *     whole counts (no per-step truncation-to-zero loss). */
+        humanize_init(1000);
+        long acc = 0;
+        for (int i = 0; i < 100; i++) {
+            int16_t ox = 0, oy = 0;
+            humanize_inject_emit(0.4f, 0.0f, &ox, &oy);
+            acc += ox;
+        }
+        CHECK(labs(acc - 40L) <= 1, "inject_emit: sub-pixel residual conserves (0.4*100=40)");
+
+        /* (B) Field-clamp carry: a huge single step never teleports, and the
+         *     clamped overflow is redelivered over later calls (not dropped). */
+        humanize_init(1000);
+        int16_t bx = 0, by = 0; long total = 0; int maxframe = 0;
+        humanize_inject_emit(30000.0f, 0.0f, &bx, &by);
+        total += bx; if (abs(bx) > maxframe) maxframe = abs(bx);
+        for (int i = 0; i < 4000; i++) {
+            int16_t dx = 0, dy = 0;
+            humanize_inject_emit(0.0f, 0.0f, &dx, &dy);
+            total += dx; if (abs(dx) > maxframe) maxframe = abs(dx);
+        }
+        CHECK(maxframe <= 127, "inject_emit: no single frame exceeds human cap");
+        CHECK(labs(total - 30000L) <= 4, "inject_emit: clamped overflow redelivered, not lost");
+
+        /* (C) Two-axis independence: a diagonal stream conserves on both axes. */
+        humanize_init(1000);
+        long ax = 0, ay = 0;
+        for (int i = 0; i < 200; i++) {
+            int16_t dx = 0, dy = 0;
+            humanize_inject_emit(1.5f, -0.75f, &dx, &dy);
+            ax += dx; ay += dy;
+        }
+        CHECK(labs(ax - 300L) <= 1, "inject_emit: x-axis conserves (1.5*200=300)");
+        CHECK(labs(ay + 150L) <= 1, "inject_emit: y-axis conserves (-0.75*200=-150)");
+    }
+
     printf(failures ? "\n%d FAILED\n" : "\nALL PASSED\n", failures);
     return failures ? 1 : 0;
 }

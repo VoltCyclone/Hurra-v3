@@ -254,6 +254,18 @@ void humanize_filter(int16_t *dx, int16_t *dy) {
 }
 
 HZ_FASTRUN
+void humanize_inject_emit(float dx, float dy, int16_t *out_dx, int16_t *out_dy) {
+    /* Accumulate into the injected owed, then drain through the same cap-with-
+     * carry path humanize_filter uses (emit_v = full owed, no perpendicular
+     * noise — the engine's shapes already carry real noise). owed retains the
+     * field-clamp overflow for redelivery; res retains the sub-pixel remainder. */
+    S.owed_x += dx;
+    S.owed_y += dy;
+    *out_dx = drain_axis(&S.owed_x, &S.res_x, S.owed_x, 0.0f);
+    *out_dy = drain_axis(&S.owed_y, &S.res_y, S.owed_y, 0.0f);
+}
+
+HZ_FASTRUN
 void humanize_return(int16_t dx, int16_t dy) {
     S.owed_x += (float)dx;
     S.owed_y += (float)dy;
