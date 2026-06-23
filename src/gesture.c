@@ -69,3 +69,55 @@ uint16_t gesture_reconstruct(const gst_sample_t *samples, uint16_t n,
     }
     return count;
 }
+
+/* Centripetal Catmull-Rom position at parameter u in [0,1] across p1..p2,
+ * with p0/p3 the neighbours. Falls back to linear at the ends. */
+static void catmull_rom(float p0x, float p0y, float p1x, float p1y,
+                        float p2x, float p2y, float p3x, float p3y,
+                        float u, float *ox, float *oy) {
+    float u2 = u * u, u3 = u2 * u;
+    /* Standard Catmull-Rom basis (tau = 0.5). */
+    *ox = 0.5f * ((2.0f*p1x) + (-p0x + p2x)*u +
+                  (2.0f*p0x - 5.0f*p1x + 4.0f*p2x - p3x)*u2 +
+                  (-p0x + 3.0f*p1x - 3.0f*p2x + p3x)*u3);
+    *oy = 0.5f * ((2.0f*p1y) + (-p0y + p2y)*u +
+                  (2.0f*p0y - 5.0f*p1y + 4.0f*p2y - p3y)*u2 +
+                  (-p0y + 3.0f*p1y - 3.0f*p2y + p3y)*u3);
+}
+
+uint16_t gesture_resample(const gst_point_t *pts, uint16_t n, gst_knot_t *out) {
+    if (n < 2) return 0;
+    for (uint16_t k = 0; k < GST_KNOTS_MAX; k++) {
+        float target_f = (float)k / (float)(GST_KNOTS_MAX - 1);
+        out[k].f = target_f;
+        out[k].dt_q = 0;                       /* filled by gesture_normalize */
+
+        /* Find the segment [i, i+1] whose fraction range contains target_f. */
+        uint16_t i = 0;
+        while (i < n - 1 && pts[i + 1].f < target_f) i++;
+        if (i >= n - 1) {                      /* clamp to endpoint */
+            out[k].ux = pts[n - 1].x;
+            out[k].uy = pts[n - 1].y;
+            continue;
+        }
+        float f0 = pts[i].f, f1 = pts[i + 1].f;
+        float span = f1 - f0;
+        float u = (span > 1e-9f) ? (target_f - f0) / span : 0.0f;
+        /* Clamp u into [0,1]. gesture_reconstruct counts the implicit origin
+         * (0,0)->first-sample arc, so pts[0].f > 0; without this, knots whose
+         * target_f < pts[0].f would make Catmull-Rom extrapolate backward. */
+        if (u < 0.0f) u = 0.0f;
+        if (u > 1.0f) u = 1.0f;
+
+        uint16_t i0 = (i > 0) ? i - 1 : i;
+        uint16_t i3 = (i + 2 < n) ? i + 2 : i + 1;
+        catmull_rom(pts[i0].x, pts[i0].y, pts[i].x, pts[i].y,
+                    pts[i+1].x, pts[i+1].y, pts[i3].x, pts[i3].y,
+                    u, &out[k].ux, &out[k].uy);
+    }
+    /* Force exact endpoints (Catmull-Rom interpolates control points, but the
+     * fraction-search clamp above already guarantees this; assert by overwrite). */
+    out[0].ux = pts[0].x; out[0].uy = pts[0].y;
+    out[GST_KNOTS_MAX-1].ux = pts[n-1].x; out[GST_KNOTS_MAX-1].uy = pts[n-1].y;
+    return GST_KNOTS_MAX;
+}
