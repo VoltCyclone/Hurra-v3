@@ -540,6 +540,41 @@ int main(void) {
         CHECK(n2 == GST_KNOTS_MAX - 1, "Task2: ride-along next() still emits n-1 steps");
     }
 
+    /* ── Plan 3 Task 3: cold-start synth cadence from the cadence view ── */
+    {
+        /* (A) Empty capture ring -> synth keeps the flat one-nominal fallback. */
+        gesture_init(1000);                 /* empty library + empty capture ring */
+        gesture_motion_begin(120, 0, MOTION_MODE_SILENT);   /* cold -> synth */
+        float dx, dy; uint16_t dtq; int flat = 1; uint16_t first = 0; int seen = 0;
+        while (gesture_motion_next(&dx, &dy, &dtq)) {
+            if (!seen) { first = dtq; seen = 1; }
+            else if (dtq != first) flat = 0;
+        }
+        CHECK(flat, "Task3: no cadence -> synth dt_q is flat (one nominal)");
+
+        /* (B) Populated capture ring with jittered dt -> synth cadence varies. */
+        gesture_init(1000);
+        uint32_t gaps[8] = { 1000, 700, 1300, 900, 1100, 600, 1400, 1000 };
+        uint32_t t = 1000;
+        for (int i = 0; i < 8; i++) { gesture_capture_push(1, 0, t); t += gaps[i]; }
+        CHECK(gesture_cadence_count() >= 4, "Task3: cadence available");
+        gesture_motion_begin(120, 0, MOTION_MODE_SILENT);   /* still cold lib -> synth */
+        uint16_t dq[GST_KNOTS_MAX]; int n = 0; int varied = 0; uint16_t f2 = 0;
+        while (gesture_motion_next(&dx, &dy, &dtq)) {
+            dq[n] = dtq;
+            if (n == 1) f2 = dtq;
+            else if (n > 1 && dtq != f2) varied = 1;
+            n++;
+        }
+        CHECK(varied, "Task3: synth dt_q reproduces captured jitter (not flat)");
+        /* endpoint integrity unaffected by the cadence change */
+        float sx = 0; gesture_init(1000);
+        for (int i = 0; i < 8; i++) { gesture_capture_push(1,0,1000u+(uint32_t)i*1000u); }
+        gesture_motion_begin(120, 0, MOTION_MODE_SILENT);
+        while (gesture_motion_next(&dx, &dy, &dtq)) sx += dx;
+        CHECK(fabsf(sx - 120.0f) < 1e-2f, "Task3: synth endpoint still exact");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
