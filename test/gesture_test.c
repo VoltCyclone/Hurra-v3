@@ -50,6 +50,33 @@ int main(void) {
     gesture_capture_get(0, &s);
     CHECK(s.dx == (int16_t)(GST_CAP_RING + 49), "newest survives overflow");
 
+    /* ── Task 3: reconstruction ── */
+    {
+        /* A straight 3-sample move: (2,0),(2,0),(1,0). Cumulative x: 2,4,5. */
+        gst_sample_t in[3] = {
+            { 2, 0, 1000 }, { 2, 0, 2000 }, { 1, 0, 3000 },
+        };
+        gst_point_t pts[8];
+        uint16_t np = gesture_reconstruct(in, 3, pts, 8);
+        CHECK(np == 3, "reconstruct returns sample count");
+        CHECK(fabsf(pts[0].x - 2.0f) < 1e-4f, "cum x[0]=2");
+        CHECK(fabsf(pts[1].x - 4.0f) < 1e-4f, "cum x[1]=4");
+        CHECK(fabsf(pts[2].x - 5.0f) < 1e-4f, "cum x[2]=5");
+        CHECK(fabsf(pts[2].f - 1.0f) < 1e-4f, "last fraction is 1.0");
+        CHECK(fabsf(pts[0].f - 0.4f) < 1e-3f, "fraction tracks path length (2/5)");
+        /* cumulative time relative to first sample */
+        CHECK(pts[0].t_us == 0u,    "t starts at 0");
+        CHECK(pts[2].t_us == 2000u, "t accumulates dt");
+    }
+    {
+        /* Zero-length input: no NaN, fractions all zero. */
+        gst_sample_t in[2] = { {0,0,1000}, {0,0,2000} };
+        gst_point_t pts[4];
+        uint16_t np = gesture_reconstruct(in, 2, pts, 4);
+        CHECK(np == 2, "zero-length still returns points");
+        CHECK(pts[0].f == 0.0f && pts[1].f == 0.0f, "zero-length fractions are 0");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
