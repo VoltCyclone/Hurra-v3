@@ -440,6 +440,43 @@ int main(void) {
         CHECK(secondary_rise, "Task5: synth re-accelerates after main peak (not a clean spline)");
     }
 
+    /* ── Plan 2 Task 6: selector + state machine + diagnostics ── */
+    {
+        /* COLD: empty library → synth. */
+        gesture_init(1000);
+        CHECK(gesture_select_source(MOTION_MODE_SILENT, 100.0f) == GST_SEL_SYNTH,
+              "Task6: cold library selects synth");
+        gesture_motion_begin(100, 0, MOTION_MODE_SILENT);
+        CHECK(gesture_synth_fallback_count() == 1, "Task6: cold begin counts a synth fallback");
+
+        /* WARM: ≥ GST_WARM_MIN shapes across all three buckets → replay on match. */
+        gesture_init(1000);
+        const int lens[6] = { 40, 200, 800, 60, 240, 600 };
+        for (int b = 0; b < 6; b++) {
+            gst_sample_t mv[256]; int steps = lens[b] / 4; if (steps > 200) steps = 200;
+            for (int i = 0; i < steps; i++) { mv[i].dx = 4; mv[i].dy = 0; mv[i].t_us = (uint32_t)(i*1000); }
+            gst_shape_t sh; if (gesture_build_shape(mv, (uint16_t)steps, &sh)) gesture_library_admit(&sh);
+        }
+        CHECK(gesture_library_count() >= GST_WARM_MIN, "Task6: library is warm");
+        CHECK(gesture_select_source(MOTION_MODE_SILENT, 220.0f) == GST_SEL_REPLAY,
+              "Task6: warm + bucket match selects replay");
+        uint32_t rc0 = gesture_replay_count();
+        gesture_motion_begin(220, 0, MOTION_MODE_SILENT);
+        CHECK(gesture_replay_count() == rc0 + 1, "Task6: replay begin counts a replay");
+
+        /* Bucket miss: warm-ish library lacking the long bucket → synth + miss count. */
+        gesture_init(1000);
+        gst_sample_t s40[12];
+        for (int i = 0; i < 12; i++) { s40[i].dx = 4; s40[i].dy = 0; s40[i].t_us = (uint32_t)(i*1000); }
+        for (int k = 0; k < GST_WARM_MIN; k++) {
+            gst_shape_t sh; if (gesture_build_shape(s40, 12, &sh)) gesture_library_admit(&sh);
+        }
+        uint32_t bm0 = gesture_bucket_miss();
+        gesture_motion_begin(1200, 0, MOTION_MODE_SILENT);   /* long bucket: none present */
+        CHECK(gesture_bucket_miss() == bm0 + 1, "Task6: warm-but-no-bucket counts a bucket miss");
+        CHECK(gesture_synth_fallback_count() >= 1, "Task6: bucket miss fell through to synth");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

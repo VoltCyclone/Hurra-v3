@@ -110,3 +110,13 @@ bool gesture_motion_done(void);
 
 /* Count of replay re-rolls forced by the repetition guard (diagnostic). */
 uint32_t gesture_dup_rejected(void);
+
+/* ── source selector + diagnostics ─────────────────────────────────────*/
+typedef enum { GST_SEL_SYNTH = 0, GST_SEL_REPLAY = 1 } gst_sel_t;
+
+/* COLD → synth; WARMING/WARM → replay if a same-bucket shape exists, else synth. */
+gst_sel_t gesture_select_source(motion_mode_t mode, float target_len);
+
+uint32_t  gesture_replay_count(void);
+uint32_t  gesture_synth_fallback_count(void);
+uint32_t  gesture_bucket_miss(void);
