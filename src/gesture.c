@@ -48,27 +48,40 @@ bool gesture_capture_get(uint16_t age, gst_sample_t *out) {
 uint16_t gesture_reconstruct(const gst_sample_t *samples, uint16_t n,
                              gst_point_t *out, uint16_t out_cap) {
     if (n == 0 || out_cap == 0) return 0;
-    uint16_t count = (n < out_cap) ? n : out_cap;
+    /* Output is n+1 points: the implicit origin at t=0 plus one per sample. */
+    uint16_t count = (n + 1u < (uint32_t)out_cap) ? (uint16_t)(n + 1u) : out_cap;
+
+    /* out[0] is the origin: cursor sat at (0,0) one report-interval before sample[0]. */
+    out[0].x    = 0.0f;
+    out[0].y    = 0.0f;
+    out[0].t_us = 0u;
+    out[0].f    = 0.0f;   /* will be set correctly after normalization */
+
+    uint32_t nominal = G.nominal_us ? G.nominal_us : 1000u;
+    uint32_t t0      = samples[0].t_us;
 
     float cx = 0.0f, cy = 0.0f;
-    uint32_t t0 = samples[0].t_us;
     /* First pass: cumulative position, time, and cumulative distances. */
     float cum_dist = 0.0f;
     float prev_x = 0.0f, prev_y = 0.0f;
-    for (uint16_t i = 0; i < count; i++) {
-        cx += (float)samples[i].dx;
-        cy += (float)samples[i].dy;
+    for (uint16_t i = 1; i < count; i++) {
+        /* sample index for out[i] is i-1 */
+        cx += (float)samples[i-1].dx;
+        cy += (float)samples[i-1].dy;
         out[i].x = cx;
         out[i].y = cy;
-        out[i].t_us = samples[i].t_us - t0;   /* unsigned, monotonic capture */
+        /* First leg duration is one nominal interval; later legs use real dt. */
+        out[i].t_us = nominal + (samples[i-1].t_us - t0);
         float sdx = cx - prev_x, sdy = cy - prev_y;
         cum_dist += sqrtf(sdx * sdx + sdy * sdy);
-        out[i].f = cum_dist;                   /* store cumulative distance; normalize below */
+        out[i].f = cum_dist;   /* store running length; normalize below */
         prev_x = cx; prev_y = cy;
     }
     /* Second pass: normalize fraction by total path length. */
     if (cum_dist > 1e-6f) {
-        for (uint16_t i = 0; i < count; i++) out[i].f /= cum_dist;
+        float inv = 1.0f / cum_dist;
+        for (uint16_t i = 0; i < count; i++) out[i].f *= inv;
+        out[count - 1].f = 1.0f;   /* exact 1.0 at endpoint */
     } else {
         for (uint16_t i = 0; i < count; i++) out[i].f = 0.0f;
     }
@@ -108,9 +121,9 @@ uint16_t gesture_resample(const gst_point_t *pts, uint16_t n, gst_knot_t *out) {
         float f0 = pts[i].f, f1 = pts[i + 1].f;
         float span = f1 - f0;
         float u = (span > 1e-9f) ? (target_f - f0) / span : 0.0f;
-        /* Clamp u into [0,1]. gesture_reconstruct counts the implicit origin
-         * (0,0)->first-sample arc, so pts[0].f > 0; without this, knots whose
-         * target_f < pts[0].f would make Catmull-Rom extrapolate backward. */
+        /* Clamp u into [0,1] as defensive safety against fraction rounding at
+         * the segment edges (gesture_reconstruct prepends the origin so
+         * pts[0].f == 0 and the search normally yields u in range). */
         if (u < 0.0f) u = 0.0f;
         if (u > 1.0f) u = 1.0f;
 
@@ -180,7 +193,13 @@ void gesture_normalize_temporal(gst_shape_t *shape, const gst_point_t *pts,
         prev_t = t;
     }
     uint32_t total = (n > 0) ? (pts[n-1].t_us - pts[0].t_us) : 0u;
-    shape->total_us = us_to_dtq(total, G.nominal_us);
+    {
+        uint32_t nominal = G.nominal_us ? G.nominal_us : 1000u;
+        float tq = (float)total / (float)nominal * 256.0f;
+        if (tq < 0.0f) tq = 0.0f;
+        if (tq > 4294967040.0f) tq = 4294967040.0f;   /* < UINT32_MAX, safe cast */
+        shape->total_us = (uint32_t)(tq + 0.5f);
+    }
 }
 
 uint8_t gesture_length_bucket(float raw_len) {
@@ -208,8 +227,8 @@ static uint8_t count_submovements(const gst_point_t *pts, uint16_t n) {
 bool gesture_build_shape(const gst_sample_t *samples, uint16_t n,
                          gst_shape_t *out) {
     if (n < 4) return false;
-    static gst_point_t pts[GST_CAP_RING];
-    uint16_t np = gesture_reconstruct(samples, n, pts, GST_CAP_RING);
+    static gst_point_t pts[GST_CAP_RING + 1];
+    uint16_t np = gesture_reconstruct(samples, n, pts, GST_CAP_RING + 1);
     if (np < 2) return false;
 
     memset(out, 0, sizeof(*out));

@@ -50,31 +50,38 @@ int main(void) {
     gesture_capture_get(0, &s);
     CHECK(s.dx == (int16_t)(GST_CAP_RING + 49), "newest survives overflow");
 
-    /* ── Task 3: reconstruction ── */
+    /* ── Task 3: reconstruction (prepend-origin semantics) ── */
+    gesture_init(1000);   /* nominal = 1000 us, used for first-leg timing */
     {
-        /* A straight 3-sample move: (2,0),(2,0),(1,0). Cumulative x: 2,4,5. */
+        /* A straight 3-sample move: (2,0),(2,0),(1,0). Cumulative x: 2,4,5.
+         * With origin prepended: out[0]=(0,0), out[1]=(2,0), out[2]=(4,0), out[3]=(5,0).
+         * Total path length = 2+2+1 = 5. Fractions: 0, 2/5, 4/5, 1.0. */
         gst_sample_t in[3] = {
             { 2, 0, 1000 }, { 2, 0, 2000 }, { 1, 0, 3000 },
         };
         gst_point_t pts[8];
         uint16_t np = gesture_reconstruct(in, 3, pts, 8);
-        CHECK(np == 3, "reconstruct returns sample count");
-        CHECK(fabsf(pts[0].x - 2.0f) < 1e-4f, "cum x[0]=2");
-        CHECK(fabsf(pts[1].x - 4.0f) < 1e-4f, "cum x[1]=4");
-        CHECK(fabsf(pts[2].x - 5.0f) < 1e-4f, "cum x[2]=5");
-        CHECK(fabsf(pts[2].f - 1.0f) < 1e-4f, "last fraction is 1.0");
-        CHECK(fabsf(pts[0].f - 0.4f) < 1e-3f, "fraction tracks path length (2/5)");
-        /* cumulative time relative to first sample */
-        CHECK(pts[0].t_us == 0u,    "t starts at 0");
-        CHECK(pts[2].t_us == 2000u, "t accumulates dt");
+        CHECK(np == 4, "reconstruct returns n+1 (origin + samples)");
+        CHECK(pts[0].x == 0.0f && pts[0].y == 0.0f, "pts[0] is the origin (0,0)");
+        CHECK(fabsf(pts[1].x - 2.0f) < 1e-4f, "cum x[1]=2");
+        CHECK(fabsf(pts[2].x - 4.0f) < 1e-4f, "cum x[2]=4");
+        CHECK(fabsf(pts[3].x - 5.0f) < 1e-4f, "cum x[3]=5");
+        CHECK(fabsf(pts[0].f - 0.0f) < 1e-4f, "origin fraction is 0.0");
+        CHECK(fabsf(pts[3].f - 1.0f) < 1e-4f, "last fraction is 1.0");
+        /* timing: origin at 0; out[1] = nominal + (t0-t0) = 1000;
+         * out[3] = nominal + (t2-t0) = 1000 + (3000-1000) = 3000 */
+        CHECK(pts[0].t_us == 0u,    "origin t_us is 0");
+        CHECK(pts[1].t_us == 1000u, "first sample t_us = nominal (1000)");
+        CHECK(pts[3].t_us == 3000u, "last sample t_us = nominal + (t2-t0)");
     }
     {
         /* Zero-length input: no NaN, fractions all zero. */
         gst_sample_t in[2] = { {0,0,1000}, {0,0,2000} };
         gst_point_t pts[4];
         uint16_t np = gesture_reconstruct(in, 2, pts, 4);
-        CHECK(np == 2, "zero-length still returns points");
-        CHECK(pts[0].f == 0.0f && pts[1].f == 0.0f, "zero-length fractions are 0");
+        CHECK(np == 3, "zero-length still returns n+1 points (origin + 2)");
+        CHECK(pts[0].f == 0.0f && pts[1].f == 0.0f && pts[2].f == 0.0f,
+              "zero-length fractions are all 0");
     }
 
     /* ── Task 4: resample ── */
@@ -186,6 +193,27 @@ int main(void) {
         CHECK(gesture_length_bucket(40.0f)  == 0, "len 40 -> short");
         CHECK(gesture_length_bucket(200.0f) == 1, "len 200 -> medium");
         CHECK(gesture_length_bucket(800.0f) == 2, "len 800 -> long");
+    }
+
+    /* Regression (C1): a large first delta must not collapse knots onto pts[0]
+     * or zero out the leading dt_q. Spread must survive reconstruction. */
+    gesture_init(1000);
+    {
+        gst_sample_t flick[6] = {
+            {50,0,1000},{2,0,2000},{2,0,3000},{2,0,4000},{2,0,5000},{2,0,6000}
+        };
+        gst_shape_t sh;
+        CHECK(gesture_build_shape(flick, 6, &sh), "flick gesture admitted");
+        /* Count knots whose ux sits essentially on the endpoint (ux≈1 after
+         * normalization). With the C1 bug, most knots collapse there. */
+        int near_end = 0;
+        for (int k = 0; k < sh.n; k++)
+            if (sh.knots[k].ux > 0.98f) near_end++;
+        CHECK(near_end < sh.n / 2, "knots are spread, not collapsed at endpoint");
+        /* Most inter-knot intervals must carry real (nonzero) time. */
+        int nz = 0;
+        for (int k = 1; k < sh.n; k++) if (sh.knots[k].dt_q > 0) nz++;
+        CHECK(nz > sh.n / 2, "most dt_q are nonzero (no teleport)");
     }
 
     /* ── Task 8: library + warmth ── */
