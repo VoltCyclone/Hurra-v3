@@ -97,3 +97,13 @@ bool                gesture_capture_build_and_admit(uint16_t window);
  * GESTURE_HOSTTEST so augmentation/selection tests are reproducible. */
 uint32_t gesture_rand_u32(void);
 float    gesture_rand_range(float lo, float hi);   /* uniform [lo, hi) */
+
+/* ── motion source (replay / synth dispatch) ───────────────────────────
+ * One in-flight gesture at a time. begin() materializes a transformed working
+ * copy; next() streams one per-step float delta per call (Plan-2 geometry +
+ * intended timing; Plan-3 adds dt_us pacing and drain_axis quantization). */
+typedef enum { MOTION_MODE_AIMED = 0, MOTION_MODE_SILENT = 1 } motion_mode_t;
+
+void gesture_motion_begin(int32_t tx, int32_t ty, motion_mode_t mode);
+bool gesture_motion_next(float *out_dx, float *out_dy, uint16_t *out_dt_q);
+bool gesture_motion_done(void);

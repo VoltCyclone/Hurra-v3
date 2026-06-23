@@ -9,6 +9,25 @@ static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { \
     printf("FAIL: %s\n", msg); failures++; } } while (0)
 
+/* Warm the library across all length buckets so the selector (Task 6) routes
+ * to replay. 6 shapes, 2 per bucket with mirrored curvature for morph variety. */
+static void warm_library_all_buckets(void) {
+    const int lens[3] = { 40, 200, 800 };
+    for (int b = 0; b < 3; b++) {
+        for (int rep = 0; rep < 2; rep++) {
+            gst_sample_t mv[256];
+            int steps = lens[b] / 4; if (steps > 200) steps = 200;
+            for (int i = 0; i < steps; i++) {
+                mv[i].dx = 4;
+                mv[i].dy = (int16_t)((rep ? 1 : -1) * (i & 1));   /* slight, mirrored bow */
+                mv[i].t_us = (uint32_t)(i * 1000);
+            }
+            gst_shape_t s;
+            if (gesture_build_shape(mv, (uint16_t)steps, &s)) gesture_library_admit(&s);
+        }
+    }
+}
+
 int main(void) {
     /* (A) Struct byte budgets match the spec. */
     CHECK(sizeof(gst_sample_t) == 8,  "gst_sample_t is 8 bytes");
@@ -285,6 +304,31 @@ int main(void) {
             if (r < -1.5f || r >= 1.5f) in_band = 0;
         }
         CHECK(in_band, "rand_range stays within [lo, hi)");
+    }
+
+    /* ── Plan 2 Task 2: replay transform (no augmentation) ── */
+    {
+        gesture_init(1000);
+        warm_library_all_buckets();             /* routes to replay now and post-Task-6 */
+
+        /* Begin toward (30,40): magnitude 50, angle ~53°. */
+        gesture_motion_begin(30, 40, MOTION_MODE_SILENT);
+        CHECK(!gesture_motion_done(), "Task2: gesture active after begin");
+
+        float sx = 0.0f, sy = 0.0f, dx, dy; uint16_t dtq = 0; int steps = 0;
+        while (gesture_motion_next(&dx, &dy, &dtq)) { sx += dx; sy += dy; if (++steps > 100) break; }
+        CHECK(steps == GST_KNOTS_MAX - 1, "Task2: emits n-1 steps");
+        CHECK(fabsf(sx - 30.0f) < 1e-2f && fabsf(sy - 40.0f) < 1e-2f,
+              "Task2: replay endpoint reaches target");
+        CHECK(gesture_motion_done(), "Task2: done after exhaustion");
+
+        /* Zero-magnitude target → neither replay nor synth engages (R<1) → idle.
+         * This stays true after Task 5 adds the synth fallback. */
+        gesture_init(1000);
+        warm_library_all_buckets();
+        gesture_motion_begin(0, 0, MOTION_MODE_SILENT);
+        CHECK(gesture_motion_done(), "Task2: zero-target begin is idle (no source)");
+        CHECK(!gesture_motion_next(&dx, &dy, &dtq), "Task2: next when idle returns false");
     }
 
     /* ── resource bound: total engine state stays bounded ── */

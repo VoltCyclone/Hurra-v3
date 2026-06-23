@@ -8,6 +8,10 @@
 #define GST_FASTRUN __attribute__((section(".fastrun")))
 #endif
 
+#define GST_SRC_NONE   0u
+#define GST_SRC_REPLAY 1u
+#define GST_SRC_SYNTH  2u
+
 #ifdef GESTURE_HOSTTEST
 static uint32_t gst_hw_entropy(void) { return 0x12345678u; }   /* deterministic */
 #else
@@ -32,6 +36,12 @@ static struct {
     uint8_t     lib_head;                /* next write slot (global FIFO)  */
     /* ── PRNG (SFC32), seeded in gesture_init ── */
     uint32_t rng_a, rng_b, rng_c, rng_ctr;
+    /* ── active motion source (one in-flight gesture) ── */
+    uint8_t    src_kind;                  /* GST_SRC_NONE/REPLAY/SYNTH */
+    gst_knot_t work[GST_KNOTS_MAX];       /* transformed working copy  */
+    uint16_t   work_n;                    /* knots in the working copy */
+    uint16_t   work_cursor;               /* next knot index to emit   */
+    float      emit_px, emit_py;          /* last emitted absolute pos */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -336,4 +346,56 @@ bool gesture_capture_build_and_admit(uint16_t window) {
     if (!gesture_build_shape(buf, window, &sh)) return false;
     gesture_library_admit(&sh);
     return true;
+}
+
+/* Materialize a rotated+scaled working copy of the nearest library shape.
+ * No augmentation here (Task 3). The shape's endpoint is unit +X, so
+ * scale·rotate lands the final knot exactly on V. */
+static bool replay_begin(int32_t tx, int32_t ty) {
+    float Vx = (float)tx, Vy = (float)ty;
+    float R = sqrtf(Vx * Vx + Vy * Vy);
+    if (R < 1.0f) return false;
+    const gst_shape_t *A = gesture_library_select(R);
+    if (!A) return false;
+
+    float theta = atan2f(Vy, Vx);
+    float c = cosf(theta), sn = sinf(theta);
+    uint16_t n = A->n;
+    for (uint16_t i = 0; i < n; i++) {
+        float x = A->knots[i].ux * R, y = A->knots[i].uy * R;
+        G.work[i].ux   = x * c - y * sn;
+        G.work[i].uy   = x * sn + y * c;
+        G.work[i].f    = A->knots[i].f;
+        G.work[i].dt_q = A->knots[i].dt_q;
+    }
+    G.work_n      = n;
+    G.work_cursor = 1;                    /* knot 0 is the origin (0,0) */
+    G.emit_px     = G.work[0].ux;
+    G.emit_py     = G.work[0].uy;
+    return true;
+}
+
+void gesture_motion_begin(int32_t tx, int32_t ty, motion_mode_t mode) {
+    (void)mode;                           /* mode used by the selector in Task 6 */
+    if (replay_begin(tx, ty)) { G.src_kind = GST_SRC_REPLAY; return; }
+    G.src_kind = GST_SRC_NONE;
+    G.work_n = 0; G.work_cursor = 0;
+}
+
+GST_FASTRUN
+bool gesture_motion_next(float *out_dx, float *out_dy, uint16_t *out_dt_q) {
+    if (G.src_kind == GST_SRC_NONE) return false;
+    if (G.work_cursor >= G.work_n)  return false;      /* exhausted */
+    float tx = G.work[G.work_cursor].ux;
+    float ty = G.work[G.work_cursor].uy;
+    *out_dx = tx - G.emit_px;
+    *out_dy = ty - G.emit_py;
+    if (out_dt_q) *out_dt_q = G.work[G.work_cursor].dt_q;
+    G.emit_px = tx; G.emit_py = ty;
+    G.work_cursor++;
+    return true;
+}
+
+bool gesture_motion_done(void) {
+    return G.src_kind == GST_SRC_NONE || G.work_cursor >= G.work_n;
 }
