@@ -128,3 +128,12 @@ uint32_t  gesture_bucket_miss(void);
  * human/hardware signal the silent-path cadence reproduces. */
 uint16_t gesture_cadence_count(void);                       /* 0 if < 2 samples */
 bool     gesture_cadence_get(uint16_t age, uint32_t *out_dt_us); /* age 0 = newest */
+
+/* ── silent-path pacing accumulator ────────────────────────────────────
+ * Convert the active source's intended per-step intervals (dt_q) into real-
+ * time-paced emission. pace_advance adds elapsed time; pace_take releases the
+ * next step once its interval has elapsed, carrying the remainder. Loop
+ * pace_take until false to drain a tick (catch-up after a stall). Ride-along
+ * emission uses gesture_motion_next directly and ignores this budget. */
+void gesture_motion_pace_advance(uint32_t elapsed_us);
+bool gesture_motion_pace_take(float *out_dx, float *out_dy, uint16_t *out_dt_q);
