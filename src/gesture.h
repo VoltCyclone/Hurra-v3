@@ -40,3 +40,17 @@ void gesture_init(uint32_t nominal_interval_us);
 void     gesture_capture_push(int16_t dx, int16_t dy, uint32_t t_us);
 uint16_t gesture_capture_count(void);            /* 0..GST_CAP_RING       */
 bool     gesture_capture_get(uint16_t age, gst_sample_t *out); /* age 0=newest */
+
+/* ── sub-pixel reconstruction ──────────────────────────────────────────
+ * Integrate integer report deltas into a continuous float path. Output is
+ * cumulative position (counts), cumulative time from the first sample (us),
+ * and path-length fraction in [0,1]. Run before any rotate/scale so the
+ * micro-structure is not re-quantized. */
+typedef struct {
+    float    x, y;     /* cumulative position, counts */
+    float    f;        /* path-length fraction [0..1] */
+    uint32_t t_us;     /* cumulative time from first sample */
+} gst_point_t;
+
+uint16_t gesture_reconstruct(const gst_sample_t *samples, uint16_t n,
+                             gst_point_t *out, uint16_t out_cap);
