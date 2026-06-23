@@ -852,6 +852,7 @@ gst_click_action_t gesture_click_fire_step(uint32_t dt_us, float *out_dx, float 
         if (G.c1_dwell_el >= G.c1_dwell_us) {
             G.c1_state = GST_C1_RECOIL;
             G.c1_rec_el = 0u;
+            *out_dx = 0.0f; *out_dy = 0.0f;   /* RELEASE is a pure button event: no drift */
             return GST_CA_RELEASE;            /* emit button-up this step */
         }
         return GST_CA_NONE;
@@ -862,6 +863,7 @@ gst_click_action_t gesture_click_fire_step(uint32_t dt_us, float *out_dx, float 
             /* final slice: flush the remainder so Σ recoil == envelope recoil */
             *out_dx = G.c1_recoil_x - G.c1_rec_emit_x;
             *out_dy = G.c1_recoil_y - G.c1_rec_emit_y;
+            G.c1_rec_el = 0u;                 /* clear timer; don't leave stale state */
             G.c1_state = GST_C1_IDLE;
             return GST_CA_NONE;
         }
