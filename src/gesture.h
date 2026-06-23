@@ -137,3 +137,24 @@ bool     gesture_cadence_get(uint16_t age, uint32_t *out_dt_us); /* age 0 = newe
  * emission uses gesture_motion_next directly and ignores this budget. */
 void gesture_motion_pace_advance(uint32_t elapsed_us);
 bool gesture_motion_pace_take(float *out_dx, float *out_dy, uint16_t *out_dt_q);
+
+/* ── click coupling (Plan 4) ───────────────────────────────────────────
+ * Click kinematics measured from real button events, replayed around
+ * injected motion. Decorator modulates ONLY the injected delta; the genuine
+ * click/cursor passthrough is never touched. */
+typedef struct {
+    uint32_t decel_us;        /* decel time before press (uint32: see plan) */
+    float    settle_px;       /* residual drift magnitude during hold     */
+    uint32_t dwell_us;        /* press→release duration (uint32: >65ms)   */
+    float    recoil_x, recoil_y; /* post-release drift vector             */
+    uint8_t  flags;           /* bits0-1 pre-click velocity class, 2-3 btn */
+} gst_click_env_t;            /* ring of GST_CLK_RING, RAM-only            */
+
+#define GST_CLK_RING          16
+#define GST_CLK_DWELL_MIN_US  10000u   /* reject sub-10ms "clicks"        */
+#define GST_CLK_DWELL_MAX_US  600000u  /* reject >600ms holds             */
+
+void     gesture_click_admit(const gst_click_env_t *env);
+uint8_t  gesture_click_count(void);
+bool     gesture_click_select(gst_click_env_t *out);  /* augmented copy; false if empty */
+uint32_t gesture_click_admitted(void);                /* diagnostic */

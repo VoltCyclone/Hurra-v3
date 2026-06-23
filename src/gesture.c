@@ -59,6 +59,11 @@ static struct {
     uint32_t dup_rejected;                /* diagnostic */
     /* ── source diagnostics ── */
     uint32_t replay_count, synth_fallback_count, bucket_miss;
+    /* ── click envelope ring (Plan 4) ── */
+    gst_click_env_t clk[GST_CLK_RING];
+    uint8_t  clk_head;                    /* next write slot (FIFO)        */
+    uint8_t  clk_n;                       /* valid envelopes 0..GST_CLK_RING */
+    uint32_t clk_admitted;                /* diagnostic                    */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -370,6 +375,37 @@ const gst_shape_t *gesture_library_select(float target_len) {
         }
     }
     return best;
+}
+
+void gesture_click_admit(const gst_click_env_t *env) {
+    if (env->dwell_us < GST_CLK_DWELL_MIN_US || env->dwell_us > GST_CLK_DWELL_MAX_US)
+        return;                           /* quality gate: implausible dwell */
+    G.clk[G.clk_head] = *env;
+    G.clk_head = (uint8_t)((G.clk_head + 1u) % GST_CLK_RING);
+    if (G.clk_n < GST_CLK_RING) G.clk_n++;
+    G.clk_admitted++;
+}
+
+uint8_t gesture_click_count(void) { return G.clk_n; }
+
+uint32_t gesture_click_admitted(void) { return G.clk_admitted; }
+
+bool gesture_click_select(gst_click_env_t *out) {
+    if (G.clk_n == 0) return false;
+    uint8_t idx = (uint8_t)(gst_sfc32() % G.clk_n);
+    gst_click_env_t e = G.clk[idx];
+    /* Augment with bounded jitter so replays are not identical. dwell_us is
+     * uint32, so both gate bounds are representable; clamp the jittered value
+     * back into the plausible window. */
+    float dw = (float)e.dwell_us * (1.0f + gesture_rand_range(-0.10f, 0.10f));
+    if (dw < (float)GST_CLK_DWELL_MIN_US) dw = (float)GST_CLK_DWELL_MIN_US;
+    if (dw > (float)GST_CLK_DWELL_MAX_US) dw = (float)GST_CLK_DWELL_MAX_US;
+    e.dwell_us  = (uint32_t)dw;
+    e.settle_px = e.settle_px * (1.0f + gesture_rand_range(-0.10f, 0.10f));
+    e.recoil_x  = e.recoil_x  * (1.0f + gesture_rand_range(-0.15f, 0.15f));
+    e.recoil_y  = e.recoil_y  * (1.0f + gesture_rand_range(-0.15f, 0.15f));
+    *out = e;
+    return true;
 }
 
 bool gesture_capture_build_and_admit(uint16_t window) {
