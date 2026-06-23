@@ -142,3 +142,38 @@ bool gesture_normalize_spatial(gst_shape_t *shape) {
     shape->raw_len = len;
     return true;
 }
+
+/* Interpolate cumulative time (us) at path fraction f from the point array. */
+static uint32_t time_at_fraction(const gst_point_t *pts, uint16_t n, float f) {
+    if (n == 0) return 0;
+    if (f <= pts[0].f) return pts[0].t_us;
+    if (f >= pts[n-1].f) return pts[n-1].t_us;
+    uint16_t i = 0;
+    while (i < n - 1 && pts[i+1].f < f) i++;
+    float span = pts[i+1].f - pts[i].f;
+    float u = (span > 1e-9f) ? (f - pts[i].f) / span : 0.0f;
+    float t = (float)pts[i].t_us + u * (float)(pts[i+1].t_us - pts[i].t_us);
+    return (uint32_t)(t + 0.5f);
+}
+
+static uint16_t us_to_dtq(uint32_t us, uint32_t nominal) {
+    if (nominal == 0) nominal = 1000u;
+    float q = (float)us / (float)nominal * 256.0f;
+    if (q < 0.0f) q = 0.0f;
+    if (q > 65535.0f) q = 65535.0f;
+    return (uint16_t)(q + 0.5f);
+}
+
+void gesture_normalize_temporal(gst_shape_t *shape, const gst_point_t *pts,
+                                uint16_t n) {
+    uint32_t prev_t = time_at_fraction(pts, n, shape->knots[0].f);
+    shape->knots[0].dt_q = 0;
+    for (uint16_t k = 1; k < shape->n; k++) {
+        uint32_t t = time_at_fraction(pts, n, shape->knots[k].f);
+        uint32_t dt = (t > prev_t) ? (t - prev_t) : 0u;
+        shape->knots[k].dt_q = us_to_dtq(dt, G.nominal_us);
+        prev_t = t;
+    }
+    uint32_t total = (n > 0) ? (pts[n-1].t_us - pts[0].t_us) : 0u;
+    shape->total_us = us_to_dtq(total, G.nominal_us);
+}

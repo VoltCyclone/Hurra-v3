@@ -67,3 +67,10 @@ uint16_t gesture_resample(const gst_point_t *pts, uint16_t n, gst_knot_t *out);
  * Stores raw_len = original endpoint magnitude for replay rate-conversion.
  * Returns false (knots untouched) for a degenerate sub-unit gesture. */
 bool gesture_normalize_spatial(gst_shape_t *shape);
+
+/* ── temporal normalization ────────────────────────────────────────────
+ * Fill knot dt_q (.8 fixed-point multiples of the nominal interval) from the
+ * reconstructed point times, preserving real captured spacing. Sets total_us
+ * (.8 fixed of nominal). Knot 0 dt_q is 0. */
+void gesture_normalize_temporal(gst_shape_t *shape, const gst_point_t *pts,
+                                uint16_t n);
