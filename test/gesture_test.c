@@ -575,6 +575,71 @@ int main(void) {
         CHECK(fabsf(sx - 120.0f) < 1e-2f, "Task3: synth endpoint still exact");
     }
 
+    /* ── Plan 3 Task 5: cadence fidelity (not flattened) + cross-rate ── */
+    {
+        /* Build ONE shape from a variable-SPEED gesture (dx ramps 1..20..1 at
+         * constant real dt) so its resampled dt_q sequence is non-flat. Build it
+         * at capture nominal 1000; keep the copy for cross-rate re-admission. */
+        gesture_init(1000);
+        gst_sample_t mv[40]; uint32_t t = 1000;
+        for (int i = 0; i < 40; i++) {
+            int v = 1 + (i < 20 ? i : (39 - i));   /* dx ramps 1..20..1 */
+            mv[i].dx = (int16_t)v; mv[i].dy = 0;
+            mv[i].t_us = t; t += 1000;             /* constant real dt; speed varies */
+        }
+        gst_shape_t sh;
+        CHECK(gesture_build_shape(mv, 40, &sh), "Task5: variable-speed shape built");
+
+        /* (1) The shape's own dt_q is non-flat: velocity timing preserved. */
+        uint16_t mn = 0xffff, mx = 0;
+        for (int k = 1; k < sh.n; k++) { uint16_t q = sh.knots[k].dt_q;
+            if (q < mn) mn = q; if (q > mx) mx = q; }
+        CHECK(mx > mn + 1, "Task5: shape dt_q is non-flat (velocity timing retained)");
+
+        /* Admit the shape GST_WARM_MIN times so warmth reaches at least WARMING
+         * and the selector routes to REPLAY (a cold/1-shape library would route
+         * to synth instead). All copies share the long bucket (raw_len ~420), so
+         * the morph partner is an identical copy -> cadence preserved, only the
+         * +-8% time-warp perturbs it. */
+        for (int c = 0; c < GST_WARM_MIN; c++) gesture_library_admit(&sh);
+
+        /* (2) Paced replay at nominal 1000: realized per-step intervals vary,
+         * tracking the shape -- cadence is NOT flattened by the pacing layer. */
+        gesture_motion_begin((int32_t)sh.raw_len, 0, MOTION_MODE_SILENT);
+        CHECK(!gesture_motion_done(), "Task5: replay active (warm + bucket match)");
+        uint32_t iv[GST_KNOTS_MAX]; int n = 0; uint32_t acc = 0; float dx, dy; uint16_t dtq;
+        for (int tick = 0; tick < 40000 && !gesture_motion_done(); tick++) {
+            gesture_motion_pace_advance(50); acc += 50;     /* fine 50us pump */
+            while (gesture_motion_pace_take(&dx, &dy, &dtq)) { iv[n++] = acc; acc = 0; }
+        }
+        CHECK(n == GST_KNOTS_MAX - 1, "Task5: all steps released");
+        uint32_t imn = 0xffffffffu, imx = 0;
+        for (int k = 1; k < n; k++) { if (iv[k] < imn) imn = iv[k]; if (iv[k] > imx) imx = iv[k]; }
+        CHECK(imx > imn + imn / 4u, "Task5: realized cadence varies (not flattened to uniform)");
+
+        /* (3) Cross-rate: the SAME captured-at-1000 shape replayed at nominal
+         * 2000 (= 500 Hz emit) must take ~2x as long total -- dt_q is rate-
+         * normalized, so dtq_to_us scales with the REPLAY nominal. Re-admit the
+         * same pre-built sh under each nominal WITHOUT rebuilding (rebuilding
+         * would re-normalize dt_q against the new nominal and cancel the effect). */
+        uint32_t total_at[2] = { 0, 0 };
+        uint32_t nominals[2] = { 1000, 2000 };
+        for (int r = 0; r < 2; r++) {
+            gesture_init(nominals[r]);
+            for (int c = 0; c < GST_WARM_MIN; c++) gesture_library_admit(&sh);
+            gesture_motion_begin((int32_t)sh.raw_len, 0, MOTION_MODE_SILENT);
+            uint32_t dur = 0;
+            for (int tick = 0; tick < 200000 && !gesture_motion_done(); tick++) {
+                gesture_motion_pace_advance(50); dur += 50;
+                while (gesture_motion_pace_take(&dx, &dy, &dtq)) { /* drain */ }
+            }
+            total_at[r] = dur;
+        }
+        /* ~2x within tolerance (independent +-8% time-warp per run + 50us pump). */
+        CHECK(total_at[1] > total_at[0] * 3u / 2u && total_at[1] < total_at[0] * 5u / 2u,
+              "Task5: cross-rate -> ~2x duration at 2x nominal (dt_q rate-normalized)");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
