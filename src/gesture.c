@@ -18,6 +18,7 @@
 #define GST_AUG_MORPH_LO   0.30f      /* morph weight on A, lower bound   */
 #define GST_AUG_MORPH_HI   0.70f      /* morph weight on A, upper bound   */
 #define GST_AUG_TWARP      0.08f      /* ± per-knot dt random-walk bound  */
+#define GST_DUP_WINDOW     8          /* recent tuple hashes tracked       */
 
 #ifdef GESTURE_HOSTTEST
 static uint32_t gst_hw_entropy(void) { return 0x12345678u; }   /* deterministic */
@@ -49,6 +50,10 @@ static struct {
     uint16_t   work_n;                    /* knots in the working copy */
     uint16_t   work_cursor;               /* next knot index to emit   */
     float      emit_px, emit_py;          /* last emitted absolute pos */
+    /* ── repetition guard ── */
+    uint32_t dup_ring[8];                 /* GST_DUP_WINDOW recent tuple hashes */
+    uint8_t  dup_head;
+    uint32_t dup_rejected;                /* diagnostic */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -384,6 +389,28 @@ static void endpoint_true(int32_t tx, int32_t ty) {
     G.work[last].uy = (float)ty;
 }
 
+/* Quantize (shapes, angle, scale) into a coarse bucket key — close transforms
+ * collide so the guard rejects perceptually-similar repeats, not just exact ones. */
+static uint32_t replay_tuple_hash(uint8_t a_slot, uint8_t b_slot, float theta, float s) {
+    int ti = (int)(theta * (180.0f / 3.14159265f) / 3.0f);   /* 3° buckets */
+    int si = (int)(s / 8.0f);                                /* 8-count buckets */
+    uint32_t h = (uint32_t)a_slot * 2654435761u;
+    h ^= (uint32_t)(b_slot + 1u) * 40503u;
+    h ^= (uint32_t)(ti & 0xffff) << 8;
+    h ^= (uint32_t)(si & 0xff);
+    return h;
+}
+static bool dup_seen(uint32_t h) {
+    for (int i = 0; i < GST_DUP_WINDOW; i++) if (G.dup_ring[i] == h) return true;
+    return false;
+}
+static void dup_record(uint32_t h) {
+    G.dup_ring[G.dup_head] = h;
+    G.dup_head = (uint8_t)((G.dup_head + 1u) % GST_DUP_WINDOW);
+}
+
+uint32_t gesture_dup_rejected(void) { return G.dup_rejected; }
+
 /* Materialize an augmented working copy: optional morph-blend with a same-bucket
  * partner, ±8% per-knot time-warp, scale + rotation jitter, then endpoint trueing
  * so Σ emitted == V exactly. */
@@ -393,13 +420,25 @@ static bool replay_begin(int32_t tx, int32_t ty) {
     if (R < 1.0f) return false;
     const gst_shape_t *A = gesture_library_select(R);
     if (!A) return false;
+    uint8_t a_slot = (uint8_t)(A - G.lib);
+    float theta0 = atan2f(Vy, Vx);
 
-    const gst_shape_t *B = library_morph_partner(A, R);
-    float alpha = B ? gesture_rand_range(GST_AUG_MORPH_LO, GST_AUG_MORPH_HI) : 1.0f;
-    float theta = atan2f(Vy, Vx) + gesture_rand_range(-GST_AUG_ROT_JIT, GST_AUG_ROT_JIT);
-    float s     = R * (1.0f + gesture_rand_range(-GST_AUG_SCALE_JIT, GST_AUG_SCALE_JIT));
+    /* Choose augmentation params, re-rolling away from recent near-duplicates. */
+    const gst_shape_t *B = NULL;
+    float alpha = 1.0f, theta = theta0, s = R;
+    uint32_t h = 0;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        B     = library_morph_partner(A, R);
+        alpha = B ? gesture_rand_range(GST_AUG_MORPH_LO, GST_AUG_MORPH_HI) : 1.0f;
+        theta = theta0 + gesture_rand_range(-GST_AUG_ROT_JIT, GST_AUG_ROT_JIT);
+        s     = R * (1.0f + gesture_rand_range(-GST_AUG_SCALE_JIT, GST_AUG_SCALE_JIT));
+        h = replay_tuple_hash(a_slot, B ? (uint8_t)(B - G.lib) : 0xffu, theta, s);
+        if (!dup_seen(h)) break;
+        G.dup_rejected++;
+    }
+    dup_record(h);
+
     float c = cosf(theta), sn = sinf(theta);
-
     uint16_t n = A->n;
     if (n > GST_KNOTS_MAX) n = GST_KNOTS_MAX;   /* defensive: G.work is GST_KNOTS_MAX */
     float walk = 1.0f;
@@ -411,7 +450,6 @@ static bool replay_begin(int32_t tx, int32_t ty) {
         G.work[i].uy = x * sn + y * c;
         G.work[i].f  = A->knots[i].f;
 
-        /* time-warp: bounded slow random walk around 1.0. */
         walk += gesture_rand_range(-0.02f, 0.02f);
         if (walk < 1.0f - GST_AUG_TWARP) walk = 1.0f - GST_AUG_TWARP;
         if (walk > 1.0f + GST_AUG_TWARP) walk = 1.0f + GST_AUG_TWARP;

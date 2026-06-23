@@ -392,6 +392,29 @@ int main(void) {
      * miscounted the float trio as 12 B incl. dt_q). */
     CHECK(sizeof(gst_shape_t) * GST_LIB_SHAPES <= 26000, "library pool <= 26KB");
 
+    /* ── Plan 2 Task 4: repetition guard ── */
+    {
+        gesture_init(1000);
+        warm_library_all_buckets();                    /* warm → replay path */
+        /* Extra medium-bucket shapes give the guard partners to re-roll among. */
+        gst_sample_t a[60], b[60];
+        for (int i = 0; i < 60; i++) {
+            a[i].dx = 3; a[i].dy = (int16_t)((i < 30) ?  1 : -1); a[i].t_us = (uint32_t)(i*1000);
+            b[i].dx = 3; b[i].dy = (int16_t)((i < 30) ? -1 :  1); b[i].t_us = (uint32_t)(i*1000);
+        }
+        gst_shape_t sa, sb; gesture_build_shape(a, 60, &sa); gesture_build_shape(b, 60, &sb);
+        gesture_library_admit(&sa); gesture_library_admit(&sb);
+
+        uint32_t before = gesture_dup_rejected();
+        for (int k = 0; k < 50; k++) {                 /* hammer one target */
+            gesture_motion_begin(180, 10, MOTION_MODE_SILENT);
+            float dx, dy; uint16_t dtq;
+            while (gesture_motion_next(&dx, &dy, &dtq)) { }
+        }
+        CHECK(gesture_dup_rejected() >= before, "Task4: dup counter is monotonic");
+        CHECK(gesture_dup_rejected() >  before, "Task4: guard re-rolls on repeated targets");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
