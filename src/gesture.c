@@ -23,7 +23,6 @@
 
 #define GST_CLK_RECOIL_WIN_US 30000u   /* drift window measured after release */
 #define GST_CLK_PEAK_DECAY    0.85f    /* per-report decay of the speed peak  */
-#define GST_CLK_MOVE_EPS      1.0f     /* speed below this ≈ not moving        */
 /* capture state-machine phases */
 #define GST_CC_IDLE   0u
 #define GST_CC_HOLD   1u
@@ -82,6 +81,7 @@ static struct {
     uint32_t cc_recoil_until;            /* end of the recoil window       */
     float    cc_peak_speed;              /* recent rolling speed peak      */
     uint32_t cc_peak_t;                  /* timestamp of that peak         */
+    float    cc_peak_at_press;           /* peak speed latched at press (for vclass) */
     uint32_t cc_decel_us;               /* peak_t→press, latched at press */
     uint32_t cc_dwell_us;               /* press→release, latched at release */
 } G;
@@ -452,6 +452,7 @@ void gesture_click_observe(int16_t dx, int16_t dy, uint8_t buttons, uint32_t t_u
         G.cc_button = clk_button_index(buttons);
         G.cc_press_t = t_us;
         G.cc_decel_us = (t_us >= G.cc_peak_t) ? (t_us - G.cc_peak_t) : 0u;
+        G.cc_peak_at_press = G.cc_peak_speed;   /* latch peak NOW; it decays during the hold */
         G.cc_settle_px = 0.0f;
         G.cc_state = GST_CC_HOLD;
     } else if (was_down && down_now && G.cc_state == GST_CC_HOLD) {
@@ -474,13 +475,15 @@ void gesture_click_observe(int16_t dx, int16_t dy, uint8_t buttons, uint32_t t_u
             G.cc_recoil_x += (float)dx;
             G.cc_recoil_y += (float)dy;
         } else {
+            /* closing report's own dx/dy intentionally not accumulated:
+             * recoil sum covers reports strictly before recoil_until */
             gst_click_env_t env;
             env.decel_us  = G.cc_decel_us;
             env.settle_px = G.cc_settle_px;
             env.dwell_us  = G.cc_dwell_us;    /* uint32: no narrowing needed */
             env.recoil_x  = G.cc_recoil_x;
             env.recoil_y  = G.cc_recoil_y;
-            uint8_t vclass = (G.cc_peak_speed < 5.0f) ? 0u : (G.cc_peak_speed < 20.0f ? 1u : 2u);
+            uint8_t vclass = (G.cc_peak_at_press < 5.0f) ? 0u : (G.cc_peak_at_press < 20.0f ? 1u : 2u);
             env.flags = (uint8_t)((vclass & 0x03u) | ((G.cc_button & 0x03u) << 2));
             gesture_click_admit(&env);
             G.cc_state = GST_CC_IDLE;
