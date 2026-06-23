@@ -172,3 +172,15 @@ void gesture_click_observe(int16_t dx, int16_t dy, uint8_t buttons, uint32_t t_u
 void  gesture_click_real_buttons(uint8_t buttons, uint32_t t_us);
 float gesture_click_motion_scale(void);   /* [GST_C2_FLOOR, 1.0]            */
 bool  gesture_click_real_active(void);     /* true while a real button held  */
+
+/* ── Mode 1: self-fire (triggerbot) click sequence ─────────────────────
+ * arm_fire selects a measured envelope and arms; fire_step drives a timed
+ * PRESS → settle-bounded dwell drift → RELEASE → recoil sequence, returning
+ * the button action to emit (Plan 5 routes it to act_click/TYPE_INJECT) and
+ * the step's injected drift/recoil delta. Arming is refused while a real
+ * click is active (arbitration: real wins). */
+typedef enum { GST_CA_NONE = 0, GST_CA_PRESS = 1, GST_CA_RELEASE = 2 } gst_click_action_t;
+
+bool               gesture_click_arm_fire(uint8_t button);
+gst_click_action_t gesture_click_fire_step(uint32_t dt_us, float *out_dx, float *out_dy);
+bool               gesture_click_fire_active(void);

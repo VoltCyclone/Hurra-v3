@@ -30,6 +30,15 @@
 #define GST_CC_IDLE   0u
 #define GST_CC_HOLD   1u
 #define GST_CC_RECOIL 2u
+/* ── Mode 1 self-fire constants ── */
+#define GST_C1_RECOIL_EMIT_US 30000.0f /* window over which recoil is injected */
+#define GST_C1_DEF_DWELL_US   80000u   /* default dwell when library is cold   */
+#define GST_C1_DEF_SETTLE     2.0f     /* default hold-drift magnitude (px)    */
+/* self-fire phases */
+#define GST_C1_IDLE   0u
+#define GST_C1_PRESS  1u   /* about to emit PRESS this step */
+#define GST_C1_DWELL  2u
+#define GST_C1_RECOIL 3u
 
 #ifdef GESTURE_HOSTTEST
 static uint32_t gst_hw_entropy(void) { return 0x12345678u; }   /* deterministic */
@@ -93,6 +102,15 @@ static struct {
     float    c2_scale;                   /* current injected-motion scale  */
     uint32_t c2_last_t;                  /* last real-report timestamp     */
     bool     c2_have_t;                  /* c2_last_t valid                */
+    /* ── Mode 1 self-fire (Plan 4) ── */
+    uint8_t  c1_state;                    /* GST_C1_IDLE/PRESS/DWELL/RECOIL */
+    uint8_t  c1_button;                  /* button index to emit           */
+    uint32_t c1_dwell_us;               /* this fire's dwell               */
+    uint32_t c1_dwell_el;               /* elapsed in dwell                */
+    float    c1_settle;                 /* hold-drift magnitude            */
+    float    c1_recoil_x, c1_recoil_y;  /* recoil vector to inject         */
+    float    c1_rec_emit_x, c1_rec_emit_y; /* recoil already emitted       */
+    uint32_t c1_rec_el;                 /* elapsed in recoil               */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -791,3 +809,69 @@ GST_FASTRUN
 float gesture_click_motion_scale(void) { return G.c2_scale; }
 
 bool gesture_click_real_active(void) { return G.c2_real_down; }
+
+bool gesture_click_arm_fire(uint8_t button) {
+    if (G.c2_real_down) return false;        /* arbitration: real click wins */
+    if (G.c1_state != GST_C1_IDLE) return false; /* already firing */
+    gst_click_env_t e;
+    if (gesture_click_select(&e)) {
+        G.c1_dwell_us  = e.dwell_us;
+        G.c1_settle    = e.settle_px > 0.1f ? e.settle_px : GST_C1_DEF_SETTLE;
+        G.c1_recoil_x  = e.recoil_x;
+        G.c1_recoil_y  = e.recoil_y;
+    } else {                                 /* cold: plausible defaults */
+        G.c1_dwell_us  = GST_C1_DEF_DWELL_US;
+        G.c1_settle    = GST_C1_DEF_SETTLE;
+        G.c1_recoil_x  = 0.0f;
+        G.c1_recoil_y  = 0.0f;
+    }
+    G.c1_button     = button;
+    G.c1_dwell_el   = 0u;
+    G.c1_rec_el     = 0u;
+    G.c1_rec_emit_x = 0.0f; G.c1_rec_emit_y = 0.0f;
+    G.c1_state      = GST_C1_PRESS;
+    return true;
+}
+
+bool gesture_click_fire_active(void) { return G.c1_state != GST_C1_IDLE; }
+
+GST_FASTRUN
+gst_click_action_t gesture_click_fire_step(uint32_t dt_us, float *out_dx, float *out_dy) {
+    *out_dx = 0.0f; *out_dy = 0.0f;
+    switch (G.c1_state) {
+    case GST_C1_PRESS:
+        G.c1_state = GST_C1_DWELL;
+        G.c1_dwell_el = 0u;
+        return GST_CA_PRESS;                  /* emit button-down this step */
+    case GST_C1_DWELL: {
+        G.c1_dwell_el += dt_us;
+        /* settle-bounded micro-drift: not frozen, but tiny */
+        float d = G.c1_settle * 0.25f;
+        *out_dx = gesture_rand_range(-d, d);
+        *out_dy = gesture_rand_range(-d, d);
+        if (G.c1_dwell_el >= G.c1_dwell_us) {
+            G.c1_state = GST_C1_RECOIL;
+            G.c1_rec_el = 0u;
+            return GST_CA_RELEASE;            /* emit button-up this step */
+        }
+        return GST_CA_NONE;
+    }
+    case GST_C1_RECOIL: {
+        G.c1_rec_el += dt_us;
+        if (G.c1_rec_el >= (uint32_t)GST_C1_RECOIL_EMIT_US) {
+            /* final slice: flush the remainder so Σ recoil == envelope recoil */
+            *out_dx = G.c1_recoil_x - G.c1_rec_emit_x;
+            *out_dy = G.c1_recoil_y - G.c1_rec_emit_y;
+            G.c1_state = GST_C1_IDLE;
+            return GST_CA_NONE;
+        }
+        float frac = (float)dt_us / GST_C1_RECOIL_EMIT_US;
+        float sx = G.c1_recoil_x * frac, sy = G.c1_recoil_y * frac;
+        G.c1_rec_emit_x += sx; G.c1_rec_emit_y += sy;
+        *out_dx = sx; *out_dy = sy;
+        return GST_CA_NONE;
+    }
+    default:
+        return GST_CA_NONE;                   /* IDLE: nothing */
+    }
+}
