@@ -25,7 +25,7 @@ typedef struct {
     gst_knot_t knots[GST_KNOTS_MAX];
     uint16_t   n;             /* knots used (<= GST_KNOTS_MAX)            */
     float      raw_len;       /* original path length (counts)           */
-    uint16_t   total_us;      /* original duration (x nominal)           */
+    uint32_t   total_us;      /* original duration, .8 fixed of nominal (no 16-bit cap) */
     uint8_t    submv;         /* submovements detected                   */
     uint8_t    flags;         /* curvature sign, click-adjacent, etc.    */
 } gst_shape_t;
