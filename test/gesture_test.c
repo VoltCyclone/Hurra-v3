@@ -134,6 +134,33 @@ int main(void) {
         CHECK(!gesture_normalize_spatial(&tiny), "sub-unit gesture rejected");
     }
 
+    /* ── Task 6: temporal normalization ── */
+    {
+        gesture_init(1000);   /* nominal = 1000 us */
+        /* Reconstructed points: evenly 1ms apart over a straight line, 5 pts. */
+        gst_point_t pts[5];
+        for (int i = 0; i < 5; i++) {
+            pts[i].x = (float)(i * 10);
+            pts[i].y = 0.0f;
+            pts[i].f = (float)i / 4.0f;
+            pts[i].t_us = (uint32_t)(i * 1000);
+        }
+        gst_shape_t sh;
+        memset(&sh, 0, sizeof(sh));
+        sh.n = GST_KNOTS_MAX;
+        for (int k = 0; k < GST_KNOTS_MAX; k++)
+            sh.knots[k].f = (float)k / (float)(GST_KNOTS_MAX - 1);
+
+        gesture_normalize_temporal(&sh, pts, 5);
+        CHECK(sh.knots[0].dt_q == 0, "knot 0 dt_q is 0");
+        /* total time 4000us over 47 inter-knot gaps -> ~85us each -> .8 fixed
+         * of nominal(1000): 85/1000*256 ~= 21.8 -> ~22 */
+        CHECK(sh.knots[1].dt_q >= 18 && sh.knots[1].dt_q <= 26,
+              "per-knot dt_q in .8 fixed of nominal");
+        /* total_us: 4000us / 1000 * 256 = 1024 */
+        CHECK(sh.total_us >= 1000 && sh.total_us <= 1048, "total_us .8 fixed");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;
