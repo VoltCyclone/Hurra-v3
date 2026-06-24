@@ -78,8 +78,16 @@ static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COL
     else
         memset(rows[ROW_DLINK], 0, DISP_COLS + 1);
 
-    // Rows 10..12 render blank.
-    for (int r = 10; r < DISP_ROWS; r++) memset(rows[r], 0, DISP_COLS + 1);
+    // ROW_HUMAN (10): humanization engine warmth + replay share
+    {
+        const char *wn = (st->human_warmth >= 2) ? "WARM"
+                       : (st->human_warmth == 1) ? "WARMING" : "COLD";
+        snprintf(rows[ROW_HUMAN], DISP_COLS + 1, "hum %s rpl %u%%",
+                 wn, (unsigned)st->human_replay_pct);
+    }
+
+    // Rows 11..12 render blank.
+    for (int r = 11; r < DISP_ROWS; r++) memset(rows[r], 0, DISP_COLS + 1);
 }
 
 uint32_t display_format_lines(const display_status_t *st,

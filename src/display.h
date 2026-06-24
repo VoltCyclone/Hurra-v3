@@ -40,6 +40,9 @@ typedef struct {
     uint8_t  dev_speed;        // clone->PC speed (USB_SPEED_*)
     int8_t   dev_temp_c;       // device board temperature (deg C)
     uint8_t  dev_link;         // 1 = device telemetry fresh, 0 = stale
+    // --- humanization v2 engine status (from V5F over ICC) ---
+    uint8_t  human_warmth;     // gst_warmth_t 0 COLD / 1 WARMING / 2 WARM
+    uint8_t  human_replay_pct; // replay share of injected motion, 0..100
 } display_status_t;
 
 // Text grid. Scale 2 => 12px glyphs; 240px / 12px = 20 cols.
@@ -63,6 +66,7 @@ enum {
     ROW_PCENUM   = 7,   // "PC: ENUM  HS" / "PC: --"
     ROW_DTEMP    = 8,   // device temp (colored) / "--"
     ROW_DLINK    = 9,   // "LINK DOWN" only when stale, else blank
+    ROW_HUMAN    = 10,  // "hum WARM rpl 98%"
 };
 
 // Render `st` into `rows` (DISP_ROWS NUL-terminated strings, each <=DISP_COLS

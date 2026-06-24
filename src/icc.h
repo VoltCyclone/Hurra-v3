@@ -117,6 +117,7 @@ enum {                          // field selectors
     ICC_ST_SEL_WEDGE,           // payload[9:0] = wedge (clamped 0..1023)
     ICC_ST_SEL_SPEEDS,          // payload[3:2]=cap_speed, payload[1:0]=dev_speed
     ICC_ST_SEL_DEV,             // payload[9]=dev_link, payload[8]=dev_enum, payload[7:0]=dev_temp_c
+    ICC_ST_SEL_HUMAN,           // payload[9:8]=warmth(0..2), payload[7:0]=replay_pct(0..100)
     ICC_ST_SEL__COUNT
 };
 

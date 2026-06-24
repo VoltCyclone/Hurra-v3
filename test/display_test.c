@@ -103,6 +103,25 @@ int main(void) {
     assert(nacc.dev_link == 1);
     assert(nacc.dev_temp_c == -5);
 
+    /* ── Plan 5 Task 3: HUMAN selector round-trip + row ── */
+    {
+        display_status_t st; memset(&st, 0, sizeof st);
+        st.state = DISP_STATE_RELAYING;
+        st.human_warmth = 2;          /* WARM */
+        st.human_replay_pct = 98;
+        uint16_t w = icc_status_pack(ICC_ST_SEL_HUMAN, 1, &st);
+        display_status_t acc; memset(&acc, 0, sizeof acc);
+        icc_status_unpack(w, &acc);
+        if (!(acc.human_warmth == 2)) { printf("FAIL: HUMAN warmth survives round-trip\n"); assert(0); }
+        if (!(acc.human_replay_pct == 98)) { printf("FAIL: HUMAN replay%% survives round-trip\n"); assert(0); }
+
+        /* Row 10 renders warmth + replay%. */
+        char rows[DISP_ROWS][DISP_COLS + 1];
+        display_format_lines(&st, rows, NULL);
+        if (!strstr(rows[ROW_HUMAN], "WARM")) { printf("FAIL: ROW_HUMAN shows warmth name\n"); assert(0); }
+        if (!strstr(rows[ROW_HUMAN], "98"))   { printf("FAIL: ROW_HUMAN shows replay%%\n"); assert(0); }
+    }
+
     printf("display_test OK\n");
     return 0;
 }
