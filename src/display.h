@@ -27,7 +27,6 @@ typedef struct {
     // --- V3F-local stats ---
     uint32_t cmd_rx;           // USART rx byte count
     uint16_t cmd_err;          // overrun+framing+noise total
-    uint8_t  human_lvl;        // humanize level 0..3
     uint16_t inj_m;            // mouse injection count
     uint16_t inj_k;            // keyboard injection count
     // --- board temperature (V3F-local ADC) ---

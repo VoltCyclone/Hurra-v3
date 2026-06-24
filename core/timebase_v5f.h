@@ -16,8 +16,8 @@ uint32_t millis(void);
 
 // Free-running microsecond counter (TIM9, 32-bit, 1 MHz). Started by
 // timebase_v5f_init(). Monotonic, wraps at 2^32 µs (~71.6 min). No interrupt —
-// a plain CNT read. Fed to humanize_record_arrival() on each real mouse report
-// so the humanization filter can estimate the adaptive feed interval.
+// a plain CNT read. Used to timestamp gesture capture samples on each real
+// mouse report so the motion-residual engine can reconstruct sub-pixel timing.
 uint32_t timebase_v5f_us(void);
 
 // V5F-local blocking delays on the free-running TIM9 counter. Use these on V5F

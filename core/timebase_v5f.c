@@ -31,10 +31,8 @@
 static volatile uint32_t g_ms;
 
 // ── Free-running 1 MHz microsecond counter (TIM9) ────────────────────────────
-// Task 7.1 (adaptive feed rate): humanize_record_arrival() needs a microsecond
-// timestamp to measure the real-mouse delivery interval. v2 used the i.MX GPT2
-// 1 MHz counter (gpt_profile_us); v3 has no GPT. We provide the equivalent with
-// a spare general-purpose timer.
+// Provides a microsecond timestamp for the gesture capture ring (per-report
+// motion-residual timing) and general µs delays. Read via timebase_v5f_us().
 //
 // Why TIM9 (32-bit) and not TIM5 (16-bit):
 //   * TIM9..TIM12 on this part are 32-bit counters (CNT_32 / ATRLR_32 union
@@ -178,8 +176,8 @@ void timebase_v5f_init(uint32_t core_hz)
     NVIC_EnableIRQ(TIM4_IRQn);
     TIM_Cmd(TIM4, ENABLE);
 
-    // Also start the free-running 1 MHz µs counter (TIM9) for adaptive feed
-    // rate (humanize_record_arrival). No IRQ — read via timebase_v5f_us().
+    // Also start the free-running 1 MHz µs counter (TIM9) used for gesture
+    // capture timestamps. No IRQ — read via timebase_v5f_us().
     timebase_v5f_us_init(core_hz);
 }
 

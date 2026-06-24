@@ -22,7 +22,7 @@ enum {
     ICC_TAG_CLICK_RELEASE,
     ICC_TAG_KB_RELEASE,
     ICC_TAG_SET_BAUD,
-    ICC_TAG_SET_HUMAN_LEVEL,
+    ICC_TAG_RESERVED_6,   // was SET_HUMAN_LEVEL; kept to preserve wire numbering
     ICC_TAG_PHYS_MASK,
     ICC_TAG_DEV_TEMP,     // device V3F -> V5F: device-board temp in b[0] (int8)
     // No V5F->V3F telemetry tags: that direction rides the IPC CH1 stage

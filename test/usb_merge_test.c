@@ -30,14 +30,11 @@ volatile int8_t g_tb_dev_temp_c;          // referenced by usb_merge_drain_icc
 static uint32_t fake_ms;
 uint32_t millis(void) { return fake_ms; }
 
-// Humanize: identity filter so injected deltas arrive verbatim at the report.
-void humanize_filter(int16_t *dx, int16_t *dy) { (void)dx; (void)dy; }
+// Humanize stubs so injected deltas arrive verbatim at the report.
 bool humanize_pending(void) { return false; }
 void humanize_return(int16_t dx, int16_t dy) { (void)dx; (void)dy; }
-void humanize_set_level(uint8_t level) { (void)level; }
-/* stub: identity quantizer — noise=0 path; matches humanize_filter no-op above.
- * usb_merge_take_injection calls this instead of humanize_filter, so injected
- * deltas pass through quantize+carry with no perpendicular noise. */
+/* stub: identity quantizer — the noise=0 inject-emit path. usb_merge_take_injection
+ * calls this so injected deltas pass through quantize+carry with no added noise. */
 void humanize_inject_emit(float dx, float dy, int16_t *ox, int16_t *oy) {
     *ox = (int16_t)dx; *oy = (int16_t)dy;
 }
@@ -147,9 +144,9 @@ int main(void) {
 
 	// (2) Regression: a full 4-byte boot-mouse report still merges injection.
 	// The bounds guard must not suppress the happy path.
-	// usb_merge_take_injection calls humanize_inject_emit (noise=0)
-	// instead of humanize_filter.  Both stubs are identity, so the merged delta
-	// must equal the injected values exactly — no perpendicular component added.
+	// usb_merge_take_injection calls humanize_inject_emit (noise=0); the stub is
+	// an identity quantizer, so the merged delta must equal the injected values
+	// exactly — no added component.
 	{
 		cache_boot_mouse();
 		icc_push_inject_mouse(7, -9, 0x01, 0);

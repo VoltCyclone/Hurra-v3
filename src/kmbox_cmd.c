@@ -86,12 +86,5 @@ void kmbox_cmd_set_baud(uint32_t baud)
     (void)icc_send_to_v5f(&r);   // doorbell rung by icc_pump_to_v5f() (see icc.c)
 }
 
-void kmbox_cmd_set_human_level(uint8_t level)
-{
-    icc_record_t r = { .tag = ICC_TAG_SET_HUMAN_LEVEL };
-    r.b[0] = level;
-    (void)icc_send_to_v5f(&r);   // doorbell rung by icc_pump_to_v5f() (see icc.c)
-}
-
 uint32_t kmbox_cmd_inj_mouse_count(void) { return s_inj_mouse_count; }
 uint32_t kmbox_cmd_inj_kbd_count(void)   { return s_inj_kbd_count; }

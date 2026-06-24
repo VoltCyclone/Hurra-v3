@@ -13,7 +13,6 @@
 #include "timebase.h"
 #include "debug.h"
 #include "display.h"
-#include "humanize.h"
 #include "temp.h"
 
 // ── V5F stage diagnostic (bench bring-up) ───────────────────────────────────
@@ -219,7 +218,6 @@ int main(void)
             g_disp.cmd_rx    = uart_rx_byte_count();
             uint32_t cerr    = uart_overrun() + uart_framing() + uart_noise();
             g_disp.cmd_err   = (uint16_t)(cerr > 0xFFFFu ? 0xFFFFu : cerr);
-            g_disp.human_lvl = humanize_get_level();
             uint32_t im      = kmbox_cmd_inj_mouse_count();
             uint32_t ik      = kmbox_cmd_inj_kbd_count();
             g_disp.inj_m     = (uint16_t)(im > 0xFFFFu ? 0xFFFFu : im);

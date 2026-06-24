@@ -573,9 +573,6 @@ void usb_merge_apply_record(uint8_t tag, const uint8_t *b)
 		merge_schedule_kb_release(b[0], delay_ms);
 		break;
 	}
-	case ICC_TAG_SET_HUMAN_LEVEL:
-		humanize_set_level(b[0]);
-		break;
 	case ICC_TAG_PHYS_MASK:
 		// b0=kind (0=mouse,1=key,2=unmask_all), b1=code, b2=enable.
 		switch (b[0]) {

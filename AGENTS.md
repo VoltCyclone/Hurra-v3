@@ -16,7 +16,7 @@ The work is split across the two QingKe RISC-V cores:
 
 | Core | Clock | Role | Main file |
 |------|-------|------|-----------|
-| **V3F** | ~100 MHz | Boot/master core. Clocks, UART command link, protocol parser, humanize-level control, LED heartbeat, status display. | `src/main_v3f.c` |
+| **V3F** | ~100 MHz | Boot/master core. Clocks, UART command link, protocol parser, LED heartbeat, status display. | `src/main_v3f.c` |
 | **V5F** | 400 MHz | Relay core. USBHS host capture → HID merge → USBFS device forward. | `src/main_v5f.c` |
 
 Two command protocols are supported, selected at compile time:
@@ -180,7 +180,7 @@ Implemented in `src/icc.c` / `src/icc.h`:
 - **V5F→V3F telemetry** uses coherent **IPC status bits** (CH1 for a 6-bit relay stage + heartbeat, CH2/CH3 bits [16:31] for the status display fields). V5F must **never** write V3F-side SRAM from the hot loop — such cross-core stores can stall the V5F AHB pipeline.
 - **HSEM ID 0** is used only for the one-time startup rendezvous.
 - **IPC doorbell CH0 Bit0** wakes V5F from `wfi` when injection is queued.
-- ICC record tags include `INJECT_MOUSE`, `INJECT_KEYBOARD`, `CLICK_RELEASE`, `KB_RELEASE`, `SET_BAUD`, `SET_HUMAN_LEVEL`, `PHYS_MASK`.
+- ICC record tags include `INJECT_MOUSE`, `INJECT_KEYBOARD`, `CLICK_RELEASE`, `KB_RELEASE`, `SET_BAUD`, `PHYS_MASK`.
 
 ### Memory / sections
 

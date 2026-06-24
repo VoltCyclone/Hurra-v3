@@ -8,9 +8,7 @@
 //
 // Injection cadence is loop-driven: usb_merge_send_pending() runs each relay-loop
 // iteration, gated by SYNTH_SILENCE_MS and a one-per-ms cap (millis()). The
-// adaptive feed-rate input is fed by humanize_record_arrival(timebase_v5f_us())
-// on each real mouse report. The free-running 1 MHz TIM9 counter
-// (timebase_v5f_us()) provides µs timing.
+// free-running 1 MHz TIM9 counter (timebase_v5f_us()) provides µs timing.
 //
 // Bring-up sequence: usb_host_init -> wait connect -> port_reset -> device_speed
 // -> capture_descriptors -> SET_PROTOCOL per HID iface -> build ep_map[]/out_map[]
@@ -458,11 +456,6 @@ int main(void)
 			// (probe byte is emitted once per iteration at the loop bottom)
 			if (ret > 0 && rpt_ptr) {
 				did_work = true;
-				// Feed the adaptive humanizer with the real mouse-report arrival time
-				// (1 MHz TIM9 µs counter). Only the mouse interface (protocol==2) drives
-				// the feed rate.
-				if (ep_map[m].iface_protocol == 2)
-					humanize_record_arrival(timebase_v5f_us());
 				ITRC(TLM_RLY_MERGE);
 				usb_merge_report(ep_map[m].iface_protocol,
 					rpt_ptr, (uint8_t)ret);

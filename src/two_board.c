@@ -26,7 +26,6 @@
 #include "actions.h"        // act_init / act_motion_tick
 #include "hid_layout.h"     // mouse_layout_t for the catch_xy physical-report feed
 #include "gesture.h"        // gesture engine: capture tap + V5F replay source + status
-#include "humanize.h"       // humanize_record_arrival / humanize_inject_emit
 #endif
 
 volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
@@ -415,12 +414,9 @@ void two_board_host_run(void)
                         proto_notify_axes((int16_t)dx, (int16_t)dy, (int8_t)w);
 
                         /* Capture tap: passthrough already forwarded above;
-                         * these read copies only. */
+                         * this reads a copy only. */
                         uint32_t t_us = now_us;
-                        humanize_record_arrival(t_us);                  /* TIM9 feed (absent before) */
                         gesture_capture_push((int16_t)dx, (int16_t)dy, t_us);
-                        gesture_click_observe((int16_t)dx, (int16_t)dy, rpt[doff], t_us);
-                        gesture_click_real_buttons(rpt[doff], t_us);
                     }
                 }
 #endif

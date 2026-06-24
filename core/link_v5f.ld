@@ -56,15 +56,15 @@ SECTIONS
 		KEEP(*(SORT_NONE(.vector_handler)))
 		*(.text)
 		*(.text.*)
-		/* HZ_FASTRUN hot-path functions (humanize_record_arrival, humanize_filter,
-		 * drain_axis, ...). These MUST be collected here so they are relocated to
-		 * ITCM (RAM_CODE) and copied by the _highcode startup loop. Previously
-		 * .fastrun was an ORPHAN section (named nowhere in this script): the linker
-		 * left it at a flash VMA with no startup copy, so the FIRST call to any
-		 * .fastrun function jumped to unmapped/aliased memory and the V5F core
-		 * fetch-stalled with no CPU trap. It was latent because the only hot-path
-		 * caller (humanize_record_arrival) fires only for the protocol==2 mouse
-		 * interface, which never delivered a report until SET_PROTOCOL was added. */
+		/* HZ_FASTRUN / GST_FASTRUN hot-path functions (humanize_inject_emit,
+		 * drain_axis, gesture_stream_filter, ...). These MUST be collected here so
+		 * they are relocated to ITCM (RAM_CODE) and copied by the _highcode startup
+		 * loop. Previously .fastrun was an ORPHAN section (named nowhere in this
+		 * script): the linker left it at a flash VMA with no startup copy, so the
+		 * FIRST call to any .fastrun function jumped to unmapped/aliased memory and
+		 * the V5F core fetch-stalled with no CPU trap. It was latent because the
+		 * hot-path callers fire only for the protocol==2 mouse interface, which
+		 * never delivered a report until SET_PROTOCOL was added. */
 		*(.fastrun)
 		*(.fastrun.*)
 		*(.rodata)

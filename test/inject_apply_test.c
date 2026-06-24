@@ -16,12 +16,9 @@ uint16_t g_phys_mask;
 volatile int8_t g_tb_dev_temp_c;
 static uint32_t fake_ms;
 uint32_t millis(void) { return fake_ms; }
-void humanize_filter(int16_t *dx, int16_t *dy) { (void)dx; (void)dy; }
 bool humanize_pending(void) { return false; }
 void humanize_return(int16_t dx, int16_t dy) { (void)dx; (void)dy; }
-static uint8_t last_human_level = 0xFF;
-void humanize_set_level(uint8_t level) { last_human_level = level; }
-/* stub: identity quantizer for noise=0 inject-emit path (task 5) */
+/* stub: identity quantizer for the noise=0 inject-emit path */
 void humanize_inject_emit(float dx, float dy, int16_t *ox, int16_t *oy) {
     *ox = (int16_t)dx; *oy = (int16_t)dy;
 }
@@ -103,16 +100,7 @@ int main(void) {
 		CHECK((int8_t)sent_buf[2] == -3, "synth dy == -3");
 	}
 
-	// ── Test 2: SET_HUMAN_LEVEL ──────────────────────────────────────────────────
-	// The tag routes directly to humanize_set_level(); the stub captures the value.
-	{
-		usb_merge_init(); setup_mouse();
-		uint8_t b[7] = {0}; b[0] = 7;
-		usb_merge_apply_record(ICC_TAG_SET_HUMAN_LEVEL, b);
-		CHECK(last_human_level == 7, "set_human_level applied");
-	}
-
-	// ── Test 3: PHYS_MASK kind=0 (mouse) ────────────────────────────────────────
+	// ── Test 2: PHYS_MASK kind=0 (mouse) ────────────────────────────────────────
 	{
 		usb_merge_init(); setup_mouse();
 		uint8_t b[7] = {0}; b[0]=0; b[1]=2; b[2]=1; // kind=mouse, code=2, enable
@@ -120,7 +108,7 @@ int main(void) {
 		CHECK(masked_mouse_code == 2 && masked_mouse_en, "phys_mask mouse applied");
 	}
 
-	// ── Test 4: INJECT_KEYBOARD ─────────────────────────────────────────────────
+	// ── Test 3: INJECT_KEYBOARD ─────────────────────────────────────────────────
 	// b[0]=modifier, b[1..6]=keys[6].  After applying, usb_merge_send_pending()
 	// should call usb_device_send_report on the cached keyboard EP (0x02 — the low
 	// nibble of interrupt_in_ep 0x82) with a standard 8-byte boot-keyboard report:
@@ -141,7 +129,7 @@ int main(void) {
 		CHECK(sent_buf[3] == 0x05, "keyboard key[1] correct");
 	}
 
-	// ── Test 5: CLICK_RELEASE ───────────────────────────────────────────────────
+	// ── Test 4: CLICK_RELEASE ───────────────────────────────────────────────────
 	// Apply a click-release record with a 50 ms delay.  The schedule is accepted
 	// (no crash, no assert).  We verify the schedule fires via usb_merge_drain_icc,
 	// which is the only path that calls merge_run_releases().  Because the
@@ -184,7 +172,7 @@ int main(void) {
 		      "click_release: button cleared after deadline");
 	}
 
-	// ── Test 6: KB_RELEASE ──────────────────────────────────────────────────────
+	// ── Test 5: KB_RELEASE ──────────────────────────────────────────────────────
 	// Similar to CLICK_RELEASE but for a keyboard key.  Schedule a release for
 	// key 0x04 ('a') with a 30 ms delay, first injecting the key so it is in the
 	// kb_keys[] accumulator.
@@ -229,7 +217,7 @@ int main(void) {
 		CHECK(key_gone_after, "kb_release: key cleared after deadline");
 	}
 
-	// ── Test 7: SET_BAUD ────────────────────────────────────────────────────────
+	// ── Test 6: SET_BAUD ────────────────────────────────────────────────────────
 	// SET_BAUD is a no-op in apply_record (baud is owned by the command transport).
 	// Assert that calling it after a mouse inject does not disturb the accumulator:
 	// the previously-injected delta must still appear in the next synth flush.
@@ -252,7 +240,7 @@ int main(void) {
 		CHECK((int8_t)sent_buf[1] == 10, "set_baud: dx=10 preserved after set_baud");
 	}
 
-	// ── Test 8: PHYS_MASK kind=1 (key) ──────────────────────────────────────────
+	// ── Test 7: PHYS_MASK kind=1 (key) ──────────────────────────────────────────
 	{
 		usb_merge_init(); setup_mouse();
 		masked_key_code = 0xFF; masked_key_en = false;
@@ -261,7 +249,7 @@ int main(void) {
 		CHECK(masked_key_code == 0x10 && masked_key_en, "phys_mask key applied");
 	}
 
-	// ── Test 9: PHYS_MASK kind=2 (unmask_all) ───────────────────────────────────
+	// ── Test 8: PHYS_MASK kind=2 (unmask_all) ───────────────────────────────────
 	{
 		usb_merge_init(); setup_mouse();
 		unmask_all_called = 0;

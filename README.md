@@ -81,7 +81,7 @@ mouse is moving (merge) or is emitted as standalone synthetic reports when idle.
 - **Dual-core RISC-V**, both QingKe cores:
   - **V3F** (~100 MHz) — the **boot / master** core. Sets up clocks, releases
     V5F, and runs the command side: USART command link, protocol parser,
-    humanize-level control, LED status.
+    LED status.
   - **V5F** (400 MHz) — the **relay** core. Runs the latency-critical USB hot
     path: capture on USBHS host → merge → forward on USBFS device.
 - **USB topology** — two on-chip controllers, running at the same time:
@@ -120,7 +120,7 @@ The cores talk over a small shared-SRAM mailbox at a fixed address
 
 - **Two lock-free SPSC ring buffers** of fixed 16-byte records: V3F→V5F carries
   injection commands (`INJECT_MOUSE`, `INJECT_KEYBOARD`, `CLICK_RELEASE`,
-  `KB_RELEASE`, `SET_BAUD`, `SET_HUMAN_LEVEL`, `PHYS_MASK`); V5F→V3F carries
+  `KB_RELEASE`, `SET_BAUD`, `PHYS_MASK`); V5F→V3F carries
   telemetry (`TELEM_COUNTS`, `TELEM_STATUS`). `volatile` head/tail with RISC-V
   fences; no locks on the data path.
 - **HSEM** (hardware semaphore) is used only for the one-time startup
