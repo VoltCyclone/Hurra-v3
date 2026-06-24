@@ -859,6 +859,48 @@ int main(void) {
         CHECK(hs.warmth == gesture_warmth(), "warmth mirrors gesture_warmth()");
     }
 
+    /* ── v3 Task 1: residual store ── */
+    {
+        gesture_init(1000);
+        CHECK(gesture_residual_total() == 0, "residual store starts empty");
+        gst_residual_t r;
+        CHECK(!gesture_residual_draw(0, &r), "draw on empty store fails");
+
+        /* admit into bucket 1 */
+        for (int i = 0; i < 10; i++)
+            gesture_residual_admit(1, (float)i, -(float)i, (uint16_t)(1000 + i));
+        CHECK(gesture_residual_count(1) == 10, "bucket 1 holds 10");
+        CHECK(gesture_residual_total() == 10, "total counts bucket 1");
+        CHECK(gesture_residual_count(0) == 0 && gesture_residual_count(2) == 0,
+              "other buckets untouched");
+
+        /* sequential draw preserves order (autocorrelation) */
+        CHECK(gesture_residual_draw(1, &r) && r.r_par == 0.0f, "draw 1 = oldest sample");
+        CHECK(gesture_residual_draw(1, &r) && r.r_par == 1.0f, "draw 2 = next in order");
+
+        /* empty-bucket draw falls back to a populated bucket */
+        CHECK(gesture_residual_draw(0, &r), "empty bucket falls back to populated");
+
+        /* FIFO eviction caps the ring */
+        gesture_init(1000);
+        for (int i = 0; i < GST_RES_RING + 20; i++)
+            gesture_residual_admit(2, (float)i, 0.0f, 1000);
+        CHECK(gesture_residual_count(2) == GST_RES_RING, "bucket caps at GST_RES_RING");
+
+        /* out-of-range bucket clamps to 2 (no OOB write) */
+        gesture_init(1000);
+        gesture_residual_admit(9, 1.0f, 1.0f, 1000);
+        CHECK(gesture_residual_count(2) == 1, "out-of-range bucket clamps to 2");
+
+        /* warmth helper over fill level */
+        gesture_init(1000);
+        CHECK(gesture_residual_warmth() == GST_COLD, "empty store is COLD");
+        for (int b = 0; b < GST_RES_BUCKETS; b++)
+            for (int i = 0; i < GST_RES_WARM_MIN; i++)
+                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f, 1000);
+        CHECK(gesture_residual_warmth() == GST_WARM, "all buckets filled is WARM");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

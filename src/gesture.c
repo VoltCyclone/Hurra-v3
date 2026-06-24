@@ -111,6 +111,11 @@ static struct {
     float    c1_recoil_x, c1_recoil_y;  /* recoil vector to inject         */
     float    c1_rec_emit_x, c1_rec_emit_y; /* recoil already emitted       */
     uint32_t c1_rec_el;                 /* elapsed in recoil               */
+    /* ── residual store (v3) ── */
+    gst_residual_t res[GST_RES_BUCKETS][GST_RES_RING];
+    uint8_t  res_head[GST_RES_BUCKETS];   /* next write slot per bucket */
+    uint8_t  res_n[GST_RES_BUCKETS];      /* valid samples 0..GST_RES_RING */
+    uint8_t  res_read[GST_RES_BUCKETS];   /* sequential read cursor */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -423,6 +428,58 @@ const gst_shape_t *gesture_library_select(float target_len) {
         }
     }
     return best;
+}
+
+/* ── residual store (Humanization v3) ─────────────────────────────────── */
+
+void gesture_residual_admit(uint8_t bucket, float r_par, float r_perp, uint16_t dt) {
+    if (bucket >= GST_RES_BUCKETS) bucket = GST_RES_BUCKETS - 1;
+    gst_residual_t *slot = &G.res[bucket][G.res_head[bucket]];
+    slot->r_par = r_par; slot->r_perp = r_perp; slot->dt_us_lo = dt;
+    G.res_head[bucket] = (uint8_t)((G.res_head[bucket] + 1u) % GST_RES_RING);
+    if (G.res_n[bucket] < GST_RES_RING) G.res_n[bucket]++;
+}
+
+uint16_t gesture_residual_count(uint8_t bucket) {
+    return (bucket < GST_RES_BUCKETS) ? G.res_n[bucket] : 0u;
+}
+
+uint16_t gesture_residual_total(void) {
+    uint16_t t = 0;
+    for (uint8_t b = 0; b < GST_RES_BUCKETS; b++) t = (uint16_t)(t + G.res_n[b]);
+    return t;
+}
+
+/* Oldest-first sequential read: cursor walks the populated region in capture
+ * order (preserving tremor autocorrelation) and wraps. */
+static bool res_draw_one(uint8_t bucket, gst_residual_t *out) {
+    uint8_t n = G.res_n[bucket];
+    if (n == 0) return false;
+    /* oldest sample index = head - n (mod ring); read cursor offsets from oldest */
+    uint8_t oldest = (uint8_t)((G.res_head[bucket] + GST_RES_RING - n) % GST_RES_RING);
+    uint8_t idx = (uint8_t)((oldest + (G.res_read[bucket] % n)) % GST_RES_RING);
+    *out = G.res[bucket][idx];
+    G.res_read[bucket] = (uint8_t)((G.res_read[bucket] + 1u) % n);
+    return true;
+}
+
+bool gesture_residual_draw(uint8_t bucket, gst_residual_t *out) {
+    if (bucket >= GST_RES_BUCKETS) bucket = GST_RES_BUCKETS - 1;
+    if (res_draw_one(bucket, out)) return true;
+    /* fall back to the nearest populated bucket */
+    for (uint8_t d = 1; d < GST_RES_BUCKETS; d++) {
+        if (bucket >= d && res_draw_one((uint8_t)(bucket - d), out)) return true;
+        if (bucket + d < GST_RES_BUCKETS && res_draw_one((uint8_t)(bucket + d), out)) return true;
+    }
+    return false;
+}
+
+gst_warmth_t gesture_residual_warmth(void) {
+    if (gesture_residual_total() < GST_RES_WARM_MIN) return GST_COLD;
+    uint16_t per = GST_RES_WARM_MIN / GST_RES_BUCKETS;
+    for (uint8_t b = 0; b < GST_RES_BUCKETS; b++)
+        if (G.res_n[b] < per) return GST_WARMING;
+    return GST_WARM;
 }
 
 void gesture_click_admit(const gst_click_env_t *env) {

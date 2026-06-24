@@ -185,6 +185,26 @@ bool               gesture_click_arm_fire(uint8_t button);
 gst_click_action_t gesture_click_fire_step(uint32_t dt_us, float *out_dx, float *out_dy);
 bool               gesture_click_fire_active(void);
 
+/* ── residual store (Humanization v3) ──────────────────────────────────
+ * Real captured high-frequency motion residual (tremor, motor noise,
+ * off-axis wobble), speed-bucketed, drawn sequentially to preserve the
+ * captured tremor autocorrelation. RAM-only, FIFO eviction. */
+#define GST_RES_BUCKETS  3
+#define GST_RES_RING     128
+#define GST_RES_WARM_MIN 64    /* total samples before residual is trusted */
+
+typedef struct {
+    float    r_par;     /* along-heading speed fluctuation (counts/report) */
+    float    r_perp;    /* perpendicular wobble (counts/report)            */
+    uint16_t dt_us_lo;  /* low 16 bits of the source inter-report interval */
+} gst_residual_t;       /* 12 bytes                                        */
+
+void     gesture_residual_admit(uint8_t bucket, float r_par, float r_perp, uint16_t dt);
+uint16_t gesture_residual_count(uint8_t bucket);     /* 0..GST_RES_RING */
+uint16_t gesture_residual_total(void);
+bool     gesture_residual_draw(uint8_t bucket, gst_residual_t *out);
+gst_warmth_t gesture_residual_warmth(void);          /* fill-level warmth */
+
 /* ── humanization status snapshot (Plan 5) ─────────────────────────────
  * Pure read of the replay/synth/warmth counters for the LED + display.
  * replay_pct + synth_pct == 100 once any motion has run, else both 0. */
