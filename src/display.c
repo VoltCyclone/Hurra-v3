@@ -78,12 +78,15 @@ static void build_rows(const display_status_t *st, char rows[DISP_ROWS][DISP_COL
     else
         memset(rows[ROW_DLINK], 0, DISP_COLS + 1);
 
-    // ROW_HUMAN (10): humanization engine warmth + replay share
+    // ROW_HUMAN (10): humanization residual fill + non-human-source flag
     {
         const char *wn = (st->human_warmth >= 2) ? "WARM"
                        : (st->human_warmth == 1) ? "WARMING" : "COLD";
-        snprintf(rows[ROW_HUMAN], DISP_COLS + 1, "hum %s rpl %u%%",
-                 wn, (unsigned)st->human_replay_pct);
+        if (st->human_replay_pct == 0 && st->human_warmth >= 2)
+            snprintf(rows[ROW_HUMAN], DISP_COLS + 1, "hum NONHUMAN SRC");
+        else
+            snprintf(rows[ROW_HUMAN], DISP_COLS + 1, "hum %s res %u%%",
+                     wn, (unsigned)st->human_replay_pct);
     }
 
     // Rows 11..12 render blank.
