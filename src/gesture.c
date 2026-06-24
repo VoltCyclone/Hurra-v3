@@ -127,6 +127,7 @@ static struct {
     uint8_t  nh_head, nh_n;
     uint32_t nh_count;             /* non-human-trend events (diagnostic) */
     uint8_t  nh_human;             /* last verdict: 1 human, 0 non-human */
+    float    nh_peak_real;   /* largest real human single-report |delta| this session (adaptive teleport bar) */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -164,6 +165,8 @@ void gesture_capture_push(int16_t dx, int16_t dy, uint32_t t_us) {
     G.cap[G.cap_head].t_us = t_us;
     G.cap_head = (uint16_t)((G.cap_head + 1u) % GST_CAP_RING);
     if (G.cap_count < GST_CAP_RING) G.cap_count++;
+    float rm = sqrtf((float)dx*dx + (float)dy*dy);
+    if (rm > G.nh_peak_real) G.nh_peak_real = rm;
 }
 
 uint16_t gesture_capture_count(void) { return G.cap_count; }
@@ -567,9 +570,13 @@ bool     gesture_trend_is_human(void) { return G.nh_human != 0; }
 GST_FASTRUN
 void gesture_trend_observe(int16_t in_dx, int16_t in_dy) {
     float m = sqrtf((float)in_dx*in_dx + (float)in_dy*in_dy);
+    /* Adaptive teleport bar: "the app commanded a motion larger than this human has
+     * ever produced" — a real un-launderable tell — with an 80cpr floor so a fresh
+     * session with little capture history doesn't over-flag. */
+    float bar = (G.nh_peak_real > GST_TELEPORT_CPR) ? G.nh_peak_real : GST_TELEPORT_CPR;
 
-    /* Teleport: a single super-human report. */
-    if (m > GST_TELEPORT_CPR) { G.nh_count++; G.nh_human = 0; }
+    int teleport = 0;
+    if (m > bar) { G.nh_count++; teleport = 1; }   /* app delta exceeds human-demonstrated peak (adaptive) */
 
     G.nh_mag[G.nh_head] = m;
     G.nh_head = (uint8_t)((G.nh_head + 1u) % GST_NH_WIN);
@@ -592,6 +599,8 @@ void gesture_trend_observe(int16_t in_dx, int16_t in_dy) {
     } else {
         G.nh_human = 1;   /* not enough data yet → assume human */
     }
+
+    if (teleport) G.nh_human = 0;   /* teleport verdict wins for this call (latched over window) */
 }
 
 /* ── streaming residual filter (Humanization v3, per-poll) ──────────── */

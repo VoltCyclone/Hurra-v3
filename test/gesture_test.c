@@ -1011,6 +1011,22 @@ int main(void) {
         uint32_t b2 = gesture_nonhuman_trend();
         gesture_trend_observe(200, 50);
         CHECK(gesture_nonhuman_trend() > b2, "teleport snap is flagged");
+
+        /* adaptive teleport bar: a demonstrated-large human movement raises the bar */
+        gesture_init(1000);
+        uint32_t a0 = gesture_nonhuman_trend();
+        gesture_capture_push(150, 0, 1000);     /* human really moved 150 cpr in one report */
+        gesture_trend_observe(120, 0);          /* app delta 120 < demonstrated 150 → NOT a teleport */
+        CHECK(gesture_nonhuman_trend() == a0, "app delta below human-demonstrated peak is not flagged");
+        gesture_trend_observe(200, 0);          /* app delta 200 > demonstrated 150 → teleport */
+        CHECK(gesture_nonhuman_trend() > a0, "app delta above human-demonstrated peak flags teleport");
+
+        /* teleport latch: teleport verdict wins even when the window looks human */
+        gesture_init(1000);
+        for (int i = 40; i > 0; i--) gesture_trend_observe((int16_t)i, (int16_t)(i/3)); /* fill window, high spread → human */
+        CHECK(gesture_trend_is_human(), "high-spread window reads human before teleport");
+        gesture_trend_observe(250, 60);         /* teleport on a full, human-looking window */
+        CHECK(!gesture_trend_is_human(), "teleport latches non-human even on a human-looking window");
     }
 
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
