@@ -21,6 +21,10 @@ bool humanize_pending(void) { return false; }
 void humanize_return(int16_t dx, int16_t dy) { (void)dx; (void)dy; }
 static uint8_t last_human_level = 0xFF;
 void humanize_set_level(uint8_t level) { last_human_level = level; }
+/* stub: identity quantizer for noise=0 inject-emit path (task 5) */
+void humanize_inject_emit(float dx, float dy, int16_t *ox, int16_t *oy) {
+    *ox = (int16_t)dx; *oy = (int16_t)dy;
+}
 bool act_phys_kb_mask_active(void) { return false; }
 bool act_phys_key_masked(uint8_t k) { (void)k; return false; }
 static uint8_t masked_mouse_code = 0xFF; static bool masked_mouse_en;
