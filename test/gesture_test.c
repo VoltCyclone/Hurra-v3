@@ -988,7 +988,7 @@ int main(void) {
             int16_t ox, oy; gesture_stream_filter(0, 0, &ox, &oy);
             idle_emit += labs(ox) + labs(oy);
         }
-        CHECK(idle_emit <= 2, "near-zero injected motion when app is idle");
+        CHECK(idle_emit == 0, "zero injected motion when app is idle (leak gated at rest)");
     }
 
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
