@@ -66,3 +66,19 @@ void act_motion_bezier(int16_t dx, int16_t dy, uint16_t dur_ms,
                        int16_t x1, int16_t y1, int16_t x2, int16_t y2);
 void act_motion_tick(void);             // step from the poll loop
 void act_motion_cancel(void);           // abort in-flight program
+
+/* ── motion-source hook (Plan 5) ───────────────────────────────────────
+ * Lets a platform redirect trajectory motion (act_motion_move_dur/_bezier)
+ * to an alternate provider — the V5F gesture replay engine — without this
+ * shared file depending on it. NULL (default) = the built-in analytic
+ * Bézier/smoothstep path. begin() is handed the same args the analytic
+ * path would use; tick() emits one integer step per call and returns 0 when
+ * the trajectory is complete; cancel() aborts an in-flight source. */
+typedef struct {
+    void (*begin)(int32_t dx, int32_t dy, uint16_t dur_ms, int bezier,
+                  int32_t x1, int32_t y1, int32_t x2, int32_t y2);
+    int  (*tick)(int16_t *out_dx, int16_t *out_dy);
+    void (*cancel)(void);
+} act_motion_source_t;
+
+void act_motion_set_source(const act_motion_source_t *src);  /* NULL = analytic */

@@ -33,6 +33,23 @@ void kmbox_cmd_schedule_kb_release(uint8_t k, uint32_t d) { (void)k; (void)d; }
 
 static void reset_sink(void) { g_sum_x = g_sum_y = 0; g_emits = 0; }
 
+/* ── Plan 5 Task 4: fake motion source (hoisted to file scope for C11 portability) ── */
+static int32_t f_dx, f_dy;
+static int     f_steps;
+static int     f_cancelled;
+
+static void fake_begin(int32_t dx, int32_t dy, uint16_t dur, int bz,
+                       int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
+    (void)dur; (void)bz; (void)x1; (void)y1; (void)x2; (void)y2;
+    f_dx = dx; f_dy = dy; f_steps = 3;
+}
+static int fake_tick(int16_t *odx, int16_t *ody) {
+    if (f_steps <= 0) return 0;
+    *odx = (int16_t)(f_dx / 3); *ody = (int16_t)(f_dy / 3);
+    f_steps--; return 1;
+}
+static void fake_cancel(void) { f_cancelled = 1; f_steps = 0; }
+
 // Step a program to completion, advancing time `step_ms` per tick.
 static void run_program(uint32_t dur_ms, uint32_t step_ms) {
     // tick once at t=0, then advance until past dur, plus one final tick at end.
@@ -114,6 +131,30 @@ int main(void) {
     CHECK(g_sum_x == 42 && g_sum_y == -9, "dur=0: immediate move delivers full delta");
     act_motion_tick();                     // nothing in flight
     CHECK(g_sum_x == 42 && g_sum_y == -9, "dur=0: no trailing motion");
+
+    /* ── Plan 5 Task 4: registered motion-source hook ── */
+    {
+        static const act_motion_source_t fake = {
+            .begin = fake_begin, .tick = fake_tick, .cancel = fake_cancel };
+
+        f_dx = f_dy = f_steps = f_cancelled = 0;
+        act_init();
+        long base_x = g_sum_x;
+        act_motion_set_source(&fake);
+        act_motion_move_dur(90, 30, 100);     /* routed to fake, not analytic */
+        for (int i = 0; i < 5; i++) act_motion_tick();
+        CHECK(g_sum_x - base_x == 90, "hook: total X emitted via fake source");
+        CHECK(f_steps == 0, "hook: fake source ran to completion");
+
+        /* act_move cancels an in-flight gesture source. */
+        f_cancelled = 0;
+        act_motion_move_dur(300, 0, 1000);
+        act_motion_tick();
+        act_move(5, 0);                       /* last-writer-wins */
+        CHECK(f_cancelled == 1, "hook: act_move cancels the gesture source");
+
+        act_motion_set_source(NULL);          /* restore analytic for any later tests */
+    }
 
     if (failures == 0) printf("\nALL PASSED\n");
     else               printf("\n%d FAILURE(S)\n", failures);
