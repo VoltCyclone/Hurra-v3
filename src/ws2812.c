@@ -63,22 +63,40 @@ uint8_t ws2812_breathe_v(uint32_t now_ms, uint32_t period_ms,
 void ws2812_compose(ws2812_mode_t mode, uint8_t hue, uint32_t now_ms,
                     uint8_t out[3])
 {
+    ws2812_compose_h(mode, hue, 255, 0, now_ms, out);
+}
+
+uint8_t ws2812_warmth_sat(uint8_t warmth)
+{
+    switch (warmth) {
+        case 0:  return WS2812_SAT_COLD;
+        case 1:  return WS2812_SAT_WARMING;
+        default: return WS2812_SAT_WARM;     /* 2 and any unknown -> full */
+    }
+}
+
+void ws2812_compose_h(ws2812_mode_t mode, uint8_t hue, uint8_t sat,
+                      int blink, uint32_t now_ms, uint8_t out[3])
+{
     switch (mode) {
         case WS2812_MODE_ERROR: {
             uint8_t v = ws2812_breathe_v(now_ms, WS2812_ERROR_PULSE_MS,
                                          WS2812_ERROR_MIN_V, WS2812_ERROR_MAX_V);
-            ws2812_hsv_to_grb(0, 255, v, out);               /* hue 0 = red */
+            ws2812_hsv_to_grb(0, 255, v, out);               /* warmth never overrides a fault */
             break;
         }
         case WS2812_MODE_IDLE: {
             uint8_t v = ws2812_breathe_v(now_ms, WS2812_IDLE_BREATHE_MS,
                                          WS2812_IDLE_MIN_V, WS2812_BRIGHTNESS);
-            ws2812_hsv_to_grb(hue, 255, v, out);
+            ws2812_hsv_to_grb(hue, 255, v, out);             /* idle keeps last hue, full sat */
             break;
         }
         case WS2812_MODE_ACTIVE:
         default:
-            ws2812_hsv_to_grb(hue, 255, WS2812_BRIGHTNESS, out);
+            if (blink)
+                ws2812_hsv_to_grb(WS2812_CYAN_HUE, 255, WS2812_BRIGHTNESS, out);
+            else
+                ws2812_hsv_to_grb(hue, sat, WS2812_BRIGHTNESS, out);
             break;
     }
 }
@@ -106,6 +124,25 @@ static uint8_t  s_last_hue_sent_active;  /* last hue pushed in ACTIVE mode      
 static uint32_t s_last_send_ms;      /* last PIOC push time (throttle clock)      */
 static uint32_t s_last_report_ms;    /* last forwarded-report time (idle detect)  */
 static uint8_t  s_started;           /* 0 until first push, so boot holds dark    */
+
+/* Humanization status latch (V5F-local, touched only from the V5F relay loop). */
+static uint8_t  s_warmth;             /* 0 COLD .. 2 WARM                       */
+static uint32_t s_blink_until_ms;     /* cyan blink active while now < this      */
+static uint32_t s_blink_last_ms;      /* last blink arm time (rate limit)        */
+
+#define WS2812_BLINK_MS        120u   /* cyan blink duration                     */
+#define WS2812_BLINK_MIN_GAP   500u   /* min ms between blinks (rate limit)      */
+
+void ws2812_set_warmth(uint8_t warmth) { s_warmth = (warmth > 2u) ? 2u : warmth; }
+
+void ws2812_note_synth_fallback(void)
+{
+    uint32_t now = s_last_send_ms;    /* coarse loop clock; exact ms not needed */
+    if ((uint32_t)(now - s_blink_last_ms) < WS2812_BLINK_MIN_GAP && s_blink_last_ms)
+        return;                       /* rate-limited */
+    s_blink_last_ms  = now;
+    s_blink_until_ms = now + WS2812_BLINK_MS;
+}
 
 void ws2812_init(void)
 {
@@ -179,7 +216,10 @@ void ws2812_service(uint32_t now_ms, int relaying)
 
     if (want) {
         uint8_t grb[3];
-        ws2812_compose(mode, hue, now_ms, grb);
+        uint8_t sat   = ws2812_warmth_sat(s_warmth);
+        int     blink = (s_blink_until_ms != 0) &&
+                        ((int32_t)(s_blink_until_ms - now_ms) > 0);
+        ws2812_compose_h(mode, hue, sat, blink, now_ms, grb);
         ws2812_send_grb(grb);
         if (mode == WS2812_MODE_ACTIVE) s_last_hue_sent_active = hue;
         s_last_send_ms = now_ms;

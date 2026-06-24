@@ -6,6 +6,7 @@
 //      -o /tmp/ws2812_test test/ws2812_test.c src/ws2812.c
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include "ws2812.h"
 
 static int failures = 0;
@@ -80,6 +81,33 @@ int main(void) {
         CHECK(act[1] == WS2812_BRIGHTNESS, "ACTIVE red at full brightness");
         CHECK(idle_lo[1] == WS2812_IDLE_MIN_V, "IDLE red at trough brightness");
         CHECK(idle_lo[0] == 0 && idle_lo[2] == 0, "IDLE keeps the hue (red -> G=B=0)");
+    }
+
+    /* ── Plan 5 Task 2: warmth tint + cyan fallback blink ── */
+    {
+        uint8_t grb_cold[3], grb_warm[3];
+        /* Non-anchor hue so saturation visibly changes the channel spread. */
+        ws2812_compose_h(WS2812_MODE_ACTIVE, 40, WS2812_SAT_COLD, 0, 0, grb_cold);
+        ws2812_compose_h(WS2812_MODE_ACTIVE, 40, WS2812_SAT_WARM, 0, 0, grb_warm);
+        int spread_cold = abs((int)grb_cold[0] - (int)grb_cold[1]);
+        int spread_warm = abs((int)grb_warm[0] - (int)grb_warm[1]);
+        CHECK(spread_cold < spread_warm, "COLD desaturates (smaller G/R spread) vs WARM");
+
+        CHECK(ws2812_warmth_sat(0) == WS2812_SAT_COLD,    "warmth 0 -> cold sat");
+        CHECK(ws2812_warmth_sat(2) == WS2812_SAT_WARM,    "warmth 2 -> warm sat");
+        CHECK(ws2812_warmth_sat(9) == WS2812_SAT_WARM,    "unknown warmth -> warm sat");
+
+        uint8_t grb_blink[3];
+        ws2812_compose_h(WS2812_MODE_ACTIVE, 0 /*red*/, WS2812_SAT_WARM, 1, 0, grb_blink);
+        /* Cyan: blue+green dominant, red suppressed. out = {G,R,B}. */
+        CHECK(grb_blink[1] < grb_blink[0] && grb_blink[1] < grb_blink[2],
+              "fallback blink forces cyan (R below G and B)");
+
+        /* ERROR still overrides warmth: stays red regardless of sat/blink. */
+        uint8_t grb_err[3];
+        ws2812_compose_h(WS2812_MODE_ERROR, 40, WS2812_SAT_COLD, 1, 0, grb_err);
+        CHECK(grb_err[1] > 0 && grb_err[0] == 0 && grb_err[2] == 0,
+              "ERROR overrides warmth/blink (red only)");
     }
 
     if (failures) { printf("%d FAILED\n", failures); return 1; }

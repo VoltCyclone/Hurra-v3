@@ -47,6 +47,22 @@ uint8_t ws2812_breathe_v(uint32_t now_ms, uint32_t period_ms,
 void ws2812_compose(ws2812_mode_t mode, uint8_t hue, uint32_t now_ms,
                     uint8_t out[3]);
 
+/* ── humanization warmth tint (Plan 5) ─────────────────────────────────
+ * Warmth desaturates the ACTIVE rainbow until the engine is trained; a
+ * synth-fallback event briefly tints toward cyan. ERROR/IDLE ignore both. */
+#define WS2812_SAT_COLD     64u    /* COLD: visibly washed-out rainbow      */
+#define WS2812_SAT_WARMING  160u   /* WARMING: partway to full colour       */
+#define WS2812_SAT_WARM     255u   /* WARM: full saturation (looks normal)  */
+#define WS2812_CYAN_HUE     128u   /* ~cyan in the h*6/255 sector map        */
+
+uint8_t ws2812_warmth_sat(uint8_t warmth);   /* 0/1/2 -> COLD/WARMING/WARM  */
+void    ws2812_compose_h(ws2812_mode_t mode, uint8_t hue, uint8_t sat,
+                         int blink, uint32_t now_ms, uint8_t out[3]);
+
+/* V5F-local latches read inside ws2812_service(). Hardware-side only. */
+void ws2812_set_warmth(uint8_t warmth);       /* 0..2; applied in ACTIVE     */
+void ws2812_note_synth_fallback(void);        /* arm a rate-limited cyan blink */
+
 /* ── Hardware API (no-op under WS2812_HOSTTEST) ──────────────────────────── */
 
 /* Bring up PIOC on PF13/IO1 and load the waveform program. Call once on V5F
