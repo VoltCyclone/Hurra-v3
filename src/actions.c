@@ -49,6 +49,10 @@ static const act_motion_source_t *s_motion_src;   /* NULL = analytic path */
 
 void act_motion_set_source(const act_motion_source_t *src) { s_motion_src = src; }
 
+static const act_stream_filter_t *s_stream_filter;   /* NULL = passthrough */
+
+void act_set_stream_filter(const act_stream_filter_t *f) { s_stream_filter = f; }
+
 static uint8_t btn_idx_to_mask(uint8_t idx)
 {
 	if (idx >= 1 && idx <= 5)
@@ -121,6 +125,7 @@ void act_move(int16_t dx, int16_t dy)
 	// A manual move overrides any in-flight trajectory.
 	if (g_motion.kind == MOTION_GESTURE && s_motion_src) s_motion_src->cancel();
 	g_motion.kind = MOTION_NONE;
+	if (s_stream_filter) s_stream_filter->apply(dx, dy, &dx, &dy);
 	act_move_raw(dx, dy);
 }
 
