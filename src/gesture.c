@@ -596,11 +596,20 @@ void gesture_stream_filter(int16_t in_dx, int16_t in_dy, int16_t *out_dx, int16_
         }
     }
 
-    /* Debt leak: bleed back a fraction of accumulated injected residual so the
-     * cumulative injected motion can't drift the cursor off the app's path. */
-    rx -= GST_RES_DEBT_LEAK * G.sf_debt_x;
-    ry -= GST_RES_DEBT_LEAK * G.sf_debt_y;
-    G.sf_debt_x += rx; G.sf_debt_y += ry;
+    /* Debt leak: while the app is moving, bleed back a fraction of accumulated
+     * injected residual so cumulative injected motion can't drift the cursor off
+     * the app's path. At rest (atten==0) decay the debt internally WITHOUT
+     * emitting the correction, so an idle app receives exactly zero injected
+     * motion (complement-only: no motion the app didn't ask for). */
+    if (atten > 0.0f) {
+        rx -= GST_RES_DEBT_LEAK * G.sf_debt_x;
+        ry -= GST_RES_DEBT_LEAK * G.sf_debt_y;
+        G.sf_debt_x += rx; G.sf_debt_y += ry;
+    } else {
+        G.sf_debt_x *= (1.0f - GST_RES_DEBT_LEAK);
+        G.sf_debt_y *= (1.0f - GST_RES_DEBT_LEAK);
+        rx = 0.0f; ry = 0.0f;
+    }
 
     /* Emit app delta + residual through the sub-pixel carry quantizer. */
     humanize_inject_emit(ax + rx, ay + ry, out_dx, out_dy);
