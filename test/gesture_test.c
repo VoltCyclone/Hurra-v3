@@ -842,6 +842,23 @@ int main(void) {
         CHECK((0.0f * s) == 0.0f, "capstone: suppression never invents motion");
     }
 
+    /* ── Plan 5 Task 1: human-status snapshot ── */
+    {
+        gesture_init(1000);
+        gst_human_status_t hs;
+        gesture_human_status(&hs);
+        CHECK(hs.warmth == GST_COLD, "cold engine reports COLD warmth");
+        CHECK(hs.replay_pct == 0 && hs.synth_pct == 0, "no motion -> 0%/0%");
+
+        /* Warm the library so begin() can pick replay, then drive a mix. */
+        warm_library_all_buckets();          /* shared helper used by Plans 2–4 */
+        for (int i = 0; i < 8; i++) gesture_motion_begin(400, 0, MOTION_MODE_SILENT);
+        gesture_human_status(&hs);
+        CHECK(hs.replay_pct + hs.synth_pct == 100, "replay%+synth% == 100 once motion ran");
+        CHECK(hs.replay_pct <= 100 && hs.synth_pct <= 100, "percentages clamp to 0..100");
+        CHECK(hs.warmth == gesture_warmth(), "warmth mirrors gesture_warmth()");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

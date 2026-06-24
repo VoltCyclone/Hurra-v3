@@ -184,3 +184,15 @@ typedef enum { GST_CA_NONE = 0, GST_CA_PRESS = 1, GST_CA_RELEASE = 2 } gst_click
 bool               gesture_click_arm_fire(uint8_t button);
 gst_click_action_t gesture_click_fire_step(uint32_t dt_us, float *out_dx, float *out_dy);
 bool               gesture_click_fire_active(void);
+
+/* ── humanization status snapshot (Plan 5) ─────────────────────────────
+ * Pure read of the replay/synth/warmth counters for the LED + display.
+ * replay_pct + synth_pct == 100 once any motion has run, else both 0. */
+typedef struct {
+    uint8_t warmth;      /* gst_warmth_t: 0 COLD, 1 WARMING, 2 WARM */
+    uint8_t replay_pct;  /* replay share of emitted motions, 0..100  */
+    uint8_t synth_pct;   /* synth-fallback share, 0..100             */
+    uint8_t dup;         /* near-duplicate rejections, clamped 0..255 */
+} gst_human_status_t;
+
+void gesture_human_status(gst_human_status_t *out);
