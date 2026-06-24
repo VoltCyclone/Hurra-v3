@@ -163,8 +163,9 @@ ifeq ($(BOARD),host)
   V5F_SRC := $(filter-out src/kmbox_cmd_v5f_stub.c src/usb_device_fs.c,$(V5F_SRC)) \
              src/inject_link.c src/kmbox_cmd_host.c src/usb_cdc_fs.c $(PROTO_SRC)
   # gesture engine: host+V5F only (two_board.c calls are guarded by BOARD_ROLE_HOST;
-  # gesture_motion_v5f needs timebase_v5f_us which is V5F-only).
-  V5F_SRC += src/gesture.c src/gesture_motion_v5f.c
+  # gesture_stream_v5f bridges the act_move stream-filter hook to the residual filter;
+  # gesture.c uses timebase_v5f_us which is V5F-only).
+  V5F_SRC += src/gesture.c src/gesture_stream_v5f.c
 else
   V5F_SRC += src/inject_link.c
 endif
