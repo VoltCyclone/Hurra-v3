@@ -25,6 +25,8 @@
 #include "proto.h"          // proto_init/feed/tick/set_tx + notify_axes/buttons
 #include "actions.h"        // act_init / act_motion_tick
 #include "hid_layout.h"     // mouse_layout_t for the catch_xy physical-report feed
+#include "gesture.h"        // gesture engine: capture tap + V5F replay source + status
+#include "humanize.h"       // humanize_record_arrival / humanize_inject_emit
 #endif
 
 volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
@@ -348,6 +350,11 @@ void two_board_host_run(void)
 #if defined(BOARD_ROLE_HOST)
     proto_init();
     act_init();
+    /* Redirect trajectory motion (km.move/bezier) to the V5F gesture replay
+     * engine: gesture-sourced curves/cadence replace the analytic Bézier. */
+    extern const act_motion_source_t gesture_motion_v5f_source;
+    gesture_init(1000u);                          /* nominal 1 kHz; refined by capture cadence */
+    act_motion_set_source(&gesture_motion_v5f_source);
     proto_set_tx(cdc_tx);
 #endif
 
@@ -406,6 +413,14 @@ void two_board_host_run(void)
                                                       ml->wheel_size, doff);
                         proto_notify_buttons(rpt[doff]);
                         proto_notify_axes((int16_t)dx, (int16_t)dy, (int8_t)w);
+
+                        /* Humanization v2 capture tap (passthrough already
+                         * forwarded above; these read copies only). */
+                        uint32_t t_us = now_us;
+                        humanize_record_arrival(t_us);                  /* TIM9 feed (absent before) */
+                        gesture_capture_push((int16_t)dx, (int16_t)dy, t_us);
+                        gesture_click_observe((int16_t)dx, (int16_t)dy, rpt[doff], t_us);
+                        gesture_click_real_buttons(rpt[doff], t_us);
                     }
                 }
 #endif
@@ -427,6 +442,16 @@ void two_board_host_run(void)
         }
         proto_tick();
         act_motion_tick();          // unconditional; early-returns when idle
+
+        /* Build+admit a shape from the recent capture window periodically
+         * (off the EP-poll hot path). Cheap no-op when the window is too short. */
+        static uint32_t s_last_admit_ms;
+        if ((uint32_t)(now - s_last_admit_ms) >= 250u) {
+            s_last_admit_ms = now;
+            if (gesture_capture_count() >= 64)
+                gesture_capture_build_and_admit(64);
+        }
+
         inject_link_drain(&seq, spi_link_master_exchange);
         cdc_fs_poll();
 #endif
@@ -454,6 +479,11 @@ void two_board_host_run(void)
                                     ? 1023u : spi_link_master_wedges);
         }
         disp.dev_link = ((now - telem_fresh_ms) < 1000u) ? 1u : 0u;
+#if defined(BOARD_ROLE_HOST)
+        gst_human_status_t hs; gesture_human_status(&hs);
+        disp.human_warmth     = hs.warmth;
+        disp.human_replay_pct = hs.replay_pct;
+#endif
         if ((now - disp_ms) >= 50u) {   // throttle the rotating field pump
             disp_ms = now;
             icc_status_pump_v5f(&disp);
@@ -461,6 +491,12 @@ void two_board_host_run(void)
 
         if ((now - last_blink_ms) >= 250u) { last_blink_ms = now; led_toggle(); }
         /* Board A drives DRDY high once enumerated downstream = "relaying". */
+#if defined(BOARD_ROLE_HOST)
+        ws2812_set_warmth((uint8_t)gesture_warmth());
+        static uint32_t s_last_synth;
+        uint32_t sc = gesture_synth_fallback_count();
+        if (sc != s_last_synth) { s_last_synth = sc; ws2812_note_synth_fallback(); }
+#endif
         ws2812_service(now, spi_link_master_drdy());
     }
 #endif // TWO_BOARD_HOST_SYNTH
