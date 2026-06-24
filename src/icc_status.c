@@ -22,6 +22,11 @@ uint16_t icc_status_pack(uint8_t sel, uint8_t seq, const display_status_t *st)
         case ICC_ST_SEL_DEV:    payload = (uint16_t)(((st->dev_link & 0x1u) << 9)
                                                      | ((st->dev_enum & 0x1u) << 8)
                                                      | ((uint8_t)st->dev_temp_c)); break;
+        case ICC_ST_SEL_HUMAN: {
+            uint16_t rp = (st->human_replay_pct > 100u) ? 100u : st->human_replay_pct;
+            payload = (uint16_t)(((st->human_warmth & 0x3u) << 8) | rp);
+            break;
+        }
         default: break;
     }
     return (uint16_t)(((seq & 0x3u) << 14) | ((sel & 0xFu) << 10) | (payload & 0x3FFu));
@@ -54,6 +59,10 @@ uint8_t icc_status_unpack(uint16_t word, display_status_t *acc)
             acc->dev_link  = (uint8_t)((payload >> 9) & 0x1u);
             acc->dev_enum  = (uint8_t)((payload >> 8) & 0x1u);
             acc->dev_temp_c = (int8_t)(int16_t)(payload & 0xFFu);
+            break;
+        case ICC_ST_SEL_HUMAN:
+            acc->human_warmth     = (uint8_t)((payload >> 8) & 0x3u);
+            acc->human_replay_pct = (uint8_t)(payload & 0xFFu);
             break;
         default: break;
     }
