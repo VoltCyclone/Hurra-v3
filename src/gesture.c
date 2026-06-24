@@ -209,10 +209,10 @@ uint16_t gesture_reconstruct(const gst_sample_t *samples, uint16_t n,
 
 /* ── residual store (Humanization v3) ─────────────────────────────────── */
 
-void gesture_residual_admit(uint8_t bucket, float r_par, float r_perp, uint16_t dt) {
+void gesture_residual_admit(uint8_t bucket, float r_par, float r_perp) {
     if (bucket >= GST_RES_BUCKETS) bucket = GST_RES_BUCKETS - 1;
     gst_residual_t *slot = &G.res[bucket][G.res_head[bucket]];
-    slot->r_par = r_par; slot->r_perp = r_perp; slot->dt_us_lo = dt;
+    slot->r_par = r_par; slot->r_perp = r_perp;
     G.res_head[bucket] = (uint8_t)((G.res_head[bucket] + 1u) % GST_RES_RING);
     if (G.res_n[bucket] < GST_RES_RING) G.res_n[bucket]++;
 }
@@ -319,8 +319,7 @@ uint16_t gesture_residual_extract(uint16_t window) {
             r_par = ex; r_perp = ey;                     /* heading undefined: pass through */
         }
         uint8_t b = gesture_speed_bucket(tmag);
-        uint32_t dt = pts[i+1].t_us - pts[i].t_us;
-        gesture_residual_admit(b, r_par, r_perp, (uint16_t)(dt & 0xFFFFu));
+        gesture_residual_admit(b, r_par, r_perp);
         admitted++;
     }
     return admitted;
