@@ -482,6 +482,71 @@ gst_warmth_t gesture_residual_warmth(void) {
     return GST_WARM;
 }
 
+/* ── residual extraction (v3) ─────────────────────────────────────────── */
+
+uint8_t gesture_speed_bucket(float speed_cpr) {
+    if (speed_cpr < GST_RES_SLOW_MAX) return 0;
+    if (speed_cpr < GST_RES_MED_MAX)  return 1;
+    return 2;
+}
+
+uint16_t gesture_residual_extract(uint16_t window) {
+    if (window < GST_RES_FIR + 2u) return 0;
+    if (window > GST_CAP_RING)      window = GST_CAP_RING;
+
+    /* 1. Pull the newest `window` samples oldest-first into a local buffer. */
+    static gst_sample_t buf[GST_CAP_RING];
+    uint16_t avail = gesture_capture_count();
+    if (window > avail) window = avail;
+    if (window < GST_RES_FIR + 2u) return 0;
+    for (uint16_t i = 0; i < window; i++)
+        if (!gesture_capture_get((uint16_t)(window - 1u - i), &buf[i])) return 0;
+
+    /* 2. Sub-pixel reconstruct → continuous position + cumulative t_us. */
+    static gst_point_t pts[GST_CAP_RING + 1];
+    uint16_t np = gesture_reconstruct(buf, window, pts, GST_CAP_RING + 1);
+    if (np < GST_RES_FIR + 2u) return 0;
+
+    /* 3. Per-report velocity v[i] = (pos[i]-pos[i-1]) / (t[i]-t[i-1]) * nominal,
+     *    expressed in counts/report (multiply by nominal so units are per-report,
+     *    not per-µs — keeps r_par/r_perp in count scale for the filter). */
+    static float vx[GST_CAP_RING + 1], vy[GST_CAP_RING + 1];
+    uint16_t nv = (uint16_t)(np - 1u);
+    float nominal = (float)(G.nominal_us ? G.nominal_us : 1000u);
+    for (uint16_t i = 0; i < nv; i++) {
+        float dt = (float)(pts[i+1].t_us - pts[i].t_us);
+        if (dt < 1.0f) dt = 1.0f;
+        vx[i] = (pts[i+1].x - pts[i].x) / dt * nominal;
+        vy[i] = (pts[i+1].y - pts[i].y) / dt * nominal;
+    }
+
+    /* 4. FIR low-pass (centered moving average) → trend; residual = v − trend.
+     *    5. Rotate residual into trend heading; 6. bucket by |trend|; admit. */
+    uint16_t half = GST_RES_FIR / 2u;
+    uint16_t admitted = 0;
+    for (uint16_t i = half; i + half < nv; i++) {
+        float tx = 0.0f, ty = 0.0f;
+        for (uint16_t k = i - half; k <= i + half; k++) { tx += vx[k]; ty += vy[k]; }
+        tx /= (float)GST_RES_FIR; ty /= (float)GST_RES_FIR;
+        float ex = vx[i] - tx, ey = vy[i] - ty;          /* residual */
+
+        float tmag = sqrtf(tx*tx + ty*ty);
+        float r_par, r_perp;
+        if (tmag > 1e-4f) {
+            float ux = tx / tmag, uy = ty / tmag;        /* unit heading */
+            r_par  = ex*ux + ey*uy;                      /* along heading */
+            r_perp = -ex*uy + ey*ux;                     /* perpendicular */
+        } else {
+            r_par = ex; r_perp = ey;                     /* heading undefined: pass through */
+        }
+        uint8_t b = gesture_speed_bucket(tmag);
+        uint32_t dt = pts[i+1].t_us - pts[i].t_us;
+        gesture_residual_admit(b, r_par, r_perp, (uint16_t)(dt & 0xFFFFu));
+        admitted++;
+    }
+    return admitted;
+}
+
 void gesture_click_admit(const gst_click_env_t *env) {
     if (env->dwell_us < GST_CLK_DWELL_MIN_US || env->dwell_us > GST_CLK_DWELL_MAX_US)
         return;                           /* quality gate: implausible dwell */
