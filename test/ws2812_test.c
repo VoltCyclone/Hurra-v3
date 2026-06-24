@@ -83,7 +83,7 @@ int main(void) {
         CHECK(idle_lo[0] == 0 && idle_lo[2] == 0, "IDLE keeps the hue (red -> G=B=0)");
     }
 
-    /* ── Plan 5 Task 2: warmth tint + cyan fallback blink ── */
+    /* ── warmth tint + cyan fallback blink ── */
     {
         uint8_t grb_cold[3], grb_warm[3];
         /* Non-anchor hue so saturation visibly changes the channel spread. */

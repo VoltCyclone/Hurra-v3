@@ -55,7 +55,7 @@ float    gesture_rand_range(float lo, float hi);   /* uniform [lo, hi) */
 uint16_t gesture_cadence_count(void);                       /* 0 if < 2 samples */
 bool     gesture_cadence_get(uint16_t age, uint32_t *out_dt_us); /* age 0 = newest */
 
-/* ── click coupling (Plan 4) ───────────────────────────────────────────
+/* ── click coupling ────────────────────────────────────────────────────
  * Click kinematics measured from real button events, replayed around
  * injected motion. Decorator modulates ONLY the injected delta; the genuine
  * click/cursor passthrough is never touched. */
@@ -93,7 +93,7 @@ bool  gesture_click_real_active(void);     /* true while a real button held  */
 /* ── Mode 1: self-fire (triggerbot) click sequence ─────────────────────
  * arm_fire selects a measured envelope and arms; fire_step drives a timed
  * PRESS → settle-bounded dwell drift → RELEASE → recoil sequence, returning
- * the button action to emit (Plan 5 routes it to act_click/TYPE_INJECT) and
+ * the button action to emit and
  * the step's injected drift/recoil delta. Arming is refused while a real
  * click is active (arbitration: real wins). */
 typedef enum { GST_CA_NONE = 0, GST_CA_PRESS = 1, GST_CA_RELEASE = 2 } gst_click_action_t;
@@ -102,7 +102,7 @@ bool               gesture_click_arm_fire(uint8_t button);
 gst_click_action_t gesture_click_fire_step(uint32_t dt_us, float *out_dx, float *out_dy);
 bool               gesture_click_fire_active(void);
 
-/* ── residual store (Humanization v3) ──────────────────────────────────
+/* ── residual store: speed-bucketed real motion residual ───────────────
  * Real captured high-frequency motion residual (tremor, motor noise,
  * off-axis wobble), speed-bucketed, drawn sequentially to preserve the
  * captured tremor autocorrelation. RAM-only, FIFO eviction. */
@@ -121,7 +121,7 @@ uint16_t gesture_residual_total(void);
 bool     gesture_residual_draw(uint8_t bucket, gst_residual_t *out);
 gst_warmth_t gesture_residual_warmth(void);          /* fill-level warmth */
 
-/* ── residual extraction (v3) ──────────────────────────────────────────*/
+/* ── residual extraction ───────────────────────────────────────────────*/
 #define GST_RES_FIR       5      /* centered moving-average taps (~5 Hz @ 1kHz) */
 #define GST_RES_SLOW_MAX  2.0f   /* counts/report: slow|medium boundary */
 #define GST_RES_MED_MAX   8.0f   /* counts/report: medium|fast boundary */
@@ -139,7 +139,7 @@ uint16_t gesture_residual_extract(uint16_t window);
 void gesture_stream_filter(int16_t in_dx, int16_t in_dy, int16_t *out_dx, int16_t *out_dy);
 void gesture_stream_reset(void);
 
-/* ── honest-limit detector (v3) ────────────────────────────────────────
+/* ── honest-limit detector ─────────────────────────────────────────────
  * Flags app trends additive residual cannot launder: uniform fixed-magnitude
  * steps and super-human teleport snaps. Flags, never fakes. */
 #define GST_NH_WIN        32
@@ -149,7 +149,7 @@ void     gesture_trend_observe(int16_t in_dx, int16_t in_dy);
 uint32_t gesture_nonhuman_trend(void);
 bool     gesture_trend_is_human(void);
 
-/* ── humanization status snapshot (Plan 5) ─────────────────────────────
+/* ── humanization status snapshot ──────────────────────────────────────
  * Pure read of the residual/trend/warmth state for the LED + display.
  * replay_pct + synth_pct == 100 once warm and trending human, else 0. */
 typedef struct {

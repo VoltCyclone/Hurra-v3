@@ -26,7 +26,7 @@ int main(void) {
     gesture_init(1000);
     CHECK(1, "gesture_init runs");
 
-    /* ── Task 2: capture ring ── */
+    /* ── capture ring ── */
     gesture_init(1000);
     CHECK(gesture_capture_count() == 0, "ring starts empty");
 
@@ -50,7 +50,7 @@ int main(void) {
     gesture_capture_get(0, &s);
     CHECK(s.dx == (int16_t)(GST_CAP_RING + 49), "newest survives overflow");
 
-    /* ── Task 3: reconstruction (prepend-origin semantics) ── */
+    /* ── reconstruction (prepend-origin semantics) ── */
     gesture_init(1000);   /* nominal = 1000 us, used for first-leg timing */
     {
         /* A straight 3-sample move: (2,0),(2,0),(1,0). Cumulative x: 2,4,5.
@@ -84,7 +84,7 @@ int main(void) {
               "zero-length fractions are all 0");
     }
 
-    /* ── Plan 2 Task 1: PRNG determinism + range ── */
+    /* ── PRNG determinism + range ── */
     {
         gesture_init(1000);
         uint32_t a0 = gesture_rand_u32();
@@ -102,7 +102,7 @@ int main(void) {
         CHECK(in_band, "rand_range stays within [lo, hi)");
     }
 
-    /* ── Plan 3 Task 1: cadence view over the capture ring ── */
+    /* ── cadence view over the capture ring ── */
     {
         gesture_init(1000);
         CHECK(gesture_cadence_count() == 0, "empty ring: no intervals");
@@ -126,7 +126,7 @@ int main(void) {
         CHECK(!(a == b && b == c), "cadence retains jitter (not constant)");
     }
 
-    /* ── Plan 4 Task 1: click envelope ring ── */
+    /* ── click envelope ring ── */
     {
         gesture_init(1000);
         CHECK(gesture_click_count() == 0, "click ring starts empty");
@@ -162,7 +162,7 @@ int main(void) {
         CHECK(gesture_click_count() == GST_CLK_RING, "ring count caps at GST_CLK_RING");
     }
 
-    /* ── Plan 4 Task 2: click envelope capture ── */
+    /* ── click envelope capture ── */
     {
         gesture_init(1000);
         uint32_t t = 0;
@@ -194,7 +194,7 @@ int main(void) {
         CHECK(gesture_click_count() == 1, "tap with ~31ms dwell captured");
     }
 
-    /* ── Plan 4 Task 3: Mode 2 aim-assist suppression ── */
+    /* ── Mode 2 aim-assist suppression ── */
     {
         gesture_init(1000);
         CHECK(fabsf(gesture_click_motion_scale() - 1.0f) < 1e-6f, "scale starts at 1.0");
@@ -224,7 +224,7 @@ int main(void) {
         CHECK(inj_dx == 0.0f && inj_dy == 0.0f, "suppression never invents motion");
     }
 
-    /* ── Plan 4 Task 4: Mode 1 self-fire sequence ── */
+    /* ── Mode 1 self-fire sequence ── */
     {
         gesture_init(1000);
         /* Capture an envelope so fire uses measured timing (dwell ~80ms). */
@@ -266,7 +266,7 @@ int main(void) {
         CHECK(!gesture_click_fire_active(), "no self-fire started under real click");
     }
 
-    /* ── Plan 4 Task 5: click-coupling capstone + safety boundary ── */
+    /* ── click-coupling capstone + safety boundary ── */
     {
         gesture_init(1000);
         /* Capture an envelope with a KNOWN recoil so we can assert conservation. */
@@ -327,7 +327,7 @@ int main(void) {
         CHECK((0.0f * s) == 0.0f, "capstone: suppression never invents motion");
     }
 
-    /* ── Plan 5 Task 1: human-status snapshot (updated for v3 residual-based body) ── */
+    /* ── human-status snapshot ── */
     {
         gesture_init(1000);
         gst_human_status_t hs;
@@ -345,7 +345,7 @@ int main(void) {
         CHECK(hs.replay_pct <= 100 && hs.synth_pct <= 100, "percentages clamp to 0..100");
     }
 
-    /* ── v3 Task 1: residual store ── */
+    /* ── residual store ── */
     {
         gesture_init(1000);
         CHECK(gesture_residual_total() == 0, "residual store starts empty");
@@ -394,7 +394,7 @@ int main(void) {
               "one bucket filled, others empty = WARMING");
     }
 
-    /* ── v3 Task 2: residual extraction ── */
+    /* ── residual extraction ── */
     {
         gesture_init(1000);
         /* Synthesize a capture: smooth rightward drift (trend) + a known
@@ -438,7 +438,7 @@ int main(void) {
         CHECK(gesture_residual_extract(2) == 0, "sub-FIR window admits nothing");
     }
 
-    /* ── v3 Task 3: streaming residual filter ── */
+    /* ── streaming residual filter ── */
     {
         gesture_init(1000);
         /* Warm the store with a known tremor so draws are non-zero. */
@@ -471,7 +471,7 @@ int main(void) {
         CHECK(idle_emit == 0, "zero injected motion when app is idle (leak gated at rest)");
     }
 
-    /* ── v3 Task 4: honest-limit detector ── */
+    /* ── honest-limit detector ── */
     {
         gesture_init(1000);
         uint32_t base = gesture_nonhuman_trend();
@@ -517,7 +517,7 @@ int main(void) {
         CHECK(gesture_nonhuman_trend() == c_before + 1, "combined teleport+uniform-step call counts exactly once");
     }
 
-    /* ── v3 Task 7: status reflects residual state ── */
+    /* ── status reflects residual state ── */
     {
         gesture_init(1000);
         gst_human_status_t hs;

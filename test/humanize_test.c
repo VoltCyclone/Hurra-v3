@@ -148,7 +148,7 @@ int main(void) {
         CHECK(labs(s - 3000L*4) <= 2, "conservation holds with interval feed");
     }
 
-    /* ── Plan 3 Task 4: injected emit quantization (sub-pixel + clamp carry) ── */
+    /* ── injected emit quantization (sub-pixel + clamp carry) ── */
     {
         /* (A) Sub-pixel carry: a stream of 0.4-count steps must accumulate into
          *     whole counts (no per-step truncation-to-zero loss). */
