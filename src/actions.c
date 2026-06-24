@@ -34,7 +34,7 @@ static bool s_swap_xy  = false;
 // ── motion program state ─────────────────────────────────────────────────────
 // Endpoint and control points are relative to the program's start. Each tick
 // emits the integer increment toward curve(t), so rounding never accumulates.
-typedef enum { MOTION_NONE = 0, MOTION_LINEAR, MOTION_BEZIER, MOTION_GESTURE } motion_kind_t;
+typedef enum { MOTION_NONE = 0, MOTION_LINEAR, MOTION_BEZIER } motion_kind_t;
 static struct {
 	motion_kind_t kind;
 	uint32_t start_ms;
@@ -44,10 +44,6 @@ static struct {
 	int32_t  c2x, c2y;      // bezier control point 2 (counts)
 	int32_t  emit_x, emit_y; // counts already emitted toward the path
 } g_motion;
-
-static const act_motion_source_t *s_motion_src;   /* NULL = analytic path */
-
-void act_motion_set_source(const act_motion_source_t *src) { s_motion_src = src; }
 
 static const act_stream_filter_t *s_stream_filter;   /* NULL = passthrough */
 
@@ -123,7 +119,6 @@ static void act_move_raw(int16_t dx, int16_t dy)
 void act_move(int16_t dx, int16_t dy)
 {
 	// A manual move overrides any in-flight trajectory.
-	if (g_motion.kind == MOTION_GESTURE && s_motion_src) s_motion_src->cancel();
 	g_motion.kind = MOTION_NONE;
 	if (s_stream_filter) s_stream_filter->apply(dx, dy, &dx, &dy);
 	act_move_raw(dx, dy);
@@ -303,11 +298,6 @@ static void motion_start_common(int16_t dx, int16_t dy, uint16_t dur_ms)
 void act_motion_move_dur(int16_t dx, int16_t dy, uint16_t dur_ms)
 {
 	if (dur_ms == 0) { act_move(dx, dy); return; }
-	if (s_motion_src) {
-		s_motion_src->begin(dx, dy, dur_ms, 0, 0, 0, 0, 0);
-		g_motion.kind = MOTION_GESTURE;
-		return;
-	}
 	motion_start_common(dx, dy, dur_ms);
 	g_motion.kind = MOTION_LINEAR;
 }
@@ -316,11 +306,6 @@ void act_motion_bezier(int16_t dx, int16_t dy, uint16_t dur_ms,
                        int16_t x1, int16_t y1, int16_t x2, int16_t y2)
 {
 	if (dur_ms == 0) { act_move(dx, dy); return; }
-	if (s_motion_src) {
-		s_motion_src->begin(dx, dy, dur_ms, 1, x1, y1, x2, y2);
-		g_motion.kind = MOTION_GESTURE;
-		return;
-	}
 	motion_start_common(dx, dy, dur_ms);
 	g_motion.c1x = x1; g_motion.c1y = y1;
 	g_motion.c2x = x2; g_motion.c2y = y2;
@@ -332,14 +317,6 @@ void act_motion_cancel(void) { g_motion.kind = MOTION_NONE; }
 void act_motion_tick(void)
 {
 	if (g_motion.kind == MOTION_NONE) return;
-
-	if (g_motion.kind == MOTION_GESTURE) {
-		int16_t sx = 0, sy = 0;
-		int more = s_motion_src ? s_motion_src->tick(&sx, &sy) : 0;
-		if (sx || sy) act_move_raw(sx, sy);
-		if (!more) g_motion.kind = MOTION_NONE;
-		return;
-	}
 
 	uint32_t elapsed = millis() - g_motion.start_ms;
 	bool last = (elapsed >= g_motion.dur_ms);
