@@ -991,6 +991,28 @@ int main(void) {
         CHECK(idle_emit == 0, "zero injected motion when app is idle (leak gated at rest)");
     }
 
+    /* ── v3 Task 4: honest-limit detector ── */
+    {
+        gesture_init(1000);
+        uint32_t base = gesture_nonhuman_trend();
+        /* Human-like: decaying Fitts magnitudes -> stays "human", no flag. */
+        for (int i = 40; i > 0; i--) gesture_trend_observe((int16_t)i, (int16_t)(i/3));
+        CHECK(gesture_nonhuman_trend() == base, "human-like decay raises no flag");
+        CHECK(gesture_trend_is_human(), "human-like window reads as human");
+
+        /* Uniform steps: constant magnitude -> flag. */
+        gesture_init(1000);
+        for (int i = 0; i < GST_NH_WIN + 4; i++) gesture_trend_observe(5, 0);
+        CHECK(gesture_nonhuman_trend() > 0, "uniform-step trend is flagged");
+        CHECK(!gesture_trend_is_human(), "uniform-step window reads as non-human");
+
+        /* Teleport snap: one huge delta -> flag. */
+        gesture_init(1000);
+        uint32_t b2 = gesture_nonhuman_trend();
+        gesture_trend_observe(200, 50);
+        CHECK(gesture_nonhuman_trend() > b2, "teleport snap is flagged");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

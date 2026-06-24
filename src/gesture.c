@@ -122,6 +122,11 @@ static struct {
     float sf_speed;        /* EWMA speed magnitude */
     float sf_debt_x, sf_debt_y; /* accumulated injected residual (for leak) */
     uint8_t sf_have;       /* EWMA initialized */
+    /* ── honest-limit detector (v3) ── */
+    float    nh_mag[GST_NH_WIN];   /* recent |app delta| ring */
+    uint8_t  nh_head, nh_n;
+    uint32_t nh_count;             /* non-human-trend events (diagnostic) */
+    uint8_t  nh_human;             /* last verdict: 1 human, 0 non-human */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -552,6 +557,41 @@ uint16_t gesture_residual_extract(uint16_t window) {
         admitted++;
     }
     return admitted;
+}
+
+/* ── honest-limit detector (Humanization v3) ─────────────────────────── */
+
+uint32_t gesture_nonhuman_trend(void) { return G.nh_count; }
+bool     gesture_trend_is_human(void) { return G.nh_human != 0; }
+
+GST_FASTRUN
+void gesture_trend_observe(int16_t in_dx, int16_t in_dy) {
+    float m = sqrtf((float)in_dx*in_dx + (float)in_dy*in_dy);
+
+    /* Teleport: a single super-human report. */
+    if (m > GST_TELEPORT_CPR) { G.nh_count++; G.nh_human = 0; }
+
+    G.nh_mag[G.nh_head] = m;
+    G.nh_head = (uint8_t)((G.nh_head + 1u) % GST_NH_WIN);
+    if (G.nh_n < GST_NH_WIN) G.nh_n++;
+
+    if (G.nh_n >= GST_NH_WIN) {
+        float mean = 0.0f;
+        for (uint8_t i = 0; i < GST_NH_WIN; i++) mean += G.nh_mag[i];
+        mean /= (float)GST_NH_WIN;
+        float var = 0.0f;
+        for (uint8_t i = 0; i < GST_NH_WIN; i++) {
+            float d = G.nh_mag[i] - mean; var += d*d;
+        }
+        var /= (float)GST_NH_WIN;
+        /* Uniform-step: nonzero motion with near-zero relative variance.
+         * Human aim has Fitts magnitude spread; a flat drag does not. */
+        float cv = (mean > 0.5f) ? (var / (mean*mean)) : 1.0f;   /* coeff of variation^2 */
+        if (mean > 0.5f && cv < 0.02f) { G.nh_count++; G.nh_human = 0; }
+        else G.nh_human = 1;
+    } else {
+        G.nh_human = 1;   /* not enough data yet → assume human */
+    }
 }
 
 /* ── streaming residual filter (Humanization v3, per-poll) ──────────── */
