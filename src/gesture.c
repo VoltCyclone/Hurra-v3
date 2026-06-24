@@ -733,6 +733,24 @@ uint32_t gesture_replay_count(void)         { return G.replay_count; }
 uint32_t gesture_synth_fallback_count(void) { return G.synth_fallback_count; }
 uint32_t gesture_bucket_miss(void)          { return G.bucket_miss; }
 
+void gesture_human_status(gst_human_status_t *out) {
+    if (!out) return;
+    uint32_t rep = gesture_replay_count();
+    uint32_t syn = gesture_synth_fallback_count();
+    uint32_t tot = rep + syn;
+    out->warmth = (uint8_t)gesture_warmth();
+    if (tot == 0) {
+        out->replay_pct = 0;
+        out->synth_pct  = 0;
+    } else {
+        uint32_t rp = (rep * 100u) / tot;       /* 0..100 */
+        out->replay_pct = (uint8_t)rp;
+        out->synth_pct  = (uint8_t)(100u - rp);
+    }
+    uint32_t d = gesture_dup_rejected();
+    out->dup = (uint8_t)(d > 255u ? 255u : d);
+}
+
 void gesture_motion_begin(int32_t tx, int32_t ty, motion_mode_t mode) {
     G.pace_budget_us = 0;
     float R = sqrtf((float)tx * (float)tx + (float)ty * (float)ty);
