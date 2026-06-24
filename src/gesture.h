@@ -113,10 +113,9 @@ bool               gesture_click_fire_active(void);
 typedef struct {
     float    r_par;     /* along-heading speed fluctuation (counts/report) */
     float    r_perp;    /* perpendicular wobble (counts/report)            */
-    uint16_t dt_us_lo;  /* low 16 bits of the source inter-report interval */
-} gst_residual_t;       /* 12 bytes                                        */
+} gst_residual_t;       /* 8 bytes                                         */
 
-void     gesture_residual_admit(uint8_t bucket, float r_par, float r_perp, uint16_t dt);
+void     gesture_residual_admit(uint8_t bucket, float r_par, float r_perp);
 uint16_t gesture_residual_count(uint8_t bucket);     /* 0..GST_RES_RING */
 uint16_t gesture_residual_total(void);
 bool     gesture_residual_draw(uint8_t bucket, gst_residual_t *out);

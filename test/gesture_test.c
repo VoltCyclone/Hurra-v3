@@ -338,7 +338,7 @@ int main(void) {
         /* Fill the residual store so gesture_residual_warmth() → WARM. */
         for (int b = 0; b < GST_RES_BUCKETS; b++)
             for (int i = 0; i < GST_RES_WARM_MIN; i++)
-                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f, 1000);
+                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f);
         gesture_human_status(&hs);
         CHECK(hs.warmth == GST_WARM, "filled residual store reports WARM warmth");
         CHECK(hs.warmth == (uint8_t)gesture_residual_warmth(), "warmth mirrors gesture_residual_warmth()");
@@ -354,7 +354,7 @@ int main(void) {
 
         /* admit into bucket 1 */
         for (int i = 0; i < 10; i++)
-            gesture_residual_admit(1, (float)i, -(float)i, (uint16_t)(1000 + i));
+            gesture_residual_admit(1, (float)i, -(float)i);
         CHECK(gesture_residual_count(1) == 10, "bucket 1 holds 10");
         CHECK(gesture_residual_total() == 10, "total counts bucket 1");
         CHECK(gesture_residual_count(0) == 0 && gesture_residual_count(2) == 0,
@@ -370,12 +370,12 @@ int main(void) {
         /* FIFO eviction caps the ring */
         gesture_init(1000);
         for (int i = 0; i < GST_RES_RING + 20; i++)
-            gesture_residual_admit(2, (float)i, 0.0f, 1000);
+            gesture_residual_admit(2, (float)i, 0.0f);
         CHECK(gesture_residual_count(2) == GST_RES_RING, "bucket caps at GST_RES_RING");
 
         /* out-of-range bucket clamps to 2 (no OOB write) */
         gesture_init(1000);
-        gesture_residual_admit(9, 1.0f, 1.0f, 1000);
+        gesture_residual_admit(9, 1.0f, 1.0f);
         CHECK(gesture_residual_count(2) == 1, "out-of-range bucket clamps to 2");
 
         /* warmth helper over fill level */
@@ -383,13 +383,13 @@ int main(void) {
         CHECK(gesture_residual_warmth() == GST_COLD, "empty store is COLD");
         for (int b = 0; b < GST_RES_BUCKETS; b++)
             for (int i = 0; i < GST_RES_WARM_MIN; i++)
-                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f, 1000);
+                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f);
         CHECK(gesture_residual_warmth() == GST_WARM, "all buckets filled is WARM");
 
         /* WARMING: total >= GST_RES_WARM_MIN but not every bucket is filled */
         gesture_init(1000);
         for (int i = 0; i < GST_RES_WARM_MIN; i++)
-            gesture_residual_admit(0, 0.1f, 0.1f, 1000);
+            gesture_residual_admit(0, 0.1f, 0.1f);
         CHECK(gesture_residual_warmth() == GST_WARMING,
               "one bucket filled, others empty = WARMING");
     }
@@ -527,7 +527,7 @@ int main(void) {
 
         for (int b = 0; b < GST_RES_BUCKETS; b++)
             for (int i = 0; i < GST_RES_WARM_MIN; i++)
-                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f, 1000);
+                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f);
         gesture_human_status(&hs);
         CHECK(hs.warmth == GST_WARM, "filled store -> WARM status");
         CHECK(hs.replay_pct > 0, "warm -> nonzero injecting %");
