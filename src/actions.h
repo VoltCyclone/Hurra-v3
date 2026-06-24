@@ -82,3 +82,13 @@ typedef struct {
 } act_motion_source_t;
 
 void act_motion_set_source(const act_motion_source_t *src);  /* NULL = analytic */
+
+/* ── streaming injection filter (Humanization v3) ──────────────────────
+ * Transforms each individual injected move delta (the streaming km.move
+ * path) before it is emitted. NULL (default) = passthrough. Registered only
+ * on the V5F host, where the gesture residual filter lives. */
+typedef struct {
+    void (*apply)(int16_t in_dx, int16_t in_dy, int16_t *out_dx, int16_t *out_dy);
+} act_stream_filter_t;
+
+void act_set_stream_filter(const act_stream_filter_t *f);   /* NULL = passthrough */

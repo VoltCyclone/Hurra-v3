@@ -50,6 +50,11 @@ static int fake_tick(int16_t *odx, int16_t *ody) {
 }
 static void fake_cancel(void) { f_cancelled = 1; f_steps = 0; }
 
+/* ── v3 Task 5: stream-filter fake (hoisted to file scope for C11 portability) ── */
+static void sf_add_one(int16_t in_dx, int16_t in_dy, int16_t *ox, int16_t *oy) {
+    *ox = (int16_t)(in_dx + 1); *oy = in_dy;
+}
+
 // Step a program to completion, advancing time `step_ms` per tick.
 static void run_program(uint32_t dur_ms, uint32_t step_ms) {
     // tick once at t=0, then advance until past dur, plus one final tick at end.
@@ -154,6 +159,22 @@ int main(void) {
         CHECK(f_cancelled == 1, "hook: act_move cancels the gesture source");
 
         act_motion_set_source(NULL);          /* restore analytic for any later tests */
+    }
+
+    /* ── v3 Task 5: stream-filter hook on act_move ── */
+    {
+        /* fake filter: add +1 to dx so we can see it ran */
+        static const act_stream_filter_t fake = { .apply = sf_add_one };
+        act_init();
+        long before = g_sum_x;
+        act_set_stream_filter(&fake);
+        act_move(10, 0);
+        CHECK(g_sum_x - before == 11, "stream filter applied to act_move (10 -> 11)");
+
+        act_set_stream_filter(NULL);
+        before = g_sum_x;
+        act_move(10, 0);
+        CHECK(g_sum_x - before == 10, "NULL filter = passthrough");
     }
 
     if (failures == 0) printf("\nALL PASSED\n");
