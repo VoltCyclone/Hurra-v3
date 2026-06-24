@@ -33,7 +33,7 @@ void kmbox_cmd_schedule_kb_release(uint8_t k, uint32_t d) { (void)k; (void)d; }
 
 static void reset_sink(void) { g_sum_x = g_sum_y = 0; g_emits = 0; }
 
-/* ── v3 Task 5: stream-filter fake (hoisted to file scope for C11 portability) ── */
+/* stream-filter test stub (hoisted to file scope for C11 portability) */
 static void sf_add_one(int16_t in_dx, int16_t in_dy, int16_t *ox, int16_t *oy) {
     *ox = (int16_t)(in_dx + 1); *oy = in_dy;
 }
@@ -120,7 +120,7 @@ int main(void) {
     act_motion_tick();                     // nothing in flight
     CHECK(g_sum_x == 42 && g_sum_y == -9, "dur=0: no trailing motion");
 
-    /* ── v3 Task 5: stream-filter hook on act_move ── */
+    /* ── stream-filter hook on act_move ── */
     {
         /* fake filter: add +1 to dx so we can see it ran */
         static const act_stream_filter_t fake = { .apply = sf_add_one };

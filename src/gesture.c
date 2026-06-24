@@ -52,12 +52,12 @@ static struct {
     uint16_t cap_count;  /* valid samples, saturates at GST_CAP_RING */
     /* ── PRNG (SFC32), seeded in gesture_init ── */
     uint32_t rng_a, rng_b, rng_c, rng_ctr;
-    /* ── click envelope ring (Plan 4) ── */
+    /* ── click envelope ring ── */
     gst_click_env_t clk[GST_CLK_RING];
     uint8_t  clk_head;                    /* next write slot (FIFO)        */
     uint8_t  clk_n;                       /* valid envelopes 0..GST_CLK_RING */
     uint32_t clk_admitted;                /* diagnostic                    */
-    /* ── click capture state machine (Plan 4) ── */
+    /* ── click capture state machine ── */
     uint8_t  cc_state;                    /* GST_CC_IDLE/HOLD/RECOIL        */
     uint8_t  cc_prev_buttons;            /* last observed button bits      */
     uint8_t  cc_button;                  /* latched button index this cycle */
@@ -70,13 +70,13 @@ static struct {
     float    cc_peak_at_press;           /* peak speed latched at press (for vclass) */
     uint32_t cc_decel_us;               /* peak_t→press, latched at press */
     uint32_t cc_dwell_us;               /* press→release, latched at release */
-    /* ── Mode 2 aim-assist (Plan 4) ── */
+    /* ── Mode 2: aim-assist suppression ── */
     uint8_t  c2_prev_buttons;            /* last real button bits          */
     bool     c2_real_down;               /* a real button is currently held */
     float    c2_scale;                   /* current injected-motion scale  */
     uint32_t c2_last_t;                  /* last real-report timestamp     */
     bool     c2_have_t;                  /* c2_last_t valid                */
-    /* ── Mode 1 self-fire (Plan 4) ── */
+    /* ── Mode 1: self-fire (triggerbot) state ── */
     uint8_t  c1_state;                    /* GST_C1_IDLE/PRESS/DWELL/RECOIL */
     uint8_t  c1_button;                  /* button index to emit           */
     uint32_t c1_dwell_us;               /* this fire's dwell               */
@@ -85,17 +85,17 @@ static struct {
     float    c1_recoil_x, c1_recoil_y;  /* recoil vector to inject         */
     float    c1_rec_emit_x, c1_rec_emit_y; /* recoil already emitted       */
     uint32_t c1_rec_el;                 /* elapsed in recoil               */
-    /* ── residual store (v3) ── */
+    /* ── residual store ── */
     gst_residual_t res[GST_RES_BUCKETS][GST_RES_RING];
     uint8_t  res_head[GST_RES_BUCKETS];   /* next write slot per bucket */
     uint8_t  res_n[GST_RES_BUCKETS];      /* valid samples 0..GST_RES_RING */
     uint8_t  res_read[GST_RES_BUCKETS];   /* sequential read cursor */
-    /* ── streaming filter live state (v3) ── */
+    /* ── streaming filter live state ── */
     float sf_hx, sf_hy;    /* EWMA heading vector (counts/report) */
     float sf_speed;        /* EWMA speed magnitude */
     float sf_debt_x, sf_debt_y; /* accumulated injected residual (for leak) */
     uint8_t sf_have;       /* EWMA initialized */
-    /* ── honest-limit detector (v3) ── */
+    /* ── honest-limit detector ── */
     float    nh_mag[GST_NH_WIN];   /* recent |app delta| ring */
     uint8_t  nh_head, nh_n;
     uint32_t nh_count;             /* non-human-trend events (diagnostic) */
@@ -212,7 +212,7 @@ uint16_t gesture_reconstruct(const gst_sample_t *samples, uint16_t n,
     return count;
 }
 
-/* ── residual store (Humanization v3) ─────────────────────────────────── */
+/* ── residual store: speed-bucketed real motion residual ──────────────── */
 
 void gesture_residual_admit(uint8_t bucket, float r_par, float r_perp) {
     if (bucket >= GST_RES_BUCKETS) bucket = GST_RES_BUCKETS - 1;
@@ -266,7 +266,7 @@ gst_warmth_t gesture_residual_warmth(void) {
 
 gst_warmth_t gesture_warmth(void) { return gesture_residual_warmth(); }
 
-/* ── residual extraction (v3) ─────────────────────────────────────────── */
+/* ── residual extraction ──────────────────────────────────────────────── */
 
 uint8_t gesture_speed_bucket(float speed_cpr) {
     if (speed_cpr < GST_RES_SLOW_MAX) return 0;
@@ -336,7 +336,7 @@ uint16_t gesture_residual_extract(uint16_t window) {
     return admitted;
 }
 
-/* ── honest-limit detector (Humanization v3) ─────────────────────────── */
+/* ── honest-limit detector ────────────────────────────────────────────── */
 
 uint32_t gesture_nonhuman_trend(void) { return G.nh_count; }
 bool     gesture_trend_is_human(void) { return G.nh_human != 0; }
@@ -381,7 +381,7 @@ void gesture_trend_observe(int16_t in_dx, int16_t in_dy) {
     if (teleport) G.nh_human = 0;   /* teleport verdict wins for this call (latched over window) */
 }
 
-/* ── streaming residual filter (Humanization v3, per-poll) ──────────── */
+/* ── streaming residual filter (per-poll) ─────────────────────────────── */
 
 void gesture_stream_reset(void) {
     G.sf_hx = G.sf_hy = G.sf_speed = 0.0f;

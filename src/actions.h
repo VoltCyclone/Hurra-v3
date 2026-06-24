@@ -67,7 +67,7 @@ void act_motion_bezier(int16_t dx, int16_t dy, uint16_t dur_ms,
 void act_motion_tick(void);             // step from the poll loop
 void act_motion_cancel(void);           // abort in-flight program
 
-/* ── streaming injection filter (Humanization v3) ──────────────────────
+/* ── streaming injection filter ────────────────────────────────────────
  * Transforms each individual injected move delta (the streaming km.move
  * path) before it is emitted. NULL (default) = passthrough. Registered only
  * on the V5F host, where the gesture residual filter lives. */

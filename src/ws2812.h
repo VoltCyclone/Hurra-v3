@@ -47,7 +47,7 @@ uint8_t ws2812_breathe_v(uint32_t now_ms, uint32_t period_ms,
 void ws2812_compose(ws2812_mode_t mode, uint8_t hue, uint32_t now_ms,
                     uint8_t out[3]);
 
-/* ── humanization warmth tint (Plan 5) ─────────────────────────────────
+/* ── humanization warmth tint ──────────────────────────────────────────
  * Warmth desaturates the ACTIVE rainbow until the engine is trained; a
  * synth-fallback event briefly tints toward cyan. ERROR/IDLE ignore both. */
 #define WS2812_SAT_COLD     64u    /* COLD: visibly washed-out rainbow      */

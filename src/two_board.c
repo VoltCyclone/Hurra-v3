@@ -1,6 +1,6 @@
 // two_board.c — two-board role loops (host = SPI master + USBHS capture; device =
-// SPI slave + USB clone). See two_board.h and AGENTS.md. Bench-gated; the pure
-// pieces it uses (spi_frame, desc_xfer, usb_hs_desc, synth_mouse) are host-tested.
+// SPI slave + USB clone). See two_board.h and AGENTS.md. Full validation requires
+// hardware; the pure pieces it uses (spi_frame, desc_xfer, usb_hs_desc, synth_mouse) are host-tested.
 #include "two_board.h"
 
 #include "icc.h"            // dbg_stage() / DBG_V5F_* UART stage oracle
@@ -53,7 +53,7 @@ typedef struct {
 // slot's ~5µs wire time at 50MHz. The whole blob is ~13 slots = ~416B, which the
 // 2KB ring (LINK_RX_RING_SZ) holds ~5x over, so the pace is pure safety margin, not
 // flow control. 5µs still leaves the device foreground time to service usb_device_poll
-// between chunks. Bench-gated: if spi_link_rx_overflows rises off zero, raise this or
+// between chunks. Verify on hardware: if spi_link_rx_overflows rises off zero, raise this or
 // LINK_RX_RING_SZ. Was 40µs (and 250µs in the polled-slave era) — both far above what
 // the ring depth requires; the 40µs was sized before the RX ring absorbed the burst.
 #define DESC_CHUNK_PACE_US  5u
@@ -350,8 +350,8 @@ void two_board_host_run(void)
 #if defined(BOARD_ROLE_HOST)
     proto_init();
     act_init();
-    /* Humanization v3: add real captured human residual (tremor/noise/wobble) on
-     * top of each injected km.move delta via the streaming filter on act_move. */
+    /* Add real captured human residual (tremor/noise/wobble) onto each injected
+     * km.move delta via the streaming filter on act_move. */
     extern const act_stream_filter_t gesture_stream_v5f_filter;
     gesture_init(1000u);                          /* nominal 1 kHz; refined by capture cadence */
     act_set_stream_filter(&gesture_stream_v5f_filter);
@@ -414,8 +414,8 @@ void two_board_host_run(void)
                         proto_notify_buttons(rpt[doff]);
                         proto_notify_axes((int16_t)dx, (int16_t)dy, (int8_t)w);
 
-                        /* Humanization v2 capture tap (passthrough already
-                         * forwarded above; these read copies only). */
+                        /* Capture tap: passthrough already forwarded above;
+                         * these read copies only. */
                         uint32_t t_us = now_us;
                         humanize_record_arrival(t_us);                  /* TIM9 feed (absent before) */
                         gesture_capture_push((int16_t)dx, (int16_t)dy, t_us);

@@ -103,7 +103,7 @@ int main(void) {
     assert(nacc.dev_link == 1);
     assert(nacc.dev_temp_c == -5);
 
-    /* ── Plan 5 Task 3: HUMAN selector round-trip + row ── */
+    /* ── HUMAN selector round-trip + row ── */
     {
         display_status_t st; memset(&st, 0, sizeof st);
         st.state = DISP_STATE_RELAYING;

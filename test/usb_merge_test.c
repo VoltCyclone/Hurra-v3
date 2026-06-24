@@ -36,8 +36,8 @@ bool humanize_pending(void) { return false; }
 void humanize_return(int16_t dx, int16_t dy) { (void)dx; (void)dy; }
 void humanize_set_level(uint8_t level) { (void)level; }
 /* stub: identity quantizer — noise=0 path; matches humanize_filter no-op above.
- * Task 5: usb_merge_take_injection now calls this instead of humanize_filter,
- * so injected deltas pass through quantize+carry with no perpendicular noise. */
+ * usb_merge_take_injection calls this instead of humanize_filter, so injected
+ * deltas pass through quantize+carry with no perpendicular noise. */
 void humanize_inject_emit(float dx, float dy, int16_t *ox, int16_t *oy) {
     *ox = (int16_t)dx; *oy = (int16_t)dy;
 }
@@ -147,7 +147,7 @@ int main(void) {
 
 	// (2) Regression: a full 4-byte boot-mouse report still merges injection.
 	// The bounds guard must not suppress the happy path.
-	// Task 5: usb_merge_take_injection now calls humanize_inject_emit (noise=0)
+	// usb_merge_take_injection calls humanize_inject_emit (noise=0)
 	// instead of humanize_filter.  Both stubs are identity, so the merged delta
 	// must equal the injected values exactly — no perpendicular component added.
 	{
