@@ -908,6 +908,50 @@ int main(void) {
               "one bucket filled, others empty = WARMING");
     }
 
+    /* ── v3 Task 2: residual extraction ── */
+    {
+        gesture_init(1000);
+        /* Synthesize a capture: smooth rightward drift (trend) + a known
+         * perpendicular tremor on Y. Residual must land almost entirely in
+         * r_perp (perpendicular), be ~zero-mean, and bucket by speed. */
+        for (int i = 0; i < 64; i++) {
+            int16_t dx = 5;                                   /* steady 5 cpr right */
+            int16_t dy = (int16_t)((i & 1) ? 2 : -2);         /* ±2 perpendicular tremor */
+            gesture_capture_push(dx, dy, (uint32_t)(1000u * (i + 1)));
+        }
+        uint16_t got = gesture_residual_extract(64);
+        CHECK(got > 0, "extraction admits residual samples");
+        CHECK(gesture_residual_total() == got, "store holds the admitted residual");
+
+        /* Drain bucket(s): mean r_par and r_perp ~ 0 (residual is zero-mean);
+         * r_perp variance >> r_par variance (tremor is perpendicular here). */
+        double sp = 0, spp = 0, vpp = 0, vpar = 0; int cnt = 0;
+        for (uint8_t b = 0; b < GST_RES_BUCKETS; b++) {
+            gst_residual_t r;
+            for (uint16_t k = 0; k < gesture_residual_count(b); k++) {
+                /* read raw via draw (cursor) — fine for a statistical check */
+                if (!gesture_residual_draw(b, &r)) break;
+                sp += r.r_par; spp += r.r_perp;
+                vpar += (double)r.r_par * r.r_par;
+                vpp  += (double)r.r_perp * r.r_perp;
+                cnt++;
+            }
+        }
+        CHECK(cnt > 0, "drained some residual");
+        CHECK(fabs(sp / cnt) < 0.5 && fabs(spp / cnt) < 0.5, "residual is ~zero-mean");
+        CHECK(vpp > vpar, "perpendicular tremor dominates (r_perp var > r_par var)");
+
+        /* Speed bucketing */
+        CHECK(gesture_speed_bucket(1.0f) == 0, "1 cpr -> slow bucket");
+        CHECK(gesture_speed_bucket(5.0f) == 1, "5 cpr -> medium bucket");
+        CHECK(gesture_speed_bucket(20.0f) == 2, "20 cpr -> fast bucket");
+
+        /* Too-short window admits nothing */
+        gesture_init(1000);
+        gesture_capture_push(1, 0, 1000); gesture_capture_push(1, 0, 2000);
+        CHECK(gesture_residual_extract(2) == 0, "sub-FIR window admits nothing");
+    }
+
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL GESTURE TESTS PASSED\n");
     return 0;

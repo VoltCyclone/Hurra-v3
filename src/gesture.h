@@ -205,6 +205,14 @@ uint16_t gesture_residual_total(void);
 bool     gesture_residual_draw(uint8_t bucket, gst_residual_t *out);
 gst_warmth_t gesture_residual_warmth(void);          /* fill-level warmth */
 
+/* ── residual extraction (v3) ──────────────────────────────────────────*/
+#define GST_RES_FIR       5      /* centered moving-average taps (~5 Hz @ 1kHz) */
+#define GST_RES_SLOW_MAX  2.0f   /* counts/report: slow|medium boundary */
+#define GST_RES_MED_MAX   8.0f   /* counts/report: medium|fast boundary */
+
+uint8_t  gesture_speed_bucket(float speed_cpr);
+uint16_t gesture_residual_extract(uint16_t window);
+
 /* ── humanization status snapshot (Plan 5) ─────────────────────────────
  * Pure read of the replay/synth/warmth counters for the LED + display.
  * replay_pct + synth_pct == 100 once any motion has run, else both 0. */
