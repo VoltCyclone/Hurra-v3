@@ -129,6 +129,7 @@ static uint8_t  s_started;           /* 0 until first push, so boot holds dark  
 static uint8_t  s_warmth;             /* 0 COLD .. 2 WARM                       */
 static uint32_t s_blink_until_ms;     /* cyan blink active while now < this      */
 static uint32_t s_blink_last_ms;      /* last blink arm time (rate limit)        */
+static uint8_t  s_blink_seen;         /* 0 until the first blink has armed       */
 
 #define WS2812_BLINK_MS        120u   /* cyan blink duration                     */
 #define WS2812_BLINK_MIN_GAP   500u   /* min ms between blinks (rate limit)      */
@@ -138,8 +139,9 @@ void ws2812_set_warmth(uint8_t warmth) { s_warmth = (warmth > 2u) ? 2u : warmth;
 void ws2812_note_synth_fallback(void)
 {
     uint32_t now = s_last_send_ms;    /* coarse loop clock; exact ms not needed */
-    if ((uint32_t)(now - s_blink_last_ms) < WS2812_BLINK_MIN_GAP && s_blink_last_ms)
+    if (s_blink_seen && (uint32_t)(now - s_blink_last_ms) < WS2812_BLINK_MIN_GAP)
         return;                       /* rate-limited */
+    s_blink_seen     = 1;
     s_blink_last_ms  = now;
     s_blink_until_ms = now + WS2812_BLINK_MS;
 }
