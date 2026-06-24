@@ -1,4 +1,5 @@
 #include "gesture.h"
+#include "humanize.h"
 #include <string.h>
 #include <math.h>
 
@@ -116,6 +117,11 @@ static struct {
     uint8_t  res_head[GST_RES_BUCKETS];   /* next write slot per bucket */
     uint8_t  res_n[GST_RES_BUCKETS];      /* valid samples 0..GST_RES_RING */
     uint8_t  res_read[GST_RES_BUCKETS];   /* sequential read cursor */
+    /* ── streaming filter live state (v3) ── */
+    float sf_hx, sf_hy;    /* EWMA heading vector (counts/report) */
+    float sf_speed;        /* EWMA speed magnitude */
+    float sf_debt_x, sf_debt_y; /* accumulated injected residual (for leak) */
+    uint8_t sf_have;       /* EWMA initialized */
 } G;
 
 static inline uint32_t gst_sfc32(void) {
@@ -135,6 +141,7 @@ void gesture_init(uint32_t nominal_interval_us) {
     if (!G.rng_a) G.rng_a = 0xCAFEBABEu;   /* only a is guarded; warm-up restores liveness */
     for (int i = 0; i < 16; i++) (void)gst_sfc32();
     G.c2_scale = 1.0f;                    /* required: memset zeroed it; 0 would suppress all injection */
+    gesture_stream_reset();
 }
 
 uint32_t gesture_rand_u32(void) { return gst_sfc32(); }
@@ -545,6 +552,58 @@ uint16_t gesture_residual_extract(uint16_t window) {
         admitted++;
     }
     return admitted;
+}
+
+/* ── streaming residual filter (Humanization v3, per-poll) ──────────── */
+
+void gesture_stream_reset(void) {
+    G.sf_hx = G.sf_hy = G.sf_speed = 0.0f;
+    G.sf_debt_x = G.sf_debt_y = 0.0f;
+    G.sf_have = 0;
+}
+
+GST_FASTRUN
+void gesture_stream_filter(int16_t in_dx, int16_t in_dy, int16_t *out_dx, int16_t *out_dy) {
+    float ax = (float)in_dx, ay = (float)in_dy;
+    float amag = sqrtf(ax*ax + ay*ay);
+
+    /* Update EWMA heading/speed only when the app is actually moving, so a lone
+     * tiny delta doesn't spin the heading. Hold last heading at rest. */
+    if (amag >= GST_RES_REST_CPR) {
+        float a = GST_RES_HEAD_EWMA;
+        if (!G.sf_have) { G.sf_hx = ax; G.sf_hy = ay; G.sf_speed = amag; G.sf_have = 1; }
+        else {
+            G.sf_hx = (1.0f-a)*G.sf_hx + a*ax;
+            G.sf_hy = (1.0f-a)*G.sf_hy + a*ay;
+            G.sf_speed = (1.0f-a)*G.sf_speed + a*amag;
+        }
+    }
+
+    /* Rest attenuation: scale residual toward 0 as the app goes idle. */
+    float atten = (amag >= GST_RES_REST_CPR) ? 1.0f
+                : (amag <= 0.01f) ? 0.0f : (amag / GST_RES_REST_CPR);
+
+    float rx = 0.0f, ry = 0.0f;
+    if (atten > 0.0f && gesture_residual_total() > 0) {
+        gst_residual_t r;
+        if (gesture_residual_draw(gesture_speed_bucket(G.sf_speed), &r)) {
+            float hmag = sqrtf(G.sf_hx*G.sf_hx + G.sf_hy*G.sf_hy);
+            float ux = (hmag > 1e-4f) ? G.sf_hx/hmag : 1.0f;
+            float uy = (hmag > 1e-4f) ? G.sf_hy/hmag : 0.0f;
+            /* rotate (r_par along heading, r_perp perpendicular) into world */
+            rx = (r.r_par*ux - r.r_perp*uy) * atten;
+            ry = (r.r_par*uy + r.r_perp*ux) * atten;
+        }
+    }
+
+    /* Debt leak: bleed back a fraction of accumulated injected residual so the
+     * cumulative injected motion can't drift the cursor off the app's path. */
+    rx -= GST_RES_DEBT_LEAK * G.sf_debt_x;
+    ry -= GST_RES_DEBT_LEAK * G.sf_debt_y;
+    G.sf_debt_x += rx; G.sf_debt_y += ry;
+
+    /* Emit app delta + residual through the sub-pixel carry quantizer. */
+    humanize_inject_emit(ax + rx, ay + ry, out_dx, out_dy);
 }
 
 void gesture_click_admit(const gst_click_env_t *env) {
