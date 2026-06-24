@@ -344,6 +344,4 @@ void gesture_human_status(gst_human_status_t *out) {
     if (out->warmth == GST_WARM && human)         out->replay_pct = 100;
     else if (out->warmth == GST_WARMING && human) out->replay_pct = 50;
     else                                          out->replay_pct = 0;
-    out->synth_pct = human ? 0 : 100;     /* repurposed: non-human-trend share */
-    out->dup = 0;
 }

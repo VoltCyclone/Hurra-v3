@@ -66,7 +66,7 @@ gst_warmth_t gesture_residual_warmth(void);          /* fill-level warmth */
 uint8_t  gesture_speed_bucket(float speed_cpr);
 uint16_t gesture_residual_extract(uint16_t window);
 
-/* ── streaming residual filter (v3, per-poll) ──────────────────────────
+/* ── streaming residual filter (per-poll) ──────────────────────────────
  * Adds real captured human residual on top of the app's injected delta.
  * Complement-only: zero-mean, debt-leaked to bound drift, attenuated at rest. */
 #define GST_RES_HEAD_EWMA  0.30f   /* heading/speed smoothing factor */
@@ -87,13 +87,10 @@ uint32_t gesture_nonhuman_trend(void);
 bool     gesture_trend_is_human(void);
 
 /* ── humanization status snapshot ──────────────────────────────────────
- * Pure read of the residual/trend/warmth state for the LED + display.
- * replay_pct + synth_pct == 100 once warm and trending human, else 0. */
+ * Pure read of the residual/trend/warmth state for the LED + display. */
 typedef struct {
     uint8_t warmth;      /* gst_warmth_t: 0 COLD, 1 WARMING, 2 WARM */
-    uint8_t replay_pct;  /* residual injection share, 0..100          */
-    uint8_t synth_pct;   /* non-human-trend share, 0..100             */
-    uint8_t dup;         /* reserved, always 0                        */
+    uint8_t replay_pct;  /* residual injection share, 0..100        */
 } gst_human_status_t;
 
 void gesture_human_status(gst_human_status_t *out);

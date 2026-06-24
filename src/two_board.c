@@ -424,7 +424,7 @@ void two_board_host_run(void)
         }
 
         /* ---- Command stage (after the time-critical EP poll, before telemetry) ----
-         * Ordered per the brief: feed CDC bytes to the parser, tick it, step the
+         * Ordered: feed CDC bytes to the parser, tick it, step the
          * motion program, drain queued injection over SPI to Board A, then service
          * the CDC endpoints. Ordering matters for EP-poll timing: the parser work
          * runs once the latency-critical interrupt-IN forwarding for this iteration

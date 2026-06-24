@@ -99,7 +99,7 @@ int main(void) {
         gesture_human_status(&hs);
         CHECK(hs.warmth == GST_WARM, "filled residual store reports WARM warmth");
         CHECK(hs.warmth == (uint8_t)gesture_residual_warmth(), "warmth mirrors gesture_residual_warmth()");
-        CHECK(hs.replay_pct <= 100 && hs.synth_pct <= 100, "percentages clamp to 0..100");
+        CHECK(hs.replay_pct <= 100, "replay percentage clamps to 0..100");
     }
 
     /* ── residual store ── */
