@@ -899,6 +899,13 @@ int main(void) {
             for (int i = 0; i < GST_RES_WARM_MIN; i++)
                 gesture_residual_admit((uint8_t)b, 0.1f, 0.1f, 1000);
         CHECK(gesture_residual_warmth() == GST_WARM, "all buckets filled is WARM");
+
+        /* WARMING: total >= GST_RES_WARM_MIN but not every bucket is filled */
+        gesture_init(1000);
+        for (int i = 0; i < GST_RES_WARM_MIN; i++)
+            gesture_residual_admit(0, 0.1f, 0.1f, 1000);
+        CHECK(gesture_residual_warmth() == GST_WARMING,
+              "one bucket filled, others empty = WARMING");
     }
 
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
