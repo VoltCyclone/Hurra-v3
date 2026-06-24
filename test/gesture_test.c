@@ -5,6 +5,12 @@
 #include <math.h>
 #include "gesture.h"
 
+/* Host-test stub: identity-ish sub-pixel quantizer (real firmware links humanize.c). */
+void humanize_inject_emit(float dx, float dy, int16_t *ox, int16_t *oy) {
+    *ox = (int16_t)(dx < 0 ? dx - 0.5f : dx + 0.5f);
+    *oy = (int16_t)(dy < 0 ? dy - 0.5f : dy + 0.5f);
+}
+
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { \
     printf("FAIL: %s\n", msg); failures++; } } while (0)
@@ -950,6 +956,39 @@ int main(void) {
         gesture_init(1000);
         gesture_capture_push(1, 0, 1000); gesture_capture_push(1, 0, 2000);
         CHECK(gesture_residual_extract(2) == 0, "sub-FIR window admits nothing");
+    }
+
+    /* ── v3 Task 3: streaming residual filter ── */
+    {
+        gesture_init(1000);
+        /* Warm the store with a known tremor so draws are non-zero. */
+        for (int i = 0; i < 64; i++) {
+            gesture_capture_push(6, (int16_t)((i&1)?2:-2), (uint32_t)(1000u*(i+1)));
+        }
+        gesture_residual_extract(64);
+
+        /* Drive a steady rightward stream; net emitted ~ tracks app sum (drift bounded). */
+        long app_sum_x = 0, app_sum_y = 0, emit_sum_x = 0, emit_sum_y = 0;
+        int moved_offaxis = 0;
+        for (int i = 0; i < 2000; i++) {
+            int16_t ox, oy;
+            gesture_stream_filter(6, 0, &ox, &oy);     /* app: pure +X */
+            app_sum_x += 6; app_sum_y += 0;
+            emit_sum_x += ox; emit_sum_y += oy;
+            if (oy != 0) moved_offaxis++;
+        }
+        CHECK(moved_offaxis > 100, "filter injects off-axis residual (not a passthrough)");
+        CHECK(labs(emit_sum_x - app_sum_x) <= 2*2000/100 + 4,
+              "net X drift bounded (debt-leak keeps cumulative ~ app path)");
+        CHECK(labs(emit_sum_y) <= 4, "net Y drift ~ zero (residual zero-mean)");
+
+        /* Rest: app delta 0 -> residual attenuates, no injected motion into idle. */
+        long idle_emit = 0;
+        for (int i = 0; i < 200; i++) {
+            int16_t ox, oy; gesture_stream_filter(0, 0, &ox, &oy);
+            idle_emit += labs(ox) + labs(oy);
+        }
+        CHECK(idle_emit <= 2, "near-zero injected motion when app is idle");
     }
 
     if (failures) { printf("%d FAILURES\n", failures); return 1; }

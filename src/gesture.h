@@ -213,6 +213,16 @@ gst_warmth_t gesture_residual_warmth(void);          /* fill-level warmth */
 uint8_t  gesture_speed_bucket(float speed_cpr);
 uint16_t gesture_residual_extract(uint16_t window);
 
+/* ── streaming residual filter (v3, per-poll) ──────────────────────────
+ * Adds real captured human residual on top of the app's injected delta.
+ * Complement-only: zero-mean, debt-leaked to bound drift, attenuated at rest. */
+#define GST_RES_HEAD_EWMA  0.30f   /* heading/speed smoothing factor */
+#define GST_RES_DEBT_LEAK  0.10f   /* fraction of accumulated residual leaked back */
+#define GST_RES_REST_CPR   0.5f    /* |app delta| below this = at rest */
+
+void gesture_stream_filter(int16_t in_dx, int16_t in_dy, int16_t *out_dx, int16_t *out_dy);
+void gesture_stream_reset(void);
+
 /* ── humanization status snapshot (Plan 5) ─────────────────────────────
  * Pure read of the replay/synth/warmth counters for the LED + display.
  * replay_pct + synth_pct == 100 once any motion has run, else both 0. */
