@@ -39,6 +39,65 @@ def metrics(tr):
         "vel_mean": (statistics.mean(v) if v else 0.0),
     }
 
+def _ks(a, b):
+    a = sorted(a); b = sorted(b)
+    import bisect
+    grid = sorted(set(a) | set(b))
+    d = 0.0
+    na, nb = len(a), len(b)
+    for x in grid:
+        fa = bisect.bisect_right(a, x) / na
+        fb = bisect.bisect_right(b, x) / nb
+        d = max(d, abs(fa - fb))
+    return d
+
+def _speeds(stream):
+    return [math.hypot(dx, dy) for dx, dy in stream]
+
+def _band_power(stream, lo_hz, hi_hz, fs=1000.0):
+    y = [dy for _, dy in stream]
+    # Naive DFT is O(N^2); cap to first 512 samples so large traces stay fast.
+    # Apply the same cap to both emitted and human streams so the ratio is
+    # apples-to-apples.  Use numpy.fft when available for large-N callers.
+    CAP = 512
+    if len(y) > CAP:
+        y = y[:CAP]
+    N = len(y)
+    p = 0.0
+    for k in range(N):
+        f = k * fs / N
+        if lo_hz <= f <= hi_hz:
+            re = sum(y[n]*math.cos(-2*math.pi*k*n/N) for n in range(N))
+            im = sum(y[n]*math.sin(-2*math.pi*k*n/N) for n in range(N))
+            p += (re*re + im*im)
+    return p
+
+def ab_compare(emitted, human):
+    # Returns vel/accel/jerk KS distances + 8-12 Hz tremor band-power deviation.
+    # cadence_ks (inter-report dt distance) is intentionally DEFERRED: the (dx, dy)
+    # stream format carries no per-sample timestamp to derive dt from. When a
+    # timestamped trace format lands (e.g. (dx, dy, t_us) from a device capture),
+    # add "cadence_ks": _ks(dt_emitted, dt_human) here and to passes().
+    se, sh = _speeds(emitted), _speeds(human)
+    ae = [se[i+1]-se[i] for i in range(len(se)-1)]
+    ah = [sh[i+1]-sh[i] for i in range(len(sh)-1)]
+    je = [ae[i+1]-ae[i] for i in range(len(ae)-1)]
+    jh = [ah[i+1]-ah[i] for i in range(len(ah)-1)]
+    pe = _band_power(emitted, 8, 12)
+    ph = _band_power(human, 8, 12) or 1e-9
+    return {
+        "vel_ks":   _ks(se, sh),
+        "accel_ks": _ks(ae, ah),
+        "jerk_ks":  _ks(je, jh),
+        "tremor_band_ratio_dev": abs(1.0 - pe/ph),
+    }
+
+def passes(r):
+    # Thresholds: KS < 0.2 for each kinematic order; tremor dev < 0.5.
+    # Starting points to tune against real captured traces.
+    return (r["vel_ks"] < 0.2 and r["accel_ks"] < 0.2 and r["jerk_ks"] < 0.2
+            and r["tremor_band_ratio_dev"] < 0.5)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("trace")
