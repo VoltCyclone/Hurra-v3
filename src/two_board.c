@@ -350,11 +350,11 @@ void two_board_host_run(void)
 #if defined(BOARD_ROLE_HOST)
     proto_init();
     act_init();
-    /* Redirect trajectory motion (km.move/bezier) to the V5F gesture replay
-     * engine: gesture-sourced curves/cadence replace the analytic Bézier. */
-    extern const act_motion_source_t gesture_motion_v5f_source;
+    /* Humanization v3: add real captured human residual (tremor/noise/wobble) on
+     * top of each injected km.move delta via the streaming filter on act_move. */
+    extern const act_stream_filter_t gesture_stream_v5f_filter;
     gesture_init(1000u);                          /* nominal 1 kHz; refined by capture cadence */
-    act_motion_set_source(&gesture_motion_v5f_source);
+    act_set_stream_filter(&gesture_stream_v5f_filter);
     proto_set_tx(cdc_tx);
 #endif
 
@@ -449,7 +449,7 @@ void two_board_host_run(void)
         if ((uint32_t)(now - s_last_admit_ms) >= 250u) {
             s_last_admit_ms = now;
             if (gesture_capture_count() >= 64)
-                gesture_capture_build_and_admit(64);
+                gesture_residual_extract(64);
         }
 
         inject_link_drain(&seq, spi_link_master_exchange);
@@ -492,10 +492,10 @@ void two_board_host_run(void)
         if ((now - last_blink_ms) >= 250u) { last_blink_ms = now; led_toggle(); }
         /* Board A drives DRDY high once enumerated downstream = "relaying". */
 #if defined(BOARD_ROLE_HOST)
-        ws2812_set_warmth((uint8_t)gesture_warmth());
-        static uint32_t s_last_synth;
-        uint32_t sc = gesture_synth_fallback_count();
-        if (sc != s_last_synth) { s_last_synth = sc; ws2812_note_synth_fallback(); }
+        ws2812_set_warmth((uint8_t)gesture_residual_warmth());
+        static uint32_t s_last_nh;
+        uint32_t nh = gesture_nonhuman_trend();
+        if (nh != s_last_nh) { s_last_nh = nh; ws2812_note_synth_fallback(); }
 #endif
         ws2812_service(now, spi_link_master_drdy());
     }
