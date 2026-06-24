@@ -394,5 +394,6 @@ test:
 	cc -std=c11 -O2 -DGESTURE_HOSTTEST -Isrc -o /tmp/gesture_test test/gesture_test.c src/gesture.c -lm
 	/tmp/gesture_test
 	python3 -m unittest test.flash_py_test
+	python3 -m unittest test.humanization_analyze_test
 
 .PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test build
