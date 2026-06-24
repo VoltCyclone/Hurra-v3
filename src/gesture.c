@@ -594,8 +594,12 @@ void gesture_trend_observe(int16_t in_dx, int16_t in_dy) {
         /* Uniform-step: nonzero motion with near-zero relative variance.
          * Human aim has Fitts magnitude spread; a flat drag does not. */
         float cv = (mean > 0.5f) ? (var / (mean*mean)) : 1.0f;   /* coeff of variation^2 */
-        if (mean > 0.5f && cv < 0.02f) { G.nh_count++; G.nh_human = 0; }
-        else G.nh_human = 1;
+        if (mean > 0.5f && cv < 0.02f) {
+            if (!teleport) G.nh_count++;   /* avoid double-count: teleport already bumped it */
+            G.nh_human = 0;
+        } else {
+            G.nh_human = 1;
+        }
     } else {
         G.nh_human = 1;   /* not enough data yet → assume human */
     }

@@ -1027,6 +1027,14 @@ int main(void) {
         CHECK(gesture_trend_is_human(), "high-spread window reads human before teleport");
         gesture_trend_observe(250, 60);         /* teleport on a full, human-looking window */
         CHECK(!gesture_trend_is_human(), "teleport latches non-human even on a human-looking window");
+
+        /* combined teleport + uniform-step on one call counts once, not twice */
+        gesture_init(1000);
+        for (int i = 0; i < GST_NH_WIN; i++) gesture_trend_observe(90, 0); /* fill window: constant 90 (>80 bar) → uniform-step AND teleport each call */
+        /* window is now full and uniform; the NEXT identical call is both a teleport (90>80) and a uniform-step window */
+        uint32_t c_before = gesture_nonhuman_trend();
+        gesture_trend_observe(90, 0);
+        CHECK(gesture_nonhuman_trend() == c_before + 1, "combined teleport+uniform-step call counts exactly once");
     }
 
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
