@@ -13,9 +13,9 @@
 // The injection accumulators are also fed by a standalone synth path
 // (usb_merge_send_pending) that emits injected motion when the physical mouse is
 // silent, capped one-per-ms and gated by merged_this_cycle so the merge and synth
-// paths never both emit in one frame. humanize_filter() runs per emitted frame
+// paths never both emit in one frame. humanize_inject_emit() runs per emitted frame
 // inside usb_merge_take_injection(), not per command, to preserve sub-pixel-carry
-// behavior.
+// behavior without adding perpendicular noise (noise=0 quantizer path).
 
 #include "usb_merge.h"
 #include "hid_layout.h"   // mouse_layout_t, hid_layout_parse_mouse/read_field
@@ -161,15 +161,16 @@ static uint32_t last_synth_ms;
 static bool     merged_this_cycle;
 #define SYNTH_SILENCE_MS 2   // mouse considered idle after this many ms of no report
 
-/* Pull this frame's injected delta and run it through the humanization filter,
- * which owns conservation (sub-pixel residual and >127 cap-carry). */
+/* Pull this frame's injected delta and run it through the noise-free inject-emit
+ * quantizer (cap-with-carry conservation, noise=0), which owns the sub-pixel
+ * residual and >127 cap-carry state without adding perpendicular noise. */
 static void usb_merge_take_injection(int16_t *out_dx, int16_t *out_dy)
 {
 	int16_t dx = inject.mouse_dx;
 	int16_t dy = inject.mouse_dy;
 	inject.mouse_dx = 0;
 	inject.mouse_dy = 0;
-	humanize_filter(&dx, &dy);
+	humanize_inject_emit((float)dx, (float)dy, &dx, &dy);   /* noise=0: quantize + sub-pixel carry only */
 	*out_dx = dx;
 	*out_dy = dy;
 }

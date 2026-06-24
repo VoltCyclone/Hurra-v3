@@ -35,6 +35,12 @@ void humanize_filter(int16_t *dx, int16_t *dy) { (void)dx; (void)dy; }
 bool humanize_pending(void) { return false; }
 void humanize_return(int16_t dx, int16_t dy) { (void)dx; (void)dy; }
 void humanize_set_level(uint8_t level) { (void)level; }
+/* stub: identity quantizer — noise=0 path; matches humanize_filter no-op above.
+ * Task 5: usb_merge_take_injection now calls this instead of humanize_filter,
+ * so injected deltas pass through quantize+carry with no perpendicular noise. */
+void humanize_inject_emit(float dx, float dy, int16_t *ox, int16_t *oy) {
+    *ox = (int16_t)dx; *oy = (int16_t)dy;
+}
 
 bool act_phys_kb_mask_active(void) { return false; }
 bool act_phys_key_masked(uint8_t k) { (void)k; return false; }
@@ -141,6 +147,9 @@ int main(void) {
 
 	// (2) Regression: a full 4-byte boot-mouse report still merges injection.
 	// The bounds guard must not suppress the happy path.
+	// Task 5: usb_merge_take_injection now calls humanize_inject_emit (noise=0)
+	// instead of humanize_filter.  Both stubs are identity, so the merged delta
+	// must equal the injected values exactly — no perpendicular component added.
 	{
 		cache_boot_mouse();
 		icc_push_inject_mouse(7, -9, 0x01, 0);
@@ -148,9 +157,15 @@ int main(void) {
 		uint8_t *rpt = malloc(4);
 		rpt[0] = 0; rpt[1] = 0; rpt[2] = 0; rpt[3] = 0;
 		usb_merge_report(2, rpt, 4);
-		bool ok = (rpt[0] == 0x01) && ((int8_t)rpt[1] == 7) && ((int8_t)rpt[2] == -9);
+		int8_t merged_dx = (int8_t)rpt[1];
+		int8_t merged_dy = (int8_t)rpt[2];
+		bool ok = (rpt[0] == 0x01) && (merged_dx == 7) && (merged_dy == -9);
 		free(rpt);
 		CHECK(ok, "fast-path full report (len=4) still applies injection");
+		/* inject_emit passthrough: dx and dy must match injected values exactly;
+		 * no perpendicular noise component is added (noise=0 quantizer path). */
+		CHECK(merged_dx == 7,  "inject_emit: dx magnitude preserved (no perp noise)");
+		CHECK(merged_dy == -9, "inject_emit: dy magnitude preserved (no perp noise)");
 	}
 
 	// (3) Slow path: a report whose ID byte arrives but body is truncated must
