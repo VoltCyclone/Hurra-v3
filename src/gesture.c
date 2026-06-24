@@ -4,8 +4,13 @@
 #include <math.h>
 
 #ifdef GESTURE_HOSTTEST
-#define GST_FASTRUN
+#define GST_FASTRUN          /* no-op under host test */
 #else
+/* V5F-only: .fastrun merges into .highcode (RAM_CODE/ITCM) alongside .text.*,
+ * so this gives no extra locality on V5F — every function already runs from
+ * zero-wait ITCM. Kept for parity with HZ_FASTRUN (humanize.c) / LINK_FASTRUN
+ * (spi_link.c), and because link_v5f.ld's .fastrun collection guards against
+ * the orphan-section boot bug documented there. */
 #define GST_FASTRUN __attribute__((section(".fastrun")))
 #endif
 
@@ -273,6 +278,12 @@ uint16_t gesture_residual_extract(uint16_t window) {
     if (window < GST_RES_FIR + 2u) return 0;
     if (window > GST_CAP_RING)      window = GST_CAP_RING;
 
+    /* Scratch (buf/pts/vx/vy below) is sized to GST_CAP_RING (256) though
+     * production only ever extracts window=64 (~4x over-allocated, ~6KB
+     * reclaimable). Intentional: keeps the GST_CAP_RING clamp above as an
+     * independent overflow guard and allows a larger offline window without
+     * resizing. If DTCM pressure ever rises, right-size these to a
+     * GST_RES_EXTRACT_MAX constant and update that clamp to match. */
     /* 1. Pull the newest `window` samples oldest-first into a local buffer. */
     static gst_sample_t buf[GST_CAP_RING];
     uint16_t avail = gesture_capture_count();
