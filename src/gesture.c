@@ -147,6 +147,7 @@ void gesture_init(uint32_t nominal_interval_us) {
     if (!G.rng_a) G.rng_a = 0xCAFEBABEu;   /* only a is guarded; warm-up restores liveness */
     for (int i = 0; i < 16; i++) (void)gst_sfc32();
     G.c2_scale = 1.0f;                    /* required: memset zeroed it; 0 would suppress all injection */
+    G.nh_human = 1;                       /* assume human until evidence otherwise (memset zeros it) */
     gesture_stream_reset();
 }
 
@@ -978,20 +979,13 @@ uint32_t gesture_bucket_miss(void)          { return G.bucket_miss; }
 
 void gesture_human_status(gst_human_status_t *out) {
     if (!out) return;
-    uint32_t rep = gesture_replay_count();
-    uint32_t syn = gesture_synth_fallback_count();
-    uint32_t tot = rep + syn;
-    out->warmth = (uint8_t)gesture_warmth();
-    if (tot == 0) {
-        out->replay_pct = 0;
-        out->synth_pct  = 0;
-    } else {
-        uint32_t rp = (rep * 100u) / tot;       /* 0..100 */
-        out->replay_pct = (uint8_t)rp;
-        out->synth_pct  = (uint8_t)(100u - rp);
-    }
-    uint32_t d = gesture_dup_rejected();
-    out->dup = (uint8_t)(d > 255u ? 255u : d);
+    out->warmth = (uint8_t)gesture_residual_warmth();
+    int human = gesture_trend_is_human();
+    if (out->warmth == GST_WARM && human)         out->replay_pct = 100;
+    else if (out->warmth == GST_WARMING && human) out->replay_pct = 50;
+    else                                          out->replay_pct = 0;
+    out->synth_pct = human ? 0 : 100;     /* repurposed: non-human-trend share */
+    out->dup = 0;
 }
 
 void gesture_motion_begin(int32_t tx, int32_t ty, motion_mode_t mode) {

@@ -120,6 +120,7 @@ int main(void) {
         display_format_lines(&st, rows, NULL);
         if (!strstr(rows[ROW_HUMAN], "WARM")) { printf("FAIL: ROW_HUMAN shows warmth name\n"); assert(0); }
         if (!strstr(rows[ROW_HUMAN], "98"))   { printf("FAIL: ROW_HUMAN shows replay%%\n"); assert(0); }
+        if (!strstr(rows[ROW_HUMAN], "res"))  { printf("FAIL: ROW_HUMAN shows res keyword\n"); assert(0); }
     }
 
     printf("display_test OK\n");

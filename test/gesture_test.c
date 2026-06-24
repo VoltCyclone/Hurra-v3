@@ -848,21 +848,22 @@ int main(void) {
         CHECK((0.0f * s) == 0.0f, "capstone: suppression never invents motion");
     }
 
-    /* ── Plan 5 Task 1: human-status snapshot ── */
+    /* ── Plan 5 Task 1: human-status snapshot (updated for v3 residual-based body) ── */
     {
         gesture_init(1000);
         gst_human_status_t hs;
         gesture_human_status(&hs);
-        CHECK(hs.warmth == GST_COLD, "cold engine reports COLD warmth");
-        CHECK(hs.replay_pct == 0 && hs.synth_pct == 0, "no motion -> 0%/0%");
+        CHECK(hs.warmth == GST_COLD, "cold residual store reports COLD warmth");
+        CHECK(hs.replay_pct == 0, "cold -> 0% injecting");
 
-        /* Warm the library so begin() can pick replay, then drive a mix. */
-        warm_library_all_buckets();          /* shared helper used by Plans 2–4 */
-        for (int i = 0; i < 8; i++) gesture_motion_begin(400, 0, MOTION_MODE_SILENT);
+        /* Fill the residual store so gesture_residual_warmth() → WARM. */
+        for (int b = 0; b < GST_RES_BUCKETS; b++)
+            for (int i = 0; i < GST_RES_WARM_MIN; i++)
+                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f, 1000);
         gesture_human_status(&hs);
-        CHECK(hs.replay_pct + hs.synth_pct == 100, "replay%+synth% == 100 once motion ran");
+        CHECK(hs.warmth == GST_WARM, "filled residual store reports WARM warmth");
+        CHECK(hs.warmth == (uint8_t)gesture_residual_warmth(), "warmth mirrors gesture_residual_warmth()");
         CHECK(hs.replay_pct <= 100 && hs.synth_pct <= 100, "percentages clamp to 0..100");
-        CHECK(hs.warmth == gesture_warmth(), "warmth mirrors gesture_warmth()");
     }
 
     /* ── v3 Task 1: residual store ── */
@@ -1035,6 +1036,22 @@ int main(void) {
         uint32_t c_before = gesture_nonhuman_trend();
         gesture_trend_observe(90, 0);
         CHECK(gesture_nonhuman_trend() == c_before + 1, "combined teleport+uniform-step call counts exactly once");
+    }
+
+    /* ── v3 Task 7: status reflects residual state ── */
+    {
+        gesture_init(1000);
+        gst_human_status_t hs;
+        gesture_human_status(&hs);
+        CHECK(hs.warmth == GST_COLD, "cold residual store -> COLD status");
+        CHECK(hs.replay_pct == 0, "cold -> 0% injecting");
+
+        for (int b = 0; b < GST_RES_BUCKETS; b++)
+            for (int i = 0; i < GST_RES_WARM_MIN; i++)
+                gesture_residual_admit((uint8_t)b, 0.1f, 0.1f, 1000);
+        gesture_human_status(&hs);
+        CHECK(hs.warmth == GST_WARM, "filled store -> WARM status");
+        CHECK(hs.replay_pct > 0, "warm -> nonzero injecting %");
     }
 
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
