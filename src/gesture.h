@@ -223,6 +223,16 @@ uint16_t gesture_residual_extract(uint16_t window);
 void gesture_stream_filter(int16_t in_dx, int16_t in_dy, int16_t *out_dx, int16_t *out_dy);
 void gesture_stream_reset(void);
 
+/* ── honest-limit detector (v3) ────────────────────────────────────────
+ * Flags app trends additive residual cannot launder: uniform fixed-magnitude
+ * steps and super-human teleport snaps. Flags, never fakes. */
+#define GST_NH_WIN        32
+#define GST_TELEPORT_CPR  80.0f   /* |delta| above this in one report = teleport */
+
+void     gesture_trend_observe(int16_t in_dx, int16_t in_dy);
+uint32_t gesture_nonhuman_trend(void);
+bool     gesture_trend_is_human(void);
+
 /* ── humanization status snapshot (Plan 5) ─────────────────────────────
  * Pure read of the replay/synth/warmth counters for the LED + display.
  * replay_pct + synth_pct == 100 once any motion has run, else both 0. */
