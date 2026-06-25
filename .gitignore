@@ -1,0 +1,24 @@
+# Build artifacts
+*.o
+*.elf
+*.hex
+*.bin
+*.map
+/build/
+/tmp/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / OS
+.DS_Store
+
+# AI assistant session state (not part of the project)
+.remember/
+.claude/
+CLAUDE.md
+.cursor/
+.aider*
+docs/superpowers/
+memory/

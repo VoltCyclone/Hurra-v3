@@ -1,0 +1,16 @@
+[project]
+name = "raw_input_classifier"
+version = "0.1.0"
+description = "Learned anti-cheat adversary (A/B benchmark) for Hurra-v3 firmware humanization"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+torch = ["torch>=2.0", "numpy>=1.23"]
+capture = ["pyserial>=3.5", "pynput>=1.7"]
+
+[project.scripts]
+rawcls = "raw_input_classifier.__main__:main"
+
+[tool.setuptools]
+packages = ["raw_input_classifier"]
