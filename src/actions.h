@@ -15,6 +15,7 @@ extern uint16_t g_lock_mask;
 void    act_init(void);
 int8_t  act_button_set(uint8_t mask, uint8_t action);    // action: 0=up, 1=down
 void    act_click(uint8_t button_1based, uint8_t count, uint32_t delay_ms);
+void    act_click_tick(void);            // step scheduled click sequences from poll loop
 void    act_move(int16_t dx, int16_t dy);
 int8_t  act_kb_down(uint8_t key);
 void    act_kb_up(uint8_t key);
@@ -22,6 +23,7 @@ void    act_kb_press(uint8_t key, uint32_t delay_ms);
 uint8_t act_kb_isdown(uint8_t key);
 void    act_kb_init(void);
 void    act_kb_mask(uint8_t key, uint8_t mode);
+uint8_t act_kb_mask_get(uint8_t key);                 // 0 = unmasked, else stored mode
 
 void act_wheel(int8_t ticks);
 
@@ -66,6 +68,12 @@ void act_motion_bezier(int16_t dx, int16_t dy, uint16_t dur_ms,
                        int16_t x1, int16_t y1, int16_t x2, int16_t y2);
 void act_motion_tick(void);             // step from the poll loop
 void act_motion_cancel(void);           // abort in-flight program
+
+// Unified actions pump: calls act_motion_tick() + act_click_tick(). Every
+// command-protocol poll loop should call this once per iteration so motion
+// programs advance and clicks release; use it instead of the individual ticks
+// so no pump can drift by forgetting one.
+void act_tick(void);
 
 /* ── streaming injection filter ────────────────────────────────────────
  * Transforms each individual injected move delta (the streaming km.move

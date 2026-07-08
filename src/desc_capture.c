@@ -102,6 +102,44 @@ static bool parse_config_descriptor(captured_descriptors_t *desc)
 	return desc->num_ifaces > 0;
 }
 
+// Patch the HID descriptor inside config_desc for `iface_num` so its
+// wDescriptorLength matches the actual report descriptor bytes we captured.
+// This keeps the replayed configuration descriptor internally consistent when
+// the device advertised a larger report descriptor than we could store.
+static void patch_hid_report_desc_len(captured_descriptors_t *desc,
+                                      uint8_t iface_num, uint16_t actual_len)
+{
+	uint8_t *p = desc->config_desc;
+	const uint8_t *end = p + desc->config_desc_len;
+	uint8_t current_iface = 0xFF;
+
+	// Need ≥2 bytes for the bLength/bDescriptorType header; `end - p >= 2`
+	// guards the p[1] read against a truncated trailing byte in the blob.
+	while (end - p >= 2) {
+		uint8_t dlen = p[0];
+		uint8_t dtype = p[1];
+		if (dlen < 2 || p + dlen > end) break;
+
+		if (dtype == USB_DESC_INTERFACE && dlen >= 9) {
+			current_iface = p[2];
+		} else if (dtype == USB_DESC_HID && dlen >= 9 &&
+		           current_iface == iface_num) {
+			uint8_t num_descs = p[5];
+			for (uint8_t i = 0; i < num_descs; i++) {
+				if (6 + i * 3 + 2 < dlen) {
+					uint8_t rtype = p[6 + i * 3];
+					if (rtype == USB_DESC_HID_REPORT) {
+						p[7 + i * 3] = (uint8_t)(actual_len & 0xFF);
+						p[8 + i * 3] = (uint8_t)(actual_len >> 8);
+						return;
+					}
+				}
+			}
+		}
+		p += dlen;
+	}
+}
+
 static void capture_bos(captured_descriptors_t *desc)
 {
 	// Probe BOS header (5 bytes: bLength, bDescriptorType, wTotalLength, bNumDeviceCaps)
@@ -121,7 +159,8 @@ static void capture_bos(captured_descriptors_t *desc)
 		desc->bos_desc_len = 0;
 		return;
 	}
-	if (total_len > MAX_BOS_DESC_SIZE) total_len = MAX_BOS_DESC_SIZE;
+	bool bos_truncated = total_len > MAX_BOS_DESC_SIZE;
+	if (bos_truncated) total_len = MAX_BOS_DESC_SIZE;
 
 	setup = make_get_descriptor(USB_DESC_BOS, 0, 0, total_len);
 	ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
@@ -131,6 +170,12 @@ static void capture_bos(captured_descriptors_t *desc)
 		return;
 	}
 	desc->bos_desc_len = (uint16_t)ret;
+	// Patch wTotalLength if the BOS descriptor was truncated (or the device
+	// returned fewer bytes than requested) so the replayed BOS is consistent.
+	if (bos_truncated || desc->bos_desc_len < total_len) {
+		desc->bos_desc[2] = (uint8_t)(desc->bos_desc_len & 0xFF);
+		desc->bos_desc[3] = (uint8_t)(desc->bos_desc_len >> 8);
+	}
 }
 
 static void capture_ms_os_1_0(captured_descriptors_t *desc)
@@ -197,6 +242,7 @@ bool capture_descriptors(captured_descriptors_t *desc)
 	int ret;
 	usb_setup_t setup;
 	uint16_t total_len = 0;
+	bool config_truncated = false;
 
 	// Enumeration retry loop (ports WCH USBH_EnumRootDevice): up to 6 attempts,
 	// each re-resets the port, waits with an escalating settle delay, then runs the
@@ -271,7 +317,8 @@ bool capture_descriptors(captured_descriptors_t *desc)
 		}
 		total_len = desc->config_desc[2] | (desc->config_desc[3] << 8);
 		if (total_len < 9) continue;
-		if (total_len > MAX_CONFIG_DESC_SIZE)
+		config_truncated = total_len > MAX_CONFIG_DESC_SIZE;
+		if (config_truncated)
 			total_len = MAX_CONFIG_DESC_SIZE;
 
 		// Step 5: GET_DESCRIPTOR(config, wTotalLength) — full config blob.
@@ -290,6 +337,14 @@ bool capture_descriptors(captured_descriptors_t *desc)
 		return false;
 	}
 	desc->config_desc_len = (uint16_t)ret;
+	// Patch wTotalLength if we truncated the config descriptor OR the device
+	// returned fewer bytes than requested (short transfer), so the replayed
+	// descriptor is internally consistent and the clone host doesn't walk past
+	// our stored copy. Mirrors the BOS handling above.
+	if (config_truncated || desc->config_desc_len < total_len) {
+		desc->config_desc[2] = (uint8_t)(desc->config_desc_len & 0xFF);
+		desc->config_desc[3] = (uint8_t)(desc->config_desc_len >> 8);
+	}
 	desc->config_string_idx = desc->config_desc[6]; // iConfiguration
 	parse_config_descriptor(desc);
 	for (uint8_t i = 0; i < desc->num_ifaces; i++) {
@@ -306,9 +361,17 @@ bool capture_descriptors(captured_descriptors_t *desc)
 		ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 			&setup, iface->hid_report_desc, 2000);
 		if (ret < 0) {
+			// Fetch failed: don't pretend we have a report descriptor. Clear the
+			// flag so the replay side won't answer HID-report requests with an
+			// invalid/truncated descriptor.
 			iface->hid_report_desc_len = 0;
+			iface->has_hid_desc = false;
 		} else {
 			iface->hid_report_desc_len = (uint16_t)ret;
+			// Keep the config descriptor's HID wDescriptorLength consistent with
+			// the report-descriptor bytes we actually captured.
+			patch_hid_report_desc_len(desc, iface->iface_num,
+				iface->hid_report_desc_len);
 		}
 	}
 
@@ -359,7 +422,16 @@ bool capture_descriptors(captured_descriptors_t *desc)
 			langid, MAX_STRING_DESC_SIZE);
 		ret = usb_host_control_transfer(desc->dev_addr, desc->ep0_maxpkt,
 			&setup, desc->string_desc[desc->num_strings], 2000);
-		if (ret > 0) {
+		// Only accept a well-formed string descriptor: at least the 2-byte
+		// header (bLength, bDescriptorType) and the correct type. A short or
+		// garbled reply must not be stored and later replayed as an invalid
+		// descriptor (same principle as the has_hid_desc guard above).
+		if (ret >= 2 && desc->string_desc[desc->num_strings][1] == USB_DESC_STRING) {
+			// Patch bLength down if the device returned a string longer than our
+			// storage; this keeps the replayed descriptor internally consistent.
+			if (desc->string_desc[desc->num_strings][0] > ret) {
+				desc->string_desc[desc->num_strings][0] = (uint8_t)ret;
+			}
 			desc->string_desc_len[desc->num_strings] = ret;
 			desc->string_index[desc->num_strings] = idx;
 			desc->num_strings++;

@@ -365,11 +365,10 @@ static void cmd_kb_isdown(arg_t *args, uint8_t nargs)
 static void cmd_kb_mask(arg_t *args, uint8_t nargs)
 {
 	if (nargs == 1) {
-		// Read variant: no getter for the masked-key table, so report 0.
+		// Read variant: report whether this key is masked (any nonzero mode).
 		int32_t k;
 		if (!parse_int(args[0].p, args[0].len, &k)) return;
-		(void)k;
-		emit_bool(0);
+		emit_bool(act_kb_mask_get((uint8_t)k) != 0);
 		return;
 	}
 	if (nargs != 2) return;

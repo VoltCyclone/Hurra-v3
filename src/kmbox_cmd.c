@@ -28,14 +28,15 @@ void kmbox_cmd_poll(void)
         proto_feed(buf, n);
     }
     proto_tick();
-    // Step any in-flight timed/curved auto-move (km.move with duration, bezier).
-    // act_motion_move_dur/_bezier only arm g_motion; this per-iteration tick is the
-    // sole thing that advances the trajectory and emits its per-tick deltas (via
-    // act_move_raw -> kmbox_inject_mouse). proto_tick() handles only catch/baud, so
-    // without this the motion would init but never move. Early-returns when no
-    // program is in flight (g_motion.kind == MOTION_NONE), so calling it
-    // unconditionally is free on the idle path.
-    act_motion_tick();
+    // Advance any in-flight auto-move (km.move duration/bezier) and click
+    // sequence. proto_tick() handles only catch/baud; act_tick() steps g_motion's
+    // trajectory (emitting per-tick deltas via act_move_raw -> kmbox_inject_mouse)
+    // and g_click_sched (press->release->re-press). Single- and multi-click both
+    // release via this pump, so skipping it would leave clicks stuck. Both halves
+    // early-return when idle, so it's free on the idle path. Runs on V3F on the
+    // same DTCM-local state as act_move/act_click (invoked from proto_feed above)
+    // — no cross-core sharing, no lock needed.
+    act_tick();
     uart_tx_flush();
 }
 
