@@ -363,6 +363,10 @@ test:
 	/tmp/humanize_test
 	cc -std=c11 -O2 -Isrc -o /tmp/motion_test test/motion_test.c src/actions.c -lm
 	/tmp/motion_test
+	cc -std=c11 -O2 -Wall -Isrc -o /tmp/actions_test test/actions_test.c src/actions.c -lm
+	/tmp/actions_test
+	cc -std=c11 -O2 -Wall -Isrc -o /tmp/ferrum_mask_test test/ferrum_mask_test.c src/ferrum.c src/actions.c -lm
+	/tmp/ferrum_mask_test
 	cc -std=c11 -O2 -Isrc -o /tmp/display_test test/display_test.c src/display.c src/icc_status.c
 	/tmp/display_test
 	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_test test/spi_frame_test.c src/spi_frame.c
@@ -373,6 +377,8 @@ test:
 	/tmp/desc_xfer_test
 	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/desc_serialize_test test/desc_serialize_test.c src/desc_serialize.c
 	/tmp/desc_serialize_test
+	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/desc_capture_test test/desc_capture_test.c
+	/tmp/desc_capture_test
 	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_stream_test test/spi_frame_stream_test.c src/spi_frame_stream.c src/spi_frame.c
 	/tmp/spi_frame_stream_test
 	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c src/hid_layout.c

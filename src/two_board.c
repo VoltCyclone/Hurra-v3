@@ -441,7 +441,7 @@ void two_board_host_run(void)
                 proto_feed(cbuf, cn);
         }
         proto_tick();
-        act_motion_tick();          // unconditional; early-returns when idle
+        act_tick();                 // steps motion + click; early-returns when idle
 
         /* Build+admit a shape from the recent capture window periodically
          * (off the EP-poll hot path). Cheap no-op when the window is too short. */
