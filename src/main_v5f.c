@@ -32,6 +32,7 @@
 #include "debug.h"
 #include "spi_link_selftest.h"
 #include "two_board.h"
+#include "report_xfer.h"
 
 // delay() shim for the V5F image. desc_capture.c and the init sequence call
 // `extern void delay(uint32_t msec)`. Routed through the TIM9-based V5F-local
@@ -461,11 +462,17 @@ int main(void)
 			if (ret > 0 && rpt_ptr) {
 				did_work = true;
 				ITRC(TLM_RLY_MERGE);
-				usb_merge_report(ep_map[m].iface_protocol,
-					rpt_ptr, (uint8_t)ret);
+				// The merge path stores the report length in uint8_t and the
+				// transactional forwarder is bounded to the same 64-byte maximum.
+				// Reject oversized host packets before narrowing the poll result.
+				if (ret > (int)REPORT_XFER_MAX_REPORT) {
+					s_probe_drop = 1u;
+					s_drop_count++;
+					continue;
+				}
+				bool fwd_ok = usb_merge_forward_report(ep_map[m].dev_ep_num,
+					ep_map[m].iface_protocol, rpt_ptr, (uint8_t)ret);
 				ITRC(TLM_RLY_SEND);
-				bool fwd_ok = usb_device_send_report(
-					ep_map[m].dev_ep_num, rpt_ptr, (uint16_t)ret);
 				if (fwd_ok) { s_probe_fwd  = 1u; s_rep_count++; }
 				else        { s_probe_drop = 1u; s_drop_count++; }
 			}

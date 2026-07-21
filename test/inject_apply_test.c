@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include "usb_merge.h"
+#include "humanize.h"
 #include "icc.h"
 
 static int failures = 0;
@@ -22,6 +23,9 @@ void humanize_return(int16_t dx, int16_t dy) { (void)dx; (void)dy; }
 void humanize_inject_emit(float dx, float dy, int16_t *ox, int16_t *oy) {
     *ox = (int16_t)dx; *oy = (int16_t)dy;
 }
+static humanize_checkpoint_t fake_humanizer;
+void humanize_checkpoint_save(humanize_checkpoint_t *out) { *out = fake_humanizer; }
+void humanize_checkpoint_restore(const humanize_checkpoint_t *in) { fake_humanizer = *in; }
 bool act_phys_kb_mask_active(void) { return false; }
 bool act_phys_key_masked(uint8_t k) { (void)k; return false; }
 static uint8_t masked_mouse_code = 0xFF; static bool masked_mouse_en;
@@ -43,9 +47,10 @@ bool icc_recv_from_v3f(icc_record_t *out) {
 void icc_ipc_rearm_v5f(void) {}
 
 static uint8_t sent_buf[256]; static uint8_t sent_len, sent_ep; static int sent_count;
-void usb_device_send_report(uint8_t ep, const uint8_t *data, uint8_t len) {
-	sent_ep = ep; sent_len = len; sent_count++;
+bool usb_device_send_report(uint8_t ep, const uint8_t *data, uint16_t len) {
+	sent_ep = ep; sent_len = (uint8_t)len; sent_count++;
 	memcpy(sent_buf, data, len);
+	return true;
 }
 
 // usb_merge_send_pending now ACK-gates on this; report free so existing

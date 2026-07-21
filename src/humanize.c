@@ -24,6 +24,22 @@ void humanize_init(uint32_t interval_us) {
     memset(&S, 0, sizeof(S));
 }
 
+void humanize_checkpoint_save(humanize_checkpoint_t *out)
+{
+    out->owed_x = S.owed_x;
+    out->owed_y = S.owed_y;
+    out->res_x = S.res_x;
+    out->res_y = S.res_y;
+}
+
+void humanize_checkpoint_restore(const humanize_checkpoint_t *checkpoint)
+{
+    S.owed_x = checkpoint->owed_x;
+    S.owed_y = checkpoint->owed_y;
+    S.res_x = checkpoint->res_x;
+    S.res_y = checkpoint->res_y;
+}
+
 HZ_FASTRUN
 static int16_t drain_axis(float *owed, float *res, float emit_v, float noise) {
     float want = emit_v + noise + *res;

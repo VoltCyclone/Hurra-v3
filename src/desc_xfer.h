@@ -12,6 +12,10 @@
 // or an index gap returns DESC_XFER_RESTART and the caller resets. Board B re-sends
 // the whole blob on a loop, so a reset receiver catches the next pass.
 //
+// Parallel to report_xfer.h (the HID-report reassembler), which shares this
+// restart-on-gap shape but uses u8 headers + routing fields and must reset on a
+// frame-loss gap; here the blob re-sends are byte-identical, so a gap is benign.
+//
 // Pure, MMIO-free, host-tested (test/desc_xfer_test.c, in `make test`).
 #ifndef DESC_XFER_H
 #define DESC_XFER_H

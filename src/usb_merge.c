@@ -63,6 +63,32 @@ typedef struct {
 
 static merge_inject_t inject;
 
+typedef struct {
+	int16_t mouse_dx;
+	int16_t mouse_dy;
+	int8_t mouse_wheel;
+	bool mouse_dirty;
+	humanize_checkpoint_t humanizer;
+} mouse_tx_checkpoint_t;
+
+static void mouse_tx_checkpoint_save(mouse_tx_checkpoint_t *out)
+{
+	out->mouse_dx = inject.mouse_dx;
+	out->mouse_dy = inject.mouse_dy;
+	out->mouse_wheel = inject.mouse_wheel;
+	out->mouse_dirty = inject.mouse_dirty;
+	humanize_checkpoint_save(&out->humanizer);
+}
+
+static void mouse_tx_checkpoint_restore(const mouse_tx_checkpoint_t *checkpoint)
+{
+	inject.mouse_dx = checkpoint->mouse_dx;
+	inject.mouse_dy = checkpoint->mouse_dy;
+	inject.mouse_wheel = checkpoint->mouse_wheel;
+	inject.mouse_dirty = checkpoint->mouse_dirty;
+	humanize_checkpoint_restore(&checkpoint->humanizer);
+}
+
 // ── Cached endpoints and parsed mouse layout ─────────────────────────────────
 static uint8_t  cached_mouse_ep;
 static uint16_t cached_mouse_maxpkt;
@@ -323,6 +349,22 @@ void usb_merge_report(uint8_t iface_protocol, uint8_t * restrict report, uint8_t
 			merged_this_cycle = true;
 		}
 	}
+}
+
+bool usb_merge_forward_report(uint8_t dev_ep, uint8_t iface_protocol,
+                              uint8_t *report, uint8_t len)
+{
+	if (!usb_device_in_ep_free(dev_ep)) return false;
+
+	bool checkpointed = (iface_protocol == 2 && inject.mouse_dirty);
+	mouse_tx_checkpoint_t checkpoint;
+	if (checkpointed) mouse_tx_checkpoint_save(&checkpoint);
+
+	usb_merge_report(iface_protocol, report, len);
+	if (usb_device_send_report(dev_ep, report, len)) return true;
+
+	if (checkpointed) mouse_tx_checkpoint_restore(&checkpoint);
+	return false;
 }
 
 __attribute__((cold, noinline))
@@ -652,14 +694,20 @@ void usb_merge_drain_icc(void)
 // usb_merge_cache_endpoints() from the captured descriptors.
 
 __attribute__((cold, noinline))
-static void usb_merge_send_wheel_report(void);
+static bool usb_merge_send_wheel_report(void);
 __attribute__((cold, noinline))
-static void usb_merge_send_keyboard_report(void);
+static bool usb_merge_send_keyboard_report(void);
 
 void usb_merge_send_pending(void)
 {
-	// Flush unconsumed wheel on a separate report ID even when merged.
-	if (__builtin_expect(merged_this_cycle && inject.mouse_wheel != 0 &&
+	// Flush an unconsumed wheel that lives on a separate report ID. Runs on both
+	// the merged and the idle/standalone path (ungated by merged_this_cycle): the
+	// standalone block below only writes the wheel when it shares the X/Y report
+	// ID, so without this flush a scroll injected while the mouse is idle would be
+	// zeroed without ever being sent. Runs before the standalone block so the wheel
+	// gets EP priority; on hardware the EP is then busy and the X/Y report rides
+	// the next poll.
+	if (__builtin_expect(inject.mouse_wheel != 0 &&
 	    cached_mouse_ep && mouse_layout.valid &&
 	    mouse_layout.wheel_bit != 0xFFFF &&
 	    mouse_layout.wheel_report_id != mouse_layout.report_id, 0)) {
@@ -684,6 +732,8 @@ void usb_merge_send_pending(void)
 		uint8_t doff = mouse_layout.data_off;
 		if (doff) synth[0] = mouse_layout.report_id;
 		synth[doff] = inject.mouse_buttons;
+		mouse_tx_checkpoint_t checkpoint;
+		mouse_tx_checkpoint_save(&checkpoint);
 		int16_t inj_dx, inj_dy;
 		usb_merge_take_injection(&inj_dx, &inj_dy);
 		int32_t dx = inj_dx;
@@ -709,10 +759,13 @@ void usb_merge_send_pending(void)
 		uint8_t rlen = cached_mouse_report_len;
 		if (rlen == 0) rlen = (cached_mouse_maxpkt < 16) ? (uint8_t)cached_mouse_maxpkt : 16;
 		if (rlen > sizeof(synth)) rlen = sizeof(synth);
-		usb_device_send_report(cached_mouse_ep, synth, rlen);
-		inject.mouse_wheel = 0;
-		inject.mouse_dirty = (inject.mouse_buttons != 0 ||
-		                      humanize_pending());
+		if (usb_device_send_report(cached_mouse_ep, synth, rlen)) {
+			inject.mouse_wheel = 0;
+			inject.mouse_dirty = (inject.mouse_buttons != 0 ||
+			                      humanize_pending());
+		} else {
+			mouse_tx_checkpoint_restore(&checkpoint);
+		}
 	}
 	if (__builtin_expect(inject.kb_dirty && cached_kb_ep, 0)) {
 		usb_merge_send_keyboard_report();
@@ -720,7 +773,7 @@ void usb_merge_send_pending(void)
 }
 
 __attribute__((cold, noinline))
-static void usb_merge_send_wheel_report(void)
+static bool usb_merge_send_wheel_report(void)
 {
 	uint8_t synth[64];
 	memset(synth, 0, sizeof(synth));
@@ -734,20 +787,26 @@ static void usb_merge_send_wheel_report(void)
 	uint8_t rlen = cached_mouse_report_len;
 	if (rlen == 0) rlen = (cached_mouse_maxpkt < 16) ? (uint8_t)cached_mouse_maxpkt : 16;
 	if (rlen > sizeof(synth)) rlen = sizeof(synth);
-	usb_device_send_report(cached_mouse_ep, synth, rlen);
+	if (!usb_device_send_report(cached_mouse_ep, synth, rlen)) return false;
 	inject.mouse_wheel = 0;
-	inject.mouse_dirty = (inject.mouse_buttons != 0);
+	// Preserve any pending X/Y or humanize residual so flushing the wheel first
+	// (it runs before the standalone X/Y block) never strands motion.
+	inject.mouse_dirty = (inject.mouse_buttons != 0 ||
+	                      inject.mouse_dx != 0 || inject.mouse_dy != 0 ||
+	                      humanize_pending());
+	return true;
 }
 
 __attribute__((cold, noinline))
-static void usb_merge_send_keyboard_report(void)
+static bool usb_merge_send_keyboard_report(void)
 {
 	uint8_t synth[8];
 	synth[0] = inject.kb_modifier;
 	synth[1] = 0;
 	memcpy(&synth[2], inject.kb_keys, 6);
-	usb_device_send_report(cached_kb_ep, synth, 8);
+	if (!usb_device_send_report(cached_kb_ep, synth, sizeof(synth))) return false;
 	static const uint8_t zeros[6] = {0};
 	inject.kb_dirty = (inject.kb_modifier != 0 ||
-	                   memcmp(inject.kb_keys, zeros, 6) != 0);
+	                   memcmp(inject.kb_keys, zeros, sizeof(zeros)) != 0);
+	return true;
 }
