@@ -16,8 +16,8 @@
 #ifndef TWO_BOARD_H
 #define TWO_BOARD_H
 
-// SPI frame TYPE for a mouse report (high bit clear = data class).
-#define TWO_BOARD_TYPE_MOUSE  0x02u
+// SPI frame TYPE for a HID report fragment (high bit clear = data class).
+#define TWO_BOARD_TYPE_REPORT  0x02u
 
 // SPI frame TYPE for a descriptor-blob chunk. Board B ships the captured descriptor
 // set as a sequence of these; Board A reassembles them (desc_xfer) and enumerates.

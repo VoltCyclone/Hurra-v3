@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include "humanize.h"
 
 static int failures = 0;
@@ -51,7 +52,34 @@ int main(void) {
         CHECK(labs(ay + 150L) <= 1, "inject_emit: y-axis conserves (-0.75*200=-150)");
     }
 
-    /* (D) Idle: no injected motion in, zero out. */
+    /* (D) Checkpoint restore: rewinding the fractional phase is bit-exact. */
+    {
+        humanize_init(1000);
+        int16_t seed_x, seed_y;
+        humanize_inject_emit(0.375f, -0.625f, &seed_x, &seed_y);
+
+        humanize_checkpoint_t before, expected_after, restored, actual_after;
+        humanize_checkpoint_save(&before);
+
+        int16_t expected_x, expected_y;
+        humanize_inject_emit(13.25f, -8.5f, &expected_x, &expected_y);
+        humanize_checkpoint_save(&expected_after);
+
+        humanize_checkpoint_restore(&before);
+        humanize_checkpoint_save(&restored);
+        CHECK(memcmp(&before, &restored, sizeof before) == 0,
+              "checkpoint restore is bit-exact");
+
+        int16_t actual_x, actual_y;
+        humanize_inject_emit(13.25f, -8.5f, &actual_x, &actual_y);
+        humanize_checkpoint_save(&actual_after);
+        CHECK(actual_x == expected_x && actual_y == expected_y,
+              "restored phase reproduces the next quantization");
+        CHECK(memcmp(&expected_after, &actual_after, sizeof expected_after) == 0,
+              "restored phase reproduces the next state");
+    }
+
+    /* (E) Idle: no injected motion in, zero out. */
     {
         humanize_init(1000);
         int moved = 0;

@@ -11,6 +11,7 @@
 #include "spi_frame_stream.h"
 #include "synth_mouse.h"
 #include "desc_xfer.h"
+#include "report_xfer.h"
 #include "desc_serialize.h"
 #include "desc_capture.h"
 #include "usb_host.h"
@@ -30,6 +31,7 @@
 #endif
 
 volatile int8_t g_tb_dev_temp_c;   // device-board temp from ICC_TAG_DEV_TEMP
+static uint32_t s_report_tx_drops;
 
 /* Per-EP poll mapping for the real host capture (Board B). Each interrupt-IN
  * endpoint is paced by its descriptor bInterval to avoid flooding the bus with
@@ -82,26 +84,39 @@ static void send_descriptor_blob(const uint8_t *blob, uint16_t total, uint8_t *s
     }
 }
 
-/* Forward one captured report over SPI as a TWO_BOARD_TYPE_MOUSE frame. Payload
- * layout: [dev_ep, iface_protocol, report…]. rx_out receives the return slot so
- * the caller can feed it to host_absorb_return for device->host telemetry. */
-static void send_report_frame(uint8_t dev_ep, uint8_t protocol,
-                              const uint8_t *report, uint8_t rlen, uint8_t *seq,
-                              uint8_t rx_out[SPI_LINK_SLOT])
+/* Forward one complete captured HID report over SPI as synchronous, index-ordered
+ * TWO_BOARD_TYPE_REPORT fragments. Only the final exchange's return slot is
+ * exposed so the caller can feed it to host_absorb_return for telemetry. */
+static bool send_report_frames(uint8_t dev_ep, uint8_t protocol,
+                               const uint8_t *report, uint16_t report_len,
+                               uint8_t *seq, uint8_t rx_out[SPI_LINK_SLOT])
 {
-    if (rlen > SPI_FRAME_MAX_PAYLOAD - 2) rlen = SPI_FRAME_MAX_PAYLOAD - 2;
-    uint8_t payload[SPI_FRAME_MAX_PAYLOAD];
-    payload[0] = dev_ep & 0x0F;
-    payload[1] = protocol;
-    memcpy(&payload[2], report, rlen);
-
-    uint8_t tx[SPI_LINK_SLOT];
-    if (spi_frame_pack(tx, TWO_BOARD_TYPE_MOUSE, (*seq)++, payload,
-                       (uint8_t)(2 + rlen)) == SPI_FRAME_OK) {
-        spi_link_master_exchange(tx, rx_out);
-    } else if (rx_out) {
-        memset(rx_out, 0, SPI_LINK_SLOT);
+    uint8_t count = report_xfer_fragment_count(report_len);
+    if (count == 0) {
+        s_report_tx_drops++;
+        if (rx_out) memset(rx_out, 0, SPI_LINK_SLOT);
+        return false;
     }
+
+    for (uint8_t index = 0; index < count; index++) {
+        uint8_t payload[REPORT_XFER_PAYLOAD_SIZE];
+        uint8_t payload_len = report_xfer_pack_fragment(
+            report, report_len, dev_ep, protocol, index, payload);
+        uint8_t tx[SPI_LINK_SLOT], rx[SPI_LINK_SLOT];
+        if (payload_len == 0 ||
+            spi_frame_pack(tx, TWO_BOARD_TYPE_REPORT, *seq, payload, payload_len)
+                != SPI_FRAME_OK) {
+            s_report_tx_drops++;
+            if (rx_out) memset(rx_out, 0, SPI_LINK_SLOT);
+            return false;
+        }
+        (*seq)++;
+        spi_link_master_exchange(tx, rx);
+        if (rx_out && index + 1u == count)
+            memcpy(rx_out, rx, SPI_LINK_SLOT);
+    }
+
+    return true;
 }
 
 /* Feed one received SPI return slot through the SOF-scanner; on a completed
@@ -144,10 +159,10 @@ static mouse_layout_t g_host_mouse_layout;
 /*                                                                           */
 /* Captures the device on the USBHS host port, ships its descriptor blob to  */
 /* Board A over SPI, then polls the interrupt-IN endpoints and forwards each  */
-/* captured report as an SPI mouse frame. The blob is re-sent periodically    */
-/* (restart-on-gap) so Board A can enumerate after an attach. SWJ is disabled */
-/* by main_v5f's host divert (USBHS host uses PB8/9). Build with              */
-/* TWO_BOARD_HOST_SYNTH for an isolated link test with no real device.        */
+/* captured HID report as one or more SPI fragments. The blob is re-sent      */
+/* periodically (restart-on-gap) so Board A can enumerate after an attach.    */
+/* SWJ is disabled by main_v5f's host divert (USBHS host uses PB8/9).         */
+/* Build with TWO_BOARD_HOST_SYNTH for an isolated link test with no device.  */
 /* ======================================================================== */
 void two_board_host_run(void)
 {
@@ -211,9 +226,11 @@ void two_board_host_run(void)
             uint8_t report[SYNTH_MOUSE_REPORT_LEN];
             uint8_t rx_scratch[SPI_LINK_SLOT];
             synth_mouse_next_report(tick++, report);
-            send_report_frame(SYNTH_MOUSE_IN_EP, SYNTH_MOUSE_IFACE_PROTO,
-                              report, SYNTH_MOUSE_REPORT_LEN, &seq, rx_scratch);
-            ws2812_note_report(now);
+            if (send_report_frames(SYNTH_MOUSE_IN_EP, SYNTH_MOUSE_IFACE_PROTO,
+                                   report, SYNTH_MOUSE_REPORT_LEN, &seq,
+                                   rx_scratch)) {
+                ws2812_note_report(now);
+            }
         }
         /* Oracle: 0x5A = master clocking cleanly; 0xEA = a wedged exchange was
          * recovered (bounded-wait timeout). Distinguishes a healthy link from a
@@ -384,8 +401,11 @@ void two_board_host_run(void)
                                                        ep_map[m].maxpkt);
             if (ret > 0 && rpt) {
                 uint8_t rx[SPI_LINK_SLOT];
-                send_report_frame(ep_map[m].dev_ep_num, ep_map[m].iface_protocol,
-                                  rpt, (uint8_t)ret, &seq, rx);
+                if (!send_report_frames(ep_map[m].dev_ep_num,
+                                        ep_map[m].iface_protocol, rpt,
+                                        (uint16_t)ret, &seq, rx)) {
+                    continue;
+                }
                 ws2812_note_report(now);
                 host_absorb_return(&rxs, rx, &disp, &last_telem_seq,
                                    &have_telem_seq, &telem_fresh_ms, now);
@@ -477,6 +497,8 @@ void two_board_host_run(void)
             rep_count = 0;
             disp.wedge = (uint16_t)(spi_link_master_wedges > 1023u
                                     ? 1023u : spi_link_master_wedges);
+            disp.drops = (uint16_t)(s_report_tx_drops > 1023u
+                                    ? 1023u : s_report_tx_drops);
         }
         disp.dev_link = ((now - telem_fresh_ms) < 1000u) ? 1u : 0u;
 #if defined(BOARD_ROLE_HOST)
@@ -540,8 +562,9 @@ void two_board_device_run(void)
             send_ms = millis();
             uint8_t rpt[SYNTH_MOUSE_REPORT_LEN];
             synth_mouse_next_report(tick++, rpt);
-            usb_merge_report(SYNTH_MOUSE_IFACE_PROTO, rpt, SYNTH_MOUSE_REPORT_LEN);
-            usb_device_send_report(SYNTH_MOUSE_IN_EP & 0x0F, rpt, SYNTH_MOUSE_REPORT_LEN);
+            (void)usb_merge_forward_report(SYNTH_MOUSE_IN_EP & 0x0F,
+                                           SYNTH_MOUSE_IFACE_PROTO, rpt,
+                                           SYNTH_MOUSE_REPORT_LEN);
         }
         usb_merge_drain_icc();
         usb_device_poll();
@@ -617,11 +640,13 @@ void two_board_device_run(void)
      * init. */
     spi_link_slave_set_drdy(1);
 
-    /* ---- Phase 3: relay mouse reports (descriptor re-sends still arrive but are
-     * ignored once enumerated) ---- */
+    /* ---- Phase 3: relay HID report fragments (descriptor re-sends still arrive
+     * but are ignored once enumerated) ---- */
     uint8_t  prev_seq = 0;
     bool     have_prev = false;
     uint32_t drop_count = 0;
+    static report_xfer_ctx_t report_xfer;
+    report_xfer_reset(&report_xfer);
     hb_ms = millis();
     ws2812_init();
     for (;;) {
@@ -636,21 +661,39 @@ void two_board_device_run(void)
                 continue;
             }
             if (have_prev) {
-                uint8_t gap = spi_frame_seq_gap(prev_seq, seq);
-                if (gap > 1) drop_count += (gap - 1);
+                // spi_frame_seq_gap returns the count of frames lost since the
+                // last good frame (0 for the immediate successor or a repeat). Any
+                // loss invalidates a partial report: a later fragment of the *next*
+                // report carries an identical [total,ep,proto] header for the same
+                // endpoint, so without this reset it would splice onto the stale
+                // buffer and complete as a corrupt report. Reset on any gap, not
+                // just >1 — an interleaved inject/telem frame can split one real
+                // loss into two single-frame gaps.
+                uint8_t lost = spi_frame_seq_gap(prev_seq, seq);
+                if (lost) {
+                    drop_count += lost;
+                    report_xfer_reset(&report_xfer);
+                }
             }
             prev_seq = seq;
             have_prev = true;
 
-            if (type == TWO_BOARD_TYPE_MOUSE && len >= 3) {
-                uint8_t  dev_ep   = payload[0];
-                uint8_t  protocol = payload[1];
-                uint8_t  rlen     = (uint8_t)(len - 2);
-                uint8_t  rpt[SPI_FRAME_MAX_PAYLOAD];
-                memcpy(rpt, &payload[2], rlen);
-                usb_merge_report(protocol, rpt, rlen);
-                usb_device_send_report(dev_ep, rpt, rlen);
-                ws2812_note_report(now);
+            if (type == TWO_BOARD_TYPE_REPORT) {
+                bool was_active = report_xfer.active;
+                report_xfer_result_t result =
+                    report_xfer_accept(&report_xfer, payload, len);
+                if (result == REPORT_XFER_RESTART) {
+                    // Count only a RESTART that aborts an in-progress report; a
+                    // loss-orphaned fragment (context already reset above) was
+                    // counted via drop_count += lost.
+                    if (was_active) drop_count++;
+                } else if (result == REPORT_XFER_COMPLETE) {
+                    bool forwarded = usb_merge_forward_report(
+                        report_xfer.dev_ep, report_xfer.iface_protocol,
+                        report_xfer.report, report_xfer.total_len);
+                    if (!forwarded) drop_count++;
+                    ws2812_note_report(now);
+                }
             }
             else if (type == TWO_BOARD_TYPE_INJECT && len >= 1) {
                 // Injection forwarded from Board B's V5F parser. Payload is the
@@ -666,10 +709,10 @@ void two_board_device_run(void)
         usb_device_poll();
 
         /* Standalone synth-injection: emit injected motion/clicks when no real
-         * report rode through this cycle (the TWO_BOARD_TYPE_MOUSE merge above only
-         * fires when a frame arrives over SPI). This is the device board's V5F: the
-         * PC command link lands on this board's V3F, so its inject accumulators are
-         * the ones usb_merge_drain_icc() populates. Without this, motion/clicks
+         * report rode through this cycle (the TWO_BOARD_TYPE_REPORT handling above
+         * only fires when a frame arrives over SPI). This is the device board's
+         * V5F: the PC command link lands on this board's V3F, so its inject
+         * accumulators are the ones usb_merge_drain_icc() populates. Without this,
          * issued while the physical mouse is silent accumulate but never reach the
          * PC. Mirrors main_v5f.c's relay loop; gated by merged_this_cycle and the
          * device IN-EP-free (ACK) gate inside usb_merge_send_pending(). */

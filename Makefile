@@ -140,7 +140,7 @@ V5F_SRC = src/main_v5f.c src/icc.c src/icc_status.c src/usb_host.c \
           src/usb_merge.c src/hid_layout.c src/desc_capture.c src/actions.c src/humanize.c \
           src/kmbox_cmd_v5f_stub.c src/led.c src/spi_link.c src/spi_frame.c \
           src/spi_frame_stream.c \
-          src/usb_hs_desc.c src/synth_mouse.c src/desc_xfer.c src/desc_serialize.c src/two_board.c \
+          src/usb_hs_desc.c src/synth_mouse.c src/desc_xfer.c src/report_xfer.c src/desc_serialize.c src/two_board.c \
           src/spi_link_selftest.c core/timebase_v5f.c \
           src/ws2812.c src/ws2812_pioc_code.c \
           core/system_ch32h417.c $(LIBSRC)
@@ -358,7 +358,11 @@ erase:
 clean:
 	rm -rf build
 
-test:
+test-report-xfer:
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/report_xfer_test test/report_xfer_test.c src/report_xfer.c
+	/tmp/report_xfer_test
+
+test: test-report-xfer
 	cc -std=c11 -O2 -DHUMANIZE_HOSTTEST -Isrc -o /tmp/humanize_test test/humanize_test.c src/humanize.c -lm
 	/tmp/humanize_test
 	cc -std=c11 -O2 -Isrc -o /tmp/motion_test test/motion_test.c src/actions.c -lm
@@ -375,7 +379,9 @@ test:
 	/tmp/desc_serialize_test
 	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_stream_test test/spi_frame_stream_test.c src/spi_frame_stream.c src/spi_frame.c
 	/tmp/spi_frame_stream_test
-	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c src/hid_layout.c
+	cc -std=c11 -O1 -g -fsanitize=address -DHUMANIZE_HOSTTEST -Isrc \
+	   -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c \
+	   src/hid_layout.c src/humanize.c -lm
 	/tmp/usb_merge_test
 	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/inject_apply_test test/inject_apply_test.c src/usb_merge.c src/hid_layout.c
 	/tmp/inject_apply_test
@@ -407,4 +413,4 @@ test-torch:
 	python3 -m unittest test.raw_input_classifier_model_test
 	python3 -m unittest test.raw_input_classifier_train_test
 
-.PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test test-torch build
+.PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test test-report-xfer test-torch build

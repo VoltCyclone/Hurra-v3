@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 #include "desc_capture.h"
 
@@ -20,6 +21,12 @@ void usb_merge_cache_endpoints(const captured_descriptors_t *desc);
 // device, before it is forwarded to the PC. iface_protocol: 1=kbd, 2=mouse
 // (HID boot-interface protocol code).
 void usb_merge_report(uint8_t iface_protocol, uint8_t *report, uint8_t len);
+
+// Admission-check, merge, and forward a physical report as one transaction.
+// A rejected send restores any mouse injection/humanizer state consumed while
+// preparing the report so the same overlay can be retried on the next report.
+bool usb_merge_forward_report(uint8_t dev_ep, uint8_t iface_protocol,
+                              uint8_t *report, uint8_t len);
 
 // Drain the V3F->V5F ICC ring into the injection accumulators and run scheduled
 // release/humanize bookkeeping. Call first per relay-loop iteration; resets the
