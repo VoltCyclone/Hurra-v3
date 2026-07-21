@@ -522,6 +522,33 @@ static void test_idle_split_motion_and_wheel_both_deliver(void) {
 	CHECK(usb_merge_peek_inject_wheel_for_test() == 0, "idle split: wheel accumulator drained");
 }
 
+// A forward that passes admission but whose device send is rejected must unwind
+// the per-cycle merge bookkeeping (merged_this_cycle + last_merge_ms), not just
+// the injection accumulators, so the standalone synth path can still deliver the
+// preserved injection in the same cycle.
+static void test_forward_reject_unwinds_cycle_state(void) {
+	cache_boot_mouse();
+	usb_merge_reset_for_test();
+	fake_ms = 5000;                 // last_merge_ms starts at 0 → mouse counts as silent
+	icc_push_inject_mouse(9, -4, 0, 0);
+	usb_merge_drain_icc();          // merged_this_cycle=false, mouse_dirty=true
+
+	fake_ep_free = true;
+	fake_send_ok = false;           // admitted, but the device send is rejected
+	send_attempts = 0;
+	sent_count = 0;
+	uint8_t report[4] = {0};
+	CHECK(!usb_merge_forward_report(1, 2, report, sizeof(report)),
+	      "forward reject: reports failure");
+
+	fake_send_ok = true;
+	usb_merge_send_pending();
+	CHECK(sent_count == 1,
+	      "forward reject: standalone synth still emits (merged_this_cycle unwound)");
+	CHECK((int8_t)sent_buf[1] == 9 && (int8_t)sent_buf[2] == -4,
+	      "forward reject: standalone carries the preserved injection");
+}
+
 int main(void) {
 	// (1) Fast path on a short report must not index past the buffer. A 4-byte
 	// boot mouse touches report[3] (wheel); a 2-byte report has only [0],[1].
@@ -614,6 +641,7 @@ int main(void) {
 	test_keyboard_release_send_failure_holds_then_success_commits();
 	test_idle_split_wheel_flushes_on_silent_mouse();
 	test_idle_split_motion_and_wheel_both_deliver();
+	test_forward_reject_unwinds_cycle_state();
 
 	if (failures == 0) printf("ALL PASS\n");
 	else printf("%d FAILURE(S)\n", failures);

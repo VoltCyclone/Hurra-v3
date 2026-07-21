@@ -359,11 +359,19 @@ bool usb_merge_forward_report(uint8_t dev_ep, uint8_t iface_protocol,
 	bool checkpointed = (iface_protocol == 2 && inject.mouse_dirty);
 	mouse_tx_checkpoint_t checkpoint;
 	if (checkpointed) mouse_tx_checkpoint_save(&checkpoint);
+	// usb_merge_report marks the cycle as having carried a real report
+	// (merged_this_cycle) and advances the mouse-silence clock (last_merge_ms).
+	// Both must unwind on a rejected send so a forward that never landed does not
+	// suppress the standalone synth path or distort silent-mouse timing this cycle.
+	bool     saved_merged     = merged_this_cycle;
+	uint32_t saved_last_merge = last_merge_ms;
 
 	usb_merge_report(iface_protocol, report, len);
 	if (usb_device_send_report(dev_ep, report, len)) return true;
 
 	if (checkpointed) mouse_tx_checkpoint_restore(&checkpoint);
+	merged_this_cycle = saved_merged;
+	last_merge_ms     = saved_last_merge;
 	return false;
 }
 
