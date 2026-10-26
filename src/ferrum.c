@@ -9,6 +9,7 @@
 // printf/sprintf/atoi — internal helpers keep newlib out of the image.
 
 #include "ferrum.h"
+#include "time_deadline.h"
 #include "actions.h"
 #include "kmbox.h"
 #include <string.h>
@@ -95,7 +96,7 @@ static bool parse_int(const char *s, uint8_t len, int32_t *out)
 	}
 	if (neg) {
 		if (u > 0x80000000u) return false;
-		*out = -(int32_t)u;
+		*out = u == 0x80000000u ? INT32_MIN : -(int32_t)u;
 	} else {
 		if (u > 0x7FFFFFFFu) return false;
 		*out = (int32_t)u;
@@ -547,7 +548,7 @@ void ferrum_tick(void)
 	// Drives the catch_xy deadline check independent of UART RX, so a host
 	// that calls km.catch_xy(dur) then idles still gets its reply.
 	if (__builtin_expect(!s_catch.active, 1)) return;
-	if (millis() < s_catch.deadline) return;
+	if (!time_deadline_reached(millis(), s_catch.deadline)) return;
 	emit_catch_result();
 	s_catch.active = false;
 }
@@ -558,7 +559,7 @@ void ferrum_feed_byte(uint8_t b)
 
 	// catch_xy: emit immediately when new bytes arrive after the deadline,
 	// rather than waiting for the next ferrum_tick().
-	if (__builtin_expect(s_catch.active, 0) && now >= s_catch.deadline) {
+	if (__builtin_expect(s_catch.active, 0) && time_deadline_reached(now, s_catch.deadline)) {
 		emit_catch_result();
 		s_catch.active = false;
 	}

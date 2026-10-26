@@ -22,10 +22,10 @@
 // RAM window mapped in both images, so V3F reads V5F's stage byte from shared SRAM
 // and prints it as ASCII over the command UART.
 //
-// Default-on for bench builds. Disable for production (where ASCII lines would
-// corrupt the binary protocol) via `make EXTRADEF=-DV5F_STAGE_DIAG_OFF`.
-#if !defined(V5F_STAGE_DIAG_OFF)
-#define V5F_STAGE_DIAG 1
+// Explicitly opt in for bench bring-up with EXTRADEF=-DV5F_STAGE_DIAG.
+// ASCII diagnostics must not be mixed into the binary command protocol by default.
+#if defined(V5F_STAGE_DIAG_OFF)
+#undef V5F_STAGE_DIAG
 #endif
 
 #if defined(V5F_STAGE_DIAG)

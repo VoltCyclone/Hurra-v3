@@ -19,6 +19,7 @@
 // quantizer path).
 
 #include "usb_merge.h"
+#include "time_deadline.h"
 #include "hid_layout.h"   // mouse_layout_t, hid_layout_parse_mouse/read_field
 #include "humanize.h"
 #include "actions.h"      // g_phys_mask, act_phys_* helpers, PHYS_MASK_*
@@ -54,7 +55,7 @@ typedef struct {
 	bool     kb_dirty;
 
 	uint8_t  click_release_mask;
-	uint32_t click_release_at; // ms, 0=off
+	uint32_t click_release_at; // ms; click_release_mask tracks activation
 
 	#define MAX_KB_RELEASES 6
 	struct { uint8_t key; uint32_t at; } kb_releases[6];
@@ -566,12 +567,14 @@ static void merge_apply_keyboard(uint8_t modifier, const uint8_t keys[6])
 
 static void merge_schedule_click_release(uint8_t button_mask, uint32_t delay_ms)
 {
+    if (delay_ms > INT32_MAX) delay_ms = INT32_MAX;
 	inject.click_release_mask = button_mask;
 	inject.click_release_at = millis() + delay_ms;
 }
 
 static void merge_schedule_kb_release(uint8_t key, uint32_t delay_ms)
 {
+    if (delay_ms > INT32_MAX) delay_ms = INT32_MAX;
 	uint32_t at = millis() + delay_ms;
 	for (int i = 0; i < inject.kb_release_count; i++) {
 		if (inject.kb_releases[i].key == key) {
@@ -589,8 +592,8 @@ static void merge_schedule_kb_release(uint8_t key, uint32_t delay_ms)
 // Run the scheduled click/key-release bookkeeping. Called once per drain.
 static void merge_run_releases(void)
 {
-	if (__builtin_expect(inject.click_release_at != 0, 0) &&
-	    millis() >= inject.click_release_at) {
+	if (__builtin_expect(inject.click_release_mask != 0, 0) &&
+	    time_deadline_reached(millis(), inject.click_release_at)) {
 		inject.mouse_buttons &= ~inject.click_release_mask;
 		inject.mouse_dirty = true;
 		inject.click_release_mask = 0;
@@ -600,7 +603,7 @@ static void merge_run_releases(void)
 	if (__builtin_expect(inject.kb_release_count, 0)) {
 		uint32_t now = millis();
 		for (int r = 0; r < inject.kb_release_count; ) {
-			if (now >= inject.kb_releases[r].at) {
+			if (time_deadline_reached(now, inject.kb_releases[r].at)) {
 				uint8_t key = inject.kb_releases[r].key;
 				for (int i = 0; i < 6; i++) {
 					if (inject.kb_keys[i] == key) {
