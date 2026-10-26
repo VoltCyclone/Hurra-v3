@@ -131,6 +131,27 @@ int main(void) {
     g_ms += 20; act_tick();        // act_tick (not act_click_tick) must release it
     CHECK(g_buttons == 0x00, "F: act_tick() pumps the click release");
 
+    // Holes in the six-key array must not create duplicates.
+    act_init(); act_kb_down(4); act_kb_down(5); act_kb_up(4);
+    act_kb_down(5); act_kb_up(5);
+    CHECK(!act_kb_isdown(5), "keyboard down deduplicates keys beyond a hole");
+    act_init(); act_kb_down(4); act_kb_down(5); act_kb_up(4);
+    g_ms = UINT32_MAX - 9u;
+    act_kb_press(5, 10); // release deadline is exactly zero
+    g_ms = UINT32_MAX - 1u; act_tick();
+    CHECK(act_kb_isdown(5), "timed key remains down before wrapped deadline");
+    g_ms = 0; act_tick();
+    CHECK(!act_kb_isdown(5), "timed key clears authoritative V3F state at zero deadline");
+    act_kb_down(6);
+    CHECK(!act_kb_isdown(5), "later keyboard snapshot cannot resurrect expired key");
+    act_kb_press(7, 10); act_kb_down(7); g_ms = 20; act_tick();
+    CHECK(act_kb_isdown(7), "explicit down cancels old automatic release");
+    act_kb_press(0xE1, 10); g_ms = 30; act_tick();
+    CHECK(!act_kb_isdown(0xE1), "modifier automatic release uses authoritative state");
+    act_init(); g_pos_x = INT32_MAX - 1; g_pos_y = INT32_MIN + 1;
+    act_move(10, -10);
+    CHECK(g_pos_x == INT32_MAX && g_pos_y == INT32_MIN, "position telemetry saturates without signed overflow");
+
     if (failures == 0) printf("\nALL PASSED\n");
     else               printf("\n%d FAILURE(S)\n", failures);
     return failures ? 1 : 0;

@@ -24,9 +24,14 @@ void kmbox_cmd_poll(void)
 {
     uint8_t buf[256];
     uint16_t n;
-    while ((n = uart_rx_read(buf, sizeof buf)) > 0) {
-        proto_feed(buf, n);
-    }
+    do {
+        n = uart_rx_read(buf, sizeof buf);
+        if (uart_rx_take_loss()) {
+            proto_reset();
+            n = 0; // loss can arrive after the driver's final copy check
+        }
+        if (n) proto_feed(buf, n);
+    } while (n);
     proto_tick();
     // Advance any in-flight auto-move (km.move duration/bezier) and click
     // sequence. proto_tick() handles only catch/baud; act_tick() steps g_motion's

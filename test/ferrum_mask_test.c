@@ -23,7 +23,8 @@ static int failures = 0;
 // ── stubbed environment ──────────────────────────────────────────────────────
 // millis(): constant is fine — keeps ferrum's idle-gap reset (25ms) from firing
 // between bytes of a line, and catch_xy is inactive after ferrum_init().
-uint32_t millis(void) { return 0; }
+static uint32_t g_ms;
+uint32_t millis(void) { return g_ms; }
 
 // Injection / link sinks pulled by ferrum.c (via the kmbox.h shim) and actions.c.
 // None affect the mask read path; they only need to link.
@@ -101,6 +102,23 @@ int main(void) {
     tx_reset();
     feed("km.mask(7)\r\n");
     CHECK(reply_is('1'), "F: mode-2 key reads 1 (bool of nonzero)");
+
+    tx_reset(); feed("km.catch_xy(-2147483648)\r\n"); ferrum_tick();
+    CHECK(g_tx_n == 8 && memcmp(g_tx, "(0, 0)\r\n", 8) == 0,
+          "INT32_MIN parses without negation overflow");
+    tx_reset(); feed("km.catch_xy(-2147483649)\r\n"); ferrum_tick();
+    CHECK(g_tx_n == 0, "out-of-range negative argument is rejected");
+    g_ms = UINT32_MAX - 9u;
+    tx_reset(); feed("km.catch_xy(20)\r\n");
+    g_ms = UINT32_MAX - 1u; ferrum_tick();
+    CHECK(g_tx_n == 0, "catch does not fire prematurely before rollover");
+    g_ms = 10; ferrum_tick();
+    CHECK(g_tx_n == 8, "catch completes at wrapped deadline");
+    g_ms = UINT32_MAX - 9u;
+    tx_reset(); feed("km.catch_xy(20)\r\n");
+    g_ms = 10; ferrum_feed_byte('x');
+    CHECK(g_tx_n == 8, "feed-byte catch path handles wrapped deadline");
+    ferrum_reset();
 
     if (failures == 0) printf("\nALL PASSED\n");
     else               printf("\n%d FAILURE(S)\n", failures);

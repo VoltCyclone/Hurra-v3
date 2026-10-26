@@ -1,12 +1,20 @@
 // src/hurra.c — Hurra binary protocol parser (TinyFrame).
 #include "TinyFrame.h"
 #include "hurra.h"
+#include "time_deadline.h"
 #include "actions.h"
 #include "kmbox.h"
 #include "ch32h417_port.h"   // NVIC_SystemReset for the reboot command
 #include <string.h>
 
 extern uint32_t millis(void);
+
+// Every current wire frame reaches uart_tx_write in one call. Its atomic
+// admission cannot protect arbitrary multi-part frames if this config changes.
+_Static_assert(TF_LEN_BYTES == 1 &&
+               TF_SENDBUF_LEN >= UINT8_MAX + 1 + TF_ID_BYTES + TF_LEN_BYTES +
+                                 TF_TYPE_BYTES + 2 * sizeof(TF_CKSUM),
+               "Hurra requires one complete wire frame per transport write");
 
 // ── Command TYPE byte allocation ────────────────────────────────────────────
 enum {
@@ -76,6 +84,7 @@ enum {
 
 // ── TinyFrame instance ──────────────────────────────────────────────────────
 static TinyFrame s_tf;
+static uint32_t s_tf_tick_ms;
 static hurra_tx_fn s_tx;
 
 void TF_WriteImpl(TinyFrame *tf, const uint8_t *buf, uint32_t len)
@@ -98,8 +107,10 @@ static bool     s_have_last_id;
 
 // ── deferred actions ─────────────────────────────────────────────────────────
 static uint32_t s_reboot_at;
+static bool s_reboot_scheduled;
 static uint32_t s_baud_pending;
 static uint32_t s_baud_apply_at;
+static bool s_baud_scheduled;
 
 // ── callback state (on-change callbacks) ────────────────────────────────────
 static uint8_t  s_cb_buttons, s_cb_axes, s_cb_keys;
@@ -564,6 +575,7 @@ static TF_Result l_reboot(TinyFrame *tf, TF_Msg *msg)
     uint8_t ok = 0;
     send_reply(msg, &ok, 1);
     s_reboot_at = millis() + 20;
+    s_reboot_scheduled = true;
     return TF_STAY;
 }
 
@@ -584,6 +596,7 @@ static TF_Result l_baud(TinyFrame *tf, TF_Msg *msg)
     send_reply(msg, ack, 4);
     s_baud_pending  = new_baud;
     s_baud_apply_at = millis() + 20;
+    s_baud_scheduled = true;
     return TF_STAY;
 }
 
@@ -648,6 +661,7 @@ void hurra_init(void)
 {
     memset(&s_tf, 0, sizeof(s_tf));
     TF_InitStatic(&s_tf, TF_MASTER);
+    s_tf_tick_ms = millis();
     s_tx = NULL;
     s_rx_frames_ok = s_head_crc_err = s_payload_crc_err = 0;
     s_id_gap_total = s_idle_resync = s_payload_invalid = 0;
@@ -655,8 +669,10 @@ void hurra_init(void)
     s_tx_ring_skip = 0;
     s_have_last_id = false;
     s_reboot_at = 0;
+    s_reboot_scheduled = false;
     s_baud_pending = 0;
     s_baud_apply_at = 0;
+    s_baud_scheduled = false;
     s_cb_buttons = s_cb_axes = s_cb_keys = 0;
     s_cb_phys = 0;
     memset(s_last_keys_emitted, 0, sizeof(s_last_keys_emitted));
@@ -710,18 +726,36 @@ void hurra_init(void)
     TF_AddTypeListener(&s_tf, TYPE_CB_PHYS,      l_cb_phys);
 }
 
-void hurra_reset(void) { TF_ResetParser(&s_tf); }
+// TinyFrame ticks are milliseconds, not foreground iterations. Advance before
+// feeding so a freshly received partial frame is not charged for prior idle time.
+static void advance_tf_clock(uint32_t now)
+{
+    uint32_t elapsed = now - s_tf_tick_ms;
+    s_tf_tick_ms = now;
+    // This instance uses type listeners only, with no timed ID listeners.
+    // Parser timeout saturates at this limit; catch-up work must stay bounded.
+    if (elapsed > TF_PARSER_TIMEOUT_TICKS) elapsed = TF_PARSER_TIMEOUT_TICKS;
+    while (elapsed--) TF_Tick(&s_tf);
+}
+
+void hurra_reset(void) { TF_ResetParser(&s_tf); s_tf_tick_ms = millis(); }
 void hurra_set_tx(hurra_tx_fn tx) { s_tx = tx; }
 
-void hurra_feed_byte(uint8_t b) { TF_AcceptChar(&s_tf, b); }
-void hurra_feed(const uint8_t *buf, uint16_t len) { TF_Accept(&s_tf, buf, (uint32_t)len); }
+void hurra_feed_byte(uint8_t b) {
+    advance_tf_clock(millis());
+    TF_AcceptChar(&s_tf, b);
+}
+void hurra_feed(const uint8_t *buf, uint16_t len) {
+    advance_tf_clock(millis());
+    TF_Accept(&s_tf, buf, (uint32_t)len);
+}
 
 void hurra_tick(void)
 {
     uint32_t now = millis();
-    TF_Tick(&s_tf);
+    advance_tf_clock(now);
 
-    if (s_catch.active && now >= s_catch.deadline) {
+    if (s_catch.active && time_deadline_reached(now, s_catch.deadline)) {
         uint8_t p[8];
         memcpy(&p[0], &s_catch.accum_x, 4);
         memcpy(&p[4], &s_catch.accum_y, 4);
@@ -734,11 +768,13 @@ void hurra_tick(void)
         TF_Respond(&s_tf, &r);
         s_catch.active = false;
     }
-    if (s_baud_apply_at && now >= s_baud_apply_at) {
+    if (s_baud_scheduled && time_deadline_reached(now, s_baud_apply_at)) {
         kmbox_set_baud(s_baud_pending);
         s_baud_apply_at = 0;
+        s_baud_scheduled = false;
     }
-    if (s_reboot_at && now >= s_reboot_at) {
+    if (s_reboot_scheduled && time_deadline_reached(now, s_reboot_at)) {
+        s_reboot_scheduled = false;
         NVIC_SystemReset();
     }
 }

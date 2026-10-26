@@ -336,6 +336,39 @@ make test
 > The aim/load/smoke tools and `make flash` run against a flashed board; the
 > host-native `make test` suite needs no hardware.
 
+## Embedded reliability notes
+
+The CH32H417 transport is interrupt-driven, not the RP2350 DMA ring used by
+Hurra. UART writes are now admitted whole or rejected; current TinyFrame frames
+fit one transport write (asserted in the binary parser). After RX overflow or a
+framing/noise error, input is discarded until a 25 ms quiet interval and an empty
+hardware receive register. The command pump resets partial parser state even
+when the read returns zero. This requires a pause at a command boundary after
+loss; it is not flow control or retransmission. Baud changes are deferred until
+both the TX ring and the USART transmission-complete flag are idle.
+
+ASCII stage diagnostics are **off by default** so they cannot corrupt the binary
+command link. Opt in for bench use with `make EXTRADEF=-DV5F_STAGE_DIAG`; this mode
+intentionally mixes unframed diagnostics into the command UART.
+
+`make test-reliability` runs the actual UART ISR/command pump against a host HAL
+model, plus TinyFrame clock/deadline regressions, under address and undefined
+behavior sanitizers. `make test` includes these and the existing native suite.
+Binaries are isolated under `build/host-tests` (`HOST_TEST_DIR` overrides it).
+Tests cover integer boundaries, wrapped/zero deadlines, duplicate keyboard slots,
+and authoritative V3F keyboard expiry so later snapshots do not resurrect keys.
+They do not validate CH32 bus timing, USB cache/DMA behavior, or flashing.
+
+Remaining review findings requiring a separate transport/state change:
+
+- ICC queue saturation still silently rejects records at callers, including
+  button/key releases. UART loss recovery does not solve that queue's delivery
+  guarantee; the next change needs a bounded retry/state reconciliation policy.
+- Physical-mask actions change V3F-local tables but do not consistently propagate
+  them to V5F through the existing ICC physical-mask record.
+- Display work is already limited to one dirty row per call, but that row still
+  uses synchronous SPI; its command-channel impact needs on-board measurement.
+
 ## Layout
 
 ```

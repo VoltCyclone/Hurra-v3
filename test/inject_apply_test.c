@@ -267,6 +267,22 @@ int main(void) {
 		CHECK(unmask_all_called == 1, "phys_mask unmask_all called");
 	}
 
+    // A scheduled release at millis()==0 is active, not a sentinel.
+    {
+        fake_ms = UINT32_MAX - 9u;
+        usb_merge_init(); setup_mouse();
+        uint8_t mouse[7] = {0}; mouse[4] = 1;
+        usb_merge_apply_record(ICC_TAG_INJECT_MOUSE, mouse);
+        uint8_t release[7] = {1, 10, 0, 0, 0, 0, 0};
+        usb_merge_apply_record(ICC_TAG_CLICK_RELEASE, release);
+        fake_ms = UINT32_MAX - 1u; usb_merge_drain_icc();
+        sent_count = 0; usb_merge_send_pending();
+        CHECK(sent_count == 1 && (sent_buf[0] & 1), "wrapped click remains down before deadline");
+        fake_ms = 10; usb_merge_drain_icc();
+        sent_count = 0; usb_merge_send_pending();
+        CHECK(sent_count == 1 && !(sent_buf[0] & 1), "zero-deadline click releases after wrap");
+    }
+
 	printf(failures ? "\nFAILED (%d)\n" : "\nPASS\n", failures);
 	return failures ? 1 : 0;
 }

@@ -10,8 +10,13 @@
  * PA9(TX)/PA10(RX) AF7. The IRQ handler name (CMD_USART_IRQHandler) comes from
  * board.h to match the vector-table entry in core/startup_v3f.S.
  */
+#ifdef UART_HOSTTEST
+#include "uart_hal_stub.h"
+#else
 #include "ch32h417_port.h"
 #include "board.h"
+#include "timebase.h"
+#endif
 #include "uart.h"
 #include "uart_rx_class.h"
 
@@ -29,10 +34,21 @@ static volatile uint16_t tx_tail;   /* ISR reads */
 static uint32_t tx_total;
 
 static uint32_t s_baud;
+static uint32_t s_pending_baud;
 /* err_or = hardware overrun (STATR.ORE); err_fe/err_ne = framing/noise.
  * rx_drop counts bytes lost to a full RX ring — kept distinct so a software
  * back-pressure drop is never miscounted as a hardware overrun. */
 static volatile uint32_t err_or, err_fe, err_ne, rx_drop;
+static volatile uint32_t rx_loss_epoch, rx_last_byte_ms;
+static volatile bool rx_recovering;
+static uint32_t rx_reported_epoch;
+#define RX_RECOVERY_IDLE_MS 25u
+
+static void rx_lost(void)
+{
+    if (!rx_recovering) rx_loss_epoch++;
+    rx_recovering = true;
+}
 
 static void usart_apply(uint32_t baud)
 {
@@ -49,6 +65,7 @@ static void usart_apply(uint32_t baud)
 void uart_init(uint32_t baud)
 {
     s_baud = baud;
+    s_pending_baud = 0;
     /* USART1 clock + its GPIO port (PA9/PA10) + AFIO are all on the HB2 bus. */
     RCC_HB2PeriphClockCmd(CMD_USART_RCC_HB2_UART | CMD_USART_GPIO_RCC_HB2 |
                           RCC_HB2Periph_AFIO, ENABLE);
@@ -73,6 +90,11 @@ void uart_init(uint32_t baud)
 
     rx_head = rx_tail = 0;
     tx_head = tx_tail = 0;
+    rx_total = tx_total = 0;
+    err_or = err_fe = err_ne = rx_drop = 0;
+    rx_loss_epoch = rx_reported_epoch = 0;
+    rx_recovering = false;
+    rx_last_byte_ms = millis();
 
     /* RX interrupt on every received byte; TX (TXE) interrupt enabled on demand
      * by uart_tx_write() so an empty TX ring doesn't spin the ISR. */
@@ -85,32 +107,54 @@ void uart_init(uint32_t baud)
 
 void uart_set_baud(uint32_t baud)
 {
-    s_baud = baud;
-    USART_Cmd(CMD_USART, DISABLE);
-    usart_apply(baud);
-    /* usart_apply() rewrites CTLR1, clearing the RXNE-IT enable; restore it. */
-    USART_ITConfig(CMD_USART, USART_IT_RXNE, ENABLE);
-    USART_Cmd(CMD_USART, ENABLE);
+    if (!baud) return;
+    s_pending_baud = baud;
+    uart_tx_flush(); // apply only once queued bytes AND the wire have drained
 }
 
 uint32_t uart_current_baud(void) { return s_baud; }
 
 uint16_t uart_rx_available(void)
 {
+    if (rx_recovering) return 0;
     return (uint16_t)((rx_head - rx_tail) & (RX_RING_SZ - 1));
 }
 
 uint16_t uart_rx_read(uint8_t *dst, uint16_t max)
 {
+    if (!dst || !max) return 0;
+    if (rx_recovering) {
+        // Foreground-only API: briefly exclude this USART IRQ while discarding
+        // the damaged prefix. Do not mask timer/USB interrupts or copy here.
+        NVIC_DisableIRQ(CMD_USART_IRQn);
+        rx_tail = rx_head;
+        if (millis() - rx_last_byte_ms >= RX_RECOVERY_IDLE_MS &&
+            USART_GetFlagStatus(CMD_USART, USART_FLAG_RXNE) == RESET)
+            rx_recovering = false;
+        NVIC_EnableIRQ(CMD_USART_IRQn);
+        return 0;
+    }
     uint16_t n = 0;
-    while (n < max) {
+    while (n < max && !rx_recovering) {
         uint16_t head = rx_head;                 /* snapshot ISR-updated head */
         if (rx_tail == head) break;              /* empty */
         dst[n++] = rx_ring[rx_tail];
         rx_tail = (uint16_t)((rx_tail + 1) & (RX_RING_SZ - 1));
     }
+    // A loss interrupt during copying invalidates this batch as a whole.
+    NVIC_DisableIRQ(CMD_USART_IRQn);
+    if (rx_recovering) n = 0;
     rx_total += n;
+    NVIC_EnableIRQ(CMD_USART_IRQn);
     return n;
+}
+
+bool uart_rx_take_loss(void)
+{
+    uint32_t epoch = rx_loss_epoch;
+    bool changed = epoch != rx_reported_epoch;
+    rx_reported_epoch = epoch;
+    return changed;
 }
 
 uint16_t uart_tx_room(void)
@@ -121,24 +165,39 @@ uint16_t uart_tx_room(void)
 
 uint16_t uart_tx_write(const uint8_t *src, uint16_t len)
 {
-    uint16_t n = 0;
-    while (n < len && uart_tx_room() > 0) {
-        tx_ring[tx_head] = src[n++];
-        tx_head = (uint16_t)((tx_head + 1) & (TX_RING_SZ - 1));
+    // One foreground producer; the ISR can only free more room. Publish the
+    // head once, after the complete write, so a full ring never emits a prefix.
+    if (!src || len > uart_tx_room()) return 0;
+    uint16_t head = tx_head;
+    for (uint16_t i = 0; i < len; i++) {
+        tx_ring[head] = src[i];
+        head = (uint16_t)((head + 1) & (TX_RING_SZ - 1));
     }
-    tx_total += n;
-    if (n) {
-        /* Arm the TXE interrupt; the ISR drains the ring and masks itself when
-         * empty. Enabling TXE with data pending fires the IRQ immediately. */
-        USART_ITConfig(CMD_USART, USART_IT_TXE, ENABLE);
-    }
-    return n;
+#ifdef __riscv
+    __asm volatile("fence rw,rw" ::: "memory");
+#else
+    __asm volatile("" ::: "memory");
+#endif
+    tx_head = head;
+    tx_total += len;
+    if (len) USART_ITConfig(CMD_USART, USART_IT_TXE, ENABLE);
+    return len;
 }
 
 void uart_tx_flush(void)
 {
     if (tx_head != tx_tail) {
         USART_ITConfig(CMD_USART, USART_IT_TXE, ENABLE);
+    } else if (s_pending_baud && USART_GetFlagStatus(CMD_USART, USART_FLAG_TC) != RESET) {
+        // TXE/empty software ring is not enough: the last stop bit must leave
+        // the shifter before changing the divisor. No waiting with IRQs masked.
+        uint32_t baud = s_pending_baud;
+        s_pending_baud = 0;
+        USART_Cmd(CMD_USART, DISABLE);
+        usart_apply(baud);
+        USART_ITConfig(CMD_USART, USART_IT_RXNE, ENABLE);
+        USART_Cmd(CMD_USART, ENABLE);
+        s_baud = baud;
     }
 }
 
@@ -160,17 +219,20 @@ void CMD_USART_IRQHandler(void)
     if (USART_GetITStatus(CMD_USART, USART_IT_RXNE) != RESET) {
         uint16_t sr = (uint16_t)CMD_USART->STATR;          /* snapshot first */
         uint8_t  b  = (uint8_t)USART_ReceiveData(CMD_USART); /* clears RXNE/ORE */
+        rx_last_byte_ms = millis();
         uart_rx_class_t c = uart_rx_classify(sr);
         if (c.count_or) err_or++;
         if (c.count_fe) err_fe++;
         if (c.count_ne) err_ne++;
-        if (!c.drop) {                           /* FE/NE byte is corrupt -> skip */
+        if (c.count_or || c.drop) rx_lost();
+        if (!rx_recovering) {                           /* FE/NE byte is corrupt -> skip */
             uint16_t next = (uint16_t)((rx_head + 1) & (RX_RING_SZ - 1));
             if (next != rx_tail) {               /* drop on full (don't clobber) */
                 rx_ring[rx_head] = b;
                 rx_head = next;
             } else {
                 rx_drop++;                       /* ring full -> software drop */
+                rx_lost();
             }
         }
     }

@@ -358,55 +358,58 @@ erase:
 clean:
 	rm -rf build
 
-test-report-xfer:
-	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/report_xfer_test test/report_xfer_test.c src/report_xfer.c
-	/tmp/report_xfer_test
+HOST_TEST_DIR ?= $(CURDIR)/build/host-tests
 
-test: test-report-xfer
-	cc -std=c11 -O2 -DHUMANIZE_HOSTTEST -Isrc -o /tmp/humanize_test test/humanize_test.c src/humanize.c -lm
-	/tmp/humanize_test
-	cc -std=c11 -O2 -Isrc -o /tmp/motion_test test/motion_test.c src/actions.c -lm
-	/tmp/motion_test
-	cc -std=c11 -O2 -Wall -Isrc -o /tmp/actions_test test/actions_test.c src/actions.c -lm
-	/tmp/actions_test
-	cc -std=c11 -O2 -Wall -Isrc -o /tmp/ferrum_mask_test test/ferrum_mask_test.c src/ferrum.c src/actions.c -lm
-	/tmp/ferrum_mask_test
-	cc -std=c11 -O2 -Isrc -o /tmp/display_test test/display_test.c src/display.c src/icc_status.c
-	/tmp/display_test
-	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_test test/spi_frame_test.c src/spi_frame.c
-	/tmp/spi_frame_test
-	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/usb_hs_desc_test test/usb_hs_desc_test.c src/usb_hs_desc.c
-	/tmp/usb_hs_desc_test
-	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/desc_xfer_test test/desc_xfer_test.c src/desc_xfer.c
-	/tmp/desc_xfer_test
-	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/desc_serialize_test test/desc_serialize_test.c src/desc_serialize.c
-	/tmp/desc_serialize_test
-	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/desc_capture_test test/desc_capture_test.c
-	/tmp/desc_capture_test
-	cc -std=c11 -O2 -Wall -Wextra -Isrc -o /tmp/spi_frame_stream_test test/spi_frame_stream_test.c src/spi_frame_stream.c src/spi_frame.c
-	/tmp/spi_frame_stream_test
+test-report-xfer:
+	@mkdir -p $(HOST_TEST_DIR)
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o $(HOST_TEST_DIR)/report_xfer_test test/report_xfer_test.c src/report_xfer.c
+	$(HOST_TEST_DIR)/report_xfer_test
+
+test: test-report-xfer test-reliability
+	cc -std=c11 -O2 -DHUMANIZE_HOSTTEST -Isrc -o $(HOST_TEST_DIR)/humanize_test test/humanize_test.c src/humanize.c -lm
+	$(HOST_TEST_DIR)/humanize_test
+	cc -std=c11 -O2 -Isrc -o $(HOST_TEST_DIR)/motion_test test/motion_test.c src/actions.c -lm
+	$(HOST_TEST_DIR)/motion_test
+	cc -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Isrc -o $(HOST_TEST_DIR)/actions_test test/actions_test.c src/actions.c -lm
+	$(HOST_TEST_DIR)/actions_test
+	cc -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Isrc -o $(HOST_TEST_DIR)/ferrum_mask_test test/ferrum_mask_test.c src/ferrum.c src/actions.c -lm
+	$(HOST_TEST_DIR)/ferrum_mask_test
+	cc -std=c11 -O2 -Isrc -o $(HOST_TEST_DIR)/display_test test/display_test.c src/display.c src/icc_status.c
+	$(HOST_TEST_DIR)/display_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o $(HOST_TEST_DIR)/spi_frame_test test/spi_frame_test.c src/spi_frame.c
+	$(HOST_TEST_DIR)/spi_frame_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o $(HOST_TEST_DIR)/usb_hs_desc_test test/usb_hs_desc_test.c src/usb_hs_desc.c
+	$(HOST_TEST_DIR)/usb_hs_desc_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o $(HOST_TEST_DIR)/desc_xfer_test test/desc_xfer_test.c src/desc_xfer.c
+	$(HOST_TEST_DIR)/desc_xfer_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o $(HOST_TEST_DIR)/desc_serialize_test test/desc_serialize_test.c src/desc_serialize.c
+	$(HOST_TEST_DIR)/desc_serialize_test
+	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o $(HOST_TEST_DIR)/desc_capture_test test/desc_capture_test.c
+	$(HOST_TEST_DIR)/desc_capture_test
+	cc -std=c11 -O2 -Wall -Wextra -Isrc -o $(HOST_TEST_DIR)/spi_frame_stream_test test/spi_frame_stream_test.c src/spi_frame_stream.c src/spi_frame.c
+	$(HOST_TEST_DIR)/spi_frame_stream_test
 	cc -std=c11 -O1 -g -fsanitize=address -DHUMANIZE_HOSTTEST -Isrc \
-	   -o /tmp/usb_merge_test test/usb_merge_test.c src/usb_merge.c \
+	   -o $(HOST_TEST_DIR)/usb_merge_test test/usb_merge_test.c src/usb_merge.c \
 	   src/hid_layout.c src/humanize.c -lm
-	/tmp/usb_merge_test
-	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o /tmp/inject_apply_test test/inject_apply_test.c src/usb_merge.c src/hid_layout.c
-	/tmp/inject_apply_test
-	cc -std=c11 -O2 -Wall -Isrc -o /tmp/inject_link_test test/inject_link_test.c src/inject_link.c src/spi_frame.c
-	/tmp/inject_link_test
-	cc -std=c11 -O2 -Wall -Isrc -o /tmp/usb_host_time_test test/usb_host_time_test.c
-	/tmp/usb_host_time_test
-	cc -std=c11 -O2 -Wall -Isrc -o /tmp/usb_desc_interval_test test/usb_desc_interval_test.c
-	/tmp/usb_desc_interval_test
-	cc -std=c11 -O2 -Wall -Isrc -o /tmp/uart_rx_class_test test/uart_rx_class_test.c
-	/tmp/uart_rx_class_test
-	cc -std=c11 -O2 -Wall -Isrc -o /tmp/hid_iface_index_test test/hid_iface_index_test.c
-	/tmp/hid_iface_index_test
-	cc -std=c11 -O2 -Wall -Isrc -o /tmp/display_rowpick_test test/display_rowpick_test.c
-	/tmp/display_rowpick_test
-	cc -std=c11 -O2 -Wall -DWS2812_HOSTTEST -Isrc -o /tmp/ws2812_test test/ws2812_test.c src/ws2812.c
-	/tmp/ws2812_test
-	cc -std=c11 -O2 -DGESTURE_HOSTTEST -Isrc -o /tmp/gesture_test test/gesture_test.c src/gesture.c -lm
-	/tmp/gesture_test
+	$(HOST_TEST_DIR)/usb_merge_test
+	cc -std=c11 -O1 -g -fsanitize=address -Isrc -o $(HOST_TEST_DIR)/inject_apply_test test/inject_apply_test.c src/usb_merge.c src/hid_layout.c
+	$(HOST_TEST_DIR)/inject_apply_test
+	cc -std=c11 -O2 -Wall -Isrc -o $(HOST_TEST_DIR)/inject_link_test test/inject_link_test.c src/inject_link.c src/spi_frame.c
+	$(HOST_TEST_DIR)/inject_link_test
+	cc -std=c11 -O2 -Wall -Isrc -o $(HOST_TEST_DIR)/usb_host_time_test test/usb_host_time_test.c
+	$(HOST_TEST_DIR)/usb_host_time_test
+	cc -std=c11 -O2 -Wall -Isrc -o $(HOST_TEST_DIR)/usb_desc_interval_test test/usb_desc_interval_test.c
+	$(HOST_TEST_DIR)/usb_desc_interval_test
+	cc -std=c11 -O2 -Wall -Isrc -o $(HOST_TEST_DIR)/uart_rx_class_test test/uart_rx_class_test.c
+	$(HOST_TEST_DIR)/uart_rx_class_test
+	cc -std=c11 -O2 -Wall -Isrc -o $(HOST_TEST_DIR)/hid_iface_index_test test/hid_iface_index_test.c
+	$(HOST_TEST_DIR)/hid_iface_index_test
+	cc -std=c11 -O2 -Wall -Isrc -o $(HOST_TEST_DIR)/display_rowpick_test test/display_rowpick_test.c
+	$(HOST_TEST_DIR)/display_rowpick_test
+	cc -std=c11 -O2 -Wall -DWS2812_HOSTTEST -Isrc -o $(HOST_TEST_DIR)/ws2812_test test/ws2812_test.c src/ws2812.c
+	$(HOST_TEST_DIR)/ws2812_test
+	cc -std=c11 -O2 -DGESTURE_HOSTTEST -Isrc -o $(HOST_TEST_DIR)/gesture_test test/gesture_test.c src/gesture.c -lm
+	$(HOST_TEST_DIR)/gesture_test
 	python3 -m unittest test.flash_py_test
 	python3 -m unittest test.humanization_analyze_test
 	python3 -m unittest test.raw_input_classifier_trace_test
@@ -415,8 +418,19 @@ test: test-report-xfer
 	python3 -m unittest test.raw_input_classifier_metrics_test
 	python3 -m unittest test.raw_input_classifier_capture_test
 
+test-reliability:
+	@mkdir -p $(HOST_TEST_DIR)
+	cc -std=c11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -DUART_HOSTTEST -DPROTOCOL_FERRUM \
+	   -Itest/stubs -Itest -Isrc -o $(HOST_TEST_DIR)/uart_transport_test \
+	   test/uart_transport_test.c src/uart.c src/kmbox_cmd.c src/ferrum.c src/actions.c -lm
+	$(HOST_TEST_DIR)/uart_transport_test
+	cc -std=c11 -O1 -g -fsanitize=address,undefined -Itest/stubs -Isrc -Isrc/third_party/TinyFrame \
+	   -o $(HOST_TEST_DIR)/hurra_deadline_test test/hurra_deadline_test.c \
+	   src/actions.c src/third_party/TinyFrame/TinyFrame.c -lm
+	$(HOST_TEST_DIR)/hurra_deadline_test
+
 test-torch:
 	python3 -m unittest test.raw_input_classifier_model_test
 	python3 -m unittest test.raw_input_classifier_train_test
 
-.PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test test-report-xfer test-torch build
+.PHONY: v3f v5f all relay merge flash flash-boarda flash-boardb flash-v3f flash-v5f erase clean test test-report-xfer test-torch test-reliability build

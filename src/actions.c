@@ -3,6 +3,8 @@
 #include "actions.h"
 #include "kmbox.h"
 #include <string.h>
+#include <limits.h>
+#include "time_deadline.h"
 
 extern uint32_t millis(void);
 
@@ -23,6 +25,11 @@ typedef struct {
 } act_click_sched_t;
 
 static act_click_sched_t g_click_sched;
+// The authoritative keyboard state lives on V3F. Expire here and send a fresh
+// snapshot; clearing only V5F's overlay would resurrect the key on the next down.
+static struct { uint8_t key; uint32_t at; } g_kb_release[14];
+static uint8_t g_kb_release_count;
+static void act_kb_release_tick(void);
 static uint8_t  g_masked_keys[ACT_MAX_DISABLED_KEYS];
 static uint8_t  g_masked_modes[ACT_MAX_DISABLED_KEYS];
 static uint8_t  g_masked_count;
@@ -68,6 +75,7 @@ void act_init(void)
 	memset(&g_click_sched, 0, sizeof(g_click_sched));
 	memset(&g_motion, 0, sizeof(g_motion));
 	g_masked_count = 0;
+	g_kb_release_count = 0;
 }
 
 int8_t act_button_set(uint8_t mask, uint8_t action)
@@ -90,6 +98,7 @@ void act_click(uint8_t button_1based, uint8_t count, uint32_t delay_ms)
 {
 	uint8_t mask = btn_idx_to_mask(button_1based);
 	if (mask == 0 || count == 0) return;
+    if (delay_ms > INT32_MAX) delay_ms = INT32_MAX;
 
 	// Cancel any in-flight click sequence so overlapping clicks don't interleave.
 	// If the previous sequence left a button pressed, release it first so it
@@ -161,6 +170,7 @@ void act_tick(void)
 {
 	act_motion_tick();
 	act_click_tick();
+    act_kb_release_tick();
 }
 
 // Core mover: applies swap/invert transforms and injects. Shared by act_move and
@@ -171,8 +181,9 @@ static void act_move_raw(int16_t dx, int16_t dy)
 	if (s_swap_xy)  { int16_t t = dx; dx = dy; dy = t; }
 	if (s_invert_x) dx = (int16_t)-dx;
 	if (s_invert_y) dy = (int16_t)-dy;
-	g_pos_x += dx;
-	g_pos_y += dy;
+    int64_t px = (int64_t)g_pos_x + dx, py = (int64_t)g_pos_y + dy;
+    g_pos_x = px > INT32_MAX ? INT32_MAX : px < INT32_MIN ? INT32_MIN : (int32_t)px;
+    g_pos_y = py > INT32_MAX ? INT32_MAX : py < INT32_MIN ? INT32_MIN : (int32_t)py;
 	kmbox_inject_mouse(dx, dy, g_buttons, 0);
 }
 
@@ -184,24 +195,43 @@ void act_move(int16_t dx, int16_t dy)
 	act_move_raw(dx, dy);
 }
 
+// Search every slot for an existing key before filling a hole. Otherwise a
+// released earlier slot can create duplicate keys and make key-up leave one held.
+static bool kb_insert(uint8_t key)
+{
+    int free_slot = -1;
+    for (int i = 0; i < 6; i++) {
+        if (g_kb_keys[i] == key) return true;
+        if (g_kb_keys[i] == 0 && free_slot < 0) free_slot = i;
+    }
+    if (free_slot < 0) return false;
+    g_kb_keys[free_slot] = key;
+    return true;
+}
+
+static void kb_cancel_release(uint8_t key)
+{
+    for (uint8_t i = 0; i < g_kb_release_count; i++) {
+        if (g_kb_release[i].key == key) {
+            g_kb_release[i] = g_kb_release[--g_kb_release_count];
+            return;
+        }
+    }
+}
+
 int8_t act_kb_down(uint8_t key)
 {
-	if (key >= 0xE0 && key <= 0xE7) {
-		g_kb_modifier |= (1u << (key - 0xE0));
-	} else {
-		bool added = false;
-		for (int i = 0; i < 6; i++) {
-			if (g_kb_keys[i] == key) { added = true; break; }
-			if (g_kb_keys[i] == 0) { g_kb_keys[i] = key; added = true; break; }
-		}
-		if (!added) return -1;
-	}
-	kmbox_inject_keyboard(g_kb_modifier, g_kb_keys);
-	return 0;
+    if (!key) return -1;
+    kb_cancel_release(key);
+    if (key >= 0xE0 && key <= 0xE7) g_kb_modifier |= (1u << (key - 0xE0));
+    else if (!kb_insert(key)) return -1;
+    kmbox_inject_keyboard(g_kb_modifier, g_kb_keys);
+    return 0;
 }
 
 void act_kb_up(uint8_t key)
 {
+    kb_cancel_release(key);
 	if (key >= 0xE0 && key <= 0xE7) {
 		g_kb_modifier &= ~(1u << (key - 0xE0));
 	} else {
@@ -214,16 +244,27 @@ void act_kb_up(uint8_t key)
 
 void act_kb_press(uint8_t key, uint32_t delay_ms)
 {
-	if (key >= 0xE0 && key <= 0xE7) {
-		g_kb_modifier |= (1u << (key - 0xE0));
-	} else {
-		for (int i = 0; i < 6; i++) {
-			if (g_kb_keys[i] == key) break;
-			if (g_kb_keys[i] == 0) { g_kb_keys[i] = key; break; }
-		}
-	}
-	kmbox_inject_keyboard(g_kb_modifier, g_kb_keys);
-	kmbox_schedule_kb_release(key, delay_ms);
+    if (!key) return;
+    if (key >= 0xE0 && key <= 0xE7) g_kb_modifier |= (1u << (key - 0xE0));
+    else if (!kb_insert(key)) return;
+    kmbox_inject_keyboard(g_kb_modifier, g_kb_keys);
+    kb_cancel_release(key);
+    if (g_kb_release_count < 14) {
+        if (delay_ms > INT32_MAX) delay_ms = INT32_MAX;
+        g_kb_release[g_kb_release_count].key = key;
+        g_kb_release[g_kb_release_count++].at = millis() + delay_ms;
+    }
+}
+
+static void act_kb_release_tick(void)
+{
+    uint32_t now = millis();
+    for (uint8_t i = 0; i < g_kb_release_count; ) {
+        if (time_deadline_reached(now, g_kb_release[i].at)) {
+            uint8_t key = g_kb_release[i].key;
+            act_kb_up(key); // removes this release and publishes the updated state
+        } else i++;
+    }
 }
 
 uint8_t act_kb_isdown(uint8_t key)
@@ -237,6 +278,7 @@ uint8_t act_kb_isdown(uint8_t key)
 
 void act_kb_init(void)
 {
+    g_kb_release_count = 0;
 	g_kb_modifier = 0;
 	memset(g_kb_keys, 0, sizeof(g_kb_keys));
 	kmbox_inject_keyboard(0, g_kb_keys);
